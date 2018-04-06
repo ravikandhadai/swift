@@ -1,20 +1,20 @@
-// FIXME(integer): with new integer protocols implemented the overflows are no
-// longer caught: <rdar://problem/29937936>
-
 // RUN: not %target-swift-frontend -emit-sil %s 2>&1 | %FileCheck --check-prefix=CHECK-%target-ptrsize %s
-
+//
 // FIXME: This test should be merged back into
 // diagnostic_constant_propagation.swift when we have fixed:
 // <rdar://problem/19434979> -verify does not respect #if
 //
 // For the same reason, this test is using FileCheck instead of -verify.
 
+// FIXME: <rdar://problem/19623142> a missing diagnostic in the case of double negation
+//
 // FIXME: <rdar://problem/19508336> Extend test/SILOptimizer/diagnostic_constant_propagation.swift to 32-bit platforms
 
 #if arch(i386) || arch(arm)
 func testArithmeticOverflow_Int_32bit() {
   do {
     // Literals.
+    // CHECK-32-NOT: error:
     var t1: Int = 0x7fff_ffff // OK
     var t2: Int = 0x8000_0000
     // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: integer literal {{.*}}overflows when stored into 'Int'{{$}}
@@ -98,25 +98,17 @@ func testArithmeticOverflow_Int_32bit() {
     var t1: Int = 0 >> 0
     var t2: Int = 0 >> 1
     var t3: Int = 0 >> (-1)
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: negative integer cannot be converted to unsigned type 'Builtin.Int32'{{$}}
-    // FIXME: Bad diagnostic:
-    // <rdar://problem/19622485> 'Builtin.Int64' leaks into diagnostics
 
     var t4: Int = 123 >> 0
     var t5: Int = 123 >> 1
     var t6: Int = 123 >> (-1)
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: negative integer cannot be converted to unsigned type 'Builtin.Int32'{{$}}
-    // FIXME: Bad diagnostic:
-    // <rdar://problem/19622485> 'Builtin.Int64' leaks into diagnostics
 
     var t7: Int = (-1) >> 0
     var t8: Int = (-1) >> 1
 
     var t9: Int = 0x7fff_ffff >> 31 // OK
-    var t10: Int = 0x7fff_ffff >> 32
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
-    var t11: Int = 0x7fff_ffff >> 33
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
+    var t10: Int = 0x7fff_ffff >> 32 // OK
+    var t11: Int = 0x7fff_ffff >> 33 // OK
   }
 
   do {
@@ -124,26 +116,41 @@ func testArithmeticOverflow_Int_32bit() {
     var t1: Int = 0 << 0
     var t2: Int = 0 << 1
     var t3: Int = 0 << (-1)
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: negative integer cannot be converted to unsigned type 'Builtin.Int32'{{$}}
-    // FIXME: Bad diagnostic:
-    // <rdar://problem/19622485> 'Builtin.Int64' leaks into diagnostics
 
     var t4: Int = 123 << 0
     var t5: Int = 123 << 1
     var t6: Int = 123 << (-1)
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: negative integer cannot be converted to unsigned type 'Builtin.Int32'{{$}}
-    // FIXME: Bad diagnostic:
-    // <rdar://problem/19622485> 'Builtin.Int64' leaks into diagnostics
 
     var t7: Int = (-1) << 0
     var t8: Int = (-1) << 1
 
     var t9: Int = 0x7fff_ffff << 31 // OK
-    var t10: Int = 0x7fff_ffff << 32
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
+    var t10: Int = 0x7fff_ffff << 32 // What about these cases?
     var t11: Int = 0x7fff_ffff << 33
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
   }
+
+  do {
+    var _: Int = -0xffff_ffff
+    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: integer literal {{.*}}overflows when stored into 'Int'{{$}}
+
+  }
+
+//  do {
+//    // bitwise NOT
+//    var _: Int = ~0 // Ok
+//    var _: Int = ~0xffff_ffff
+//
+//    var _: UInt = ~0
+//    var _: UInt = ~0xffff_ffff
+//  }
+//
+//  do {
+//    // bitwise OR
+//    var _ : Int = 0 | 0xf000_0000
+//    var _ : Int = 0 | ~0x0111_1111
+//
+//  }
+
 }
 
 func testArithmeticOverflow_UInt_32bit() {
@@ -244,9 +251,7 @@ func testArithmeticOverflow_UInt_32bit() {
 
     var t7: UInt = 0x7fff_ffff >> 31 // OK
     var t8: UInt = 0x7fff_ffff >> 32
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
     var t9: UInt = 0x7fff_ffff >> 33
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
   }
 
   do {
@@ -262,9 +267,7 @@ func testArithmeticOverflow_UInt_32bit() {
 
     var t7: UInt = 0x7fff_ffff << 31 // OK
     var t8: UInt = 0x7fff_ffff << 32
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
     var t9: UInt = 0x7fff_ffff << 33
-    // CHECK-32-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
   }
 }
 
@@ -383,10 +386,8 @@ func testArithmeticOverflow_Int_64bit() {
     var t8: Int = (-1) << 1
 
     var t9: Int = 0x7fff_ffff_ffff_ffff << 63
-    var t10: Int = 0x7fff_ffff_ffff_ffff << 64
-    // CHECK-64-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
+    var t10: Int = 0x7fff_ffff_ffff_ffff << 64 // TODO: What about these?
     var t11: Int = 0x7fff_ffff_ffff_ffff << 65
-    // CHECK-64-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
   }
 }
 
@@ -484,9 +485,7 @@ func testArithmeticOverflow_UInt_64bit() {
 
     var t7: UInt = 0x7fff_ffff_ffff_ffff >> 63 // OK
     var t8: UInt = 0x7fff_ffff_ffff_ffff >> 64
-    // CHECK-64-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
     var t9: UInt = 0x7fff_ffff_ffff_ffff >> 65
-    // CHECK-64-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
   }
 
   do {
@@ -502,9 +501,7 @@ func testArithmeticOverflow_UInt_64bit() {
 
     var t7: UInt = 0x7fff_ffff_ffff_ffff << 63 // OK
     var t8: UInt = 0x7fff_ffff_ffff_ffff << 64
-    // CHECK-64-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
     var t9: UInt = 0x7fff_ffff_ffff_ffff << 65
-    // CHECK-64-DAG: .swift:[[@LINE-1]]:{{[0-9]+}}: error: shift amount is greater than or equal to type size in bits{{$}}
   }
 }
 

@@ -159,6 +159,14 @@ static SILValue constructResultWithOverflowTuple(BuiltinInst *BI,
     B.createIntegerLiteral(Loc, ResTy1, Res),
     B.createIntegerLiteral(Loc, ResTy2, Overflow)
   };
+
+  // Code added for debug -- to remove
+  if (!(BI->getDebugLocation()).getLocation().isNull()) {
+    llvm::dbgs() << "Folded int value: " << Result[0];
+    llvm::dbgs() << "Overflow int: " << Result[1];
+    llvm::dbgs() << "\n";
+  }
+
   return B.createTuple(Loc, FuncResType, Result);
 }
 
@@ -1100,6 +1108,12 @@ void ConstantFolder::initializeWorklist(SILFunction &F) {
   for (auto &BB : F) {
     for (auto &I : BB) {
       if (isFoldable(&I) && I.hasUsesOfAnyResult()) {
+        // Code added for debug -- to remove
+        if (!I.getDebugLocation().getLocation().isNull()) {
+          llvm::dbgs() << "Initializing with instruction: ";
+          I.dump();
+          llvm::dbgs() << "\n";
+        }
         WorkList.insert(&I);
         continue;
       }
@@ -1166,11 +1180,31 @@ ConstantFolder::processWorkList() {
         I->eraseFromParent();
       });
 
+  // Code added for debug -- to remove
+  llvm::dbgs() << "Worklist Elements: ";
+  for(SILInstruction* elem : WorkList) {
+    if (!(elem->getDebugLocation()).getLocation().isNull()) {
+      llvm::dbgs() << "\t";
+      elem -> dump();
+      llvm::dbgs() << "\n";
+    }
+  }
+
   while (!WorkList.empty()) {
     SILInstruction *I = WorkList.pop_back_val();
     assert(I->getParent() && "SILInstruction must have parent.");
 
     DEBUG(llvm::dbgs() << "Visiting: " << *I);
+
+    // Code added for debug -- to remove
+    SILFunction* func  = I->getFunction();
+    if (!(I->getDebugLocation()).getLocation().isNull()) {
+      llvm::dbgs() << "Processing Instruction: ";
+      I -> dump();
+      llvm::dbgs() << " in function ";
+      I -> getFunction() -> dump();
+      llvm::dbgs() << "\n";
+    }
 
     Callback(I);
 
@@ -1190,6 +1224,9 @@ ConstantFolder::processWorkList() {
           recursivelyDeleteTriviallyDeadInstructions(BI);
 
           InvalidateInstructions = true;
+
+          // Code added for debug -- to remove
+          llvm::dbgs() << "Assert Config Optimization shortcircuting: \n";
           continue;
         }
 
@@ -1246,9 +1283,21 @@ ConstantFolder::processWorkList() {
             isa<UnconditionalCheckedCastAddrInst>(Result))
           WorkList.insert(Result);
       }
+
+      // Code added for debug -- to remove
+      llvm::dbgs() << "Performing a cast optimization, result: ";
+        Result -> dump();
+        llvm::dbgs() << "\n";
+
       continue;
     }
 
+    // Code added for debug -- to remove
+    if (!(I->getDebugLocation()).getLocation().isNull()) {
+      llvm::dbgs() << "Getting uses of I: ";
+      I -> dump();
+      llvm::dbgs() << "\n";
+    }
 
     // Go through all users of the constant and try to fold them.
     // TODO: MultiValueInstruction
@@ -1256,6 +1305,13 @@ ConstantFolder::processWorkList() {
     for (auto Use : cast<SingleValueInstruction>(I)->getUses()) {
       SILInstruction *User = Use->getUser();
       DEBUG(llvm::dbgs() << "    User: " << *User);
+
+      // Code added for debug -- to remove
+      if (!(User->getDebugLocation()).getLocation().isNull()) {
+        llvm::dbgs() << "Found a use: ";
+        User -> dump();
+        llvm::dbgs() << "\n";
+      }
 
       // It is possible that we had processed this user already. Do not try
       // to fold it again if we had previously produced an error while folding
@@ -1266,6 +1322,12 @@ ConstantFolder::processWorkList() {
       // Some constant users may indirectly cause folding of their users.
       if (isa<StructInst>(User) || isa<TupleInst>(User)) {
         WorkList.insert(User);
+
+        // Code added for debug -- to remove
+        llvm::dbgs() << "Inserting: ";
+        User -> dump();
+        llvm::dbgs() << "\t shortcircuiting ...\n";
+
         continue;
       }
 
@@ -1311,6 +1373,14 @@ ConstantFolder::processWorkList() {
 
       InvalidateInstructions = true;
 
+      // Code added for debug -- to remove
+      if (!(UserV->getDebugLocation()).getLocation().isNull()) {
+        llvm::dbgs() << "After Folded use (initial): " << C;
+        UserV->getFunction() -> dump();
+        //C->getDefiningInstruction()->dump();
+        llvm::dbgs() << "\n";
+      }
+
       // If the constant produced a tuple, be smarter than RAUW: explicitly nuke
       // any tuple_extract instructions using the apply.  This is a common case
       // for functions returning multiple values.
@@ -1321,11 +1391,23 @@ ConstantFolder::processWorkList() {
           // If the user is a tuple_extract, just substitute the right value in.
           if (auto *TEI = dyn_cast<TupleExtractInst>(O->getUser())) {
             SILValue NewVal = TI->getOperand(TEI->getFieldNo());
+
+            // Code added for debug -- to remove
+            llvm::dbgs() << "Replacing uses of: ";
+            TEI -> dump();
+            llvm::dbgs() << " by " << NewVal;
+
             TEI->replaceAllUsesWith(NewVal);
             TEI->dropAllReferences();
             FoldedUsers.insert(TEI);
-            if (auto *Inst = NewVal->getDefiningInstruction())
+            if (auto *Inst = NewVal->getDefiningInstruction()) {
               WorkList.insert(Inst);
+
+              // Code added for debug -- to remove
+              llvm::dbgs() << "Inserting in tuple optimization: ";
+              Inst->getFunction()->dump();
+              llvm::dbgs() << "\n";
+            }
           }
         }
 
@@ -1333,13 +1415,12 @@ ConstantFolder::processWorkList() {
           FoldedUsers.insert(TI);
       }
 
-
       // We were able to fold, so all users should use the new folded value.
       UserV->replaceAllUsesWith(C);
-
       // The new constant could be further folded now, add it to the worklist.
-      if (auto *Inst = C->getDefiningInstruction())
+      if (auto *Inst = C->getDefiningInstruction()) {
         WorkList.insert(Inst);
+      }
     }
 
     // Eagerly DCE. We do this after visiting all users to ensure we don't
@@ -1353,6 +1434,9 @@ ConstantFolder::processWorkList() {
                                                [&](SILInstruction *DeadI) {
                                                  WorkList.remove(DeadI);
                                                });
+    // Code added for debug -- to remove
+    llvm::dbgs() << "New function after replacement ";
+    func->dump();
   }
 
   // TODO: refactor this code outside of the method. Passes should not merge
