@@ -1,0 +1,94 @@
+- Every SIL instruction performas exactly one logical operation at every step (much like a 3 address code)
+- SSA form - No phi nodes for conditions. SIL seems to use a level of indirection like LLVM to access local variables (they are initially allocated in the heap and later into the stack if they could)
+- The textual representation has jumps at the end of every BB, and is similar to a CFG
+
+High-level Algorithm (Standard Workflow)
+--------------------
+
+Runnning Example
+---------------- 
+
+Swift Source
+-----------
+
+func foo() -> Int {
+  var x: Int = 100   
+  return x
+}
+
+SIL source before constant propagation (body of the function Foo)
+--------------------------------------
+
+		%1 = integer_literal $Builtin.Int2048, 100      // user: %2
+  		%2 = builtin "s_to_s_checked_trunc_Int2048_Int64"(%1 : $Builtin.Int2048) : $(Builtin.Int64, Builtin.Int1) // user: %3
+  		%3 = tuple_extract %2 : $(Builtin.Int64, Builtin.Int1), 0 // user: %4
+  		%4 = struct $Int (%3 : $Builtin.Int64)          // users: %9, %5
+  		... 
+
+Step 1: Start with a set of constant assignment instructions (LiteralInst). (initializeWorklist)  
+
+	wl = { %1 = integer_literal $Builtin.Int2048, 100 }
+
+repeat the following until the worklist is empty (`processWorklist` function)
+
+Step 2: Take an instruction I from the worklist
+Step 3: for every use U of I do the following
+Step 4: Fold `U` 
+
+	Fodling `%2 = builtin "s_to_s_checked_trunc_Int2048_Int64"(%1 : $Builtin.Int2048) : $(Builtin.Int64, Builtin.Int1)` 
+	results in the following instructions: 
+		%t = integer_literal $Builtin.Int64, 100
+		%z = integer_literal $Builtin.Int1, 0
+		%n = tuple (%t, %z)
+	
+Step 5: Insert the instructions obtained by folding `U` in the function before `U` (this happens along with Step 4)
+Step 6: Look at all uses of %2 by %u 
+	6a. An optimization (special case): If a use of %2 is a tuple-extact instruction `TIE`, extract the right value from the tuple and replace uses of `TIE` by the right value
+	
+		E.g.  In this case the TIE is `%3 = tuple_extract %2 : $(Builtin.Int64, Builtin.Int1), 0 // user: %4`
+		 	Its value = `%t` 
+		 	Replace `%4 = struct $Int (%3 : $Builtin.Int64)` by 
+		 		`%n2 = struct $Int (%t : $Builtin.Int64)`
+
+		6a.b Drop all references to TIE: this will make  
+			`%3 = tuple_extract %2 : $(Builtin.Int64, Builtin.Int1), 0 // user: %4` into
+					|
+			%3 = tuple_extract <<NULL OPERAND>> // user: %4
+
+		6a.b. Insert `%n2 = struct $Int (%t : $Builtin.Int64)` into the worklist
+
+  	6b. Replace all uses of %2 by %u.  (In this example case, there are no uses as we just modified the tuple-extract-instruction.)
+
+  	6c. Insert the folded result of `U` into the worklist e.g. `%n = tuple (%t, %z)` will be inserted into the worklist
+
+Step 7: 
+	Perform dead code elimination (TODO: we are only looking at folded instructions ... need to understand more)
+
+	E.g. Before Elimination we have 
+
+		%1 = integer_literal $Builtin.Int2048, 100      // user: %2  		
+  		%t = integer_literal $Builtin.Int64, 100
+		%z = integer_literal $Builtin.Int1, 0
+		%n = tuple (%t, %z)
+		%2 = builtin "s_to_s_checked_trunc_Int2048_Int64"(%1 : $Builtin.Int2048) : $(Builtin.Int64, Builtin.Int1) // user: %3		
+  		%3 = tuple_extract <<NULL OPERAND>> // user: %4  	
+  		%n2 = struct $Int (%t : $Builtin.Int64)
+  		... 
+
+  	After elimination we have
+		
+  		%t = integer_literal $Builtin.Int64, 100
+		%n2 = struct $Int (%t : $Builtin.Int64)
+  		...
+
+ 	(TODO: understand this a bit more)
+    New worklist: { %n = tuple (%t, %z),  %n2 = struct $Int (%t : $Builtin.Int64) }
+
+
+Important enhancements:
+----------------------
+A note reg. handling initializers
+---------------------------------
+
+If we do not handle initializers then we are not doing anything useful at all in constant propagation by checking more than 3 lines
+We will never check multiple basic blocks
