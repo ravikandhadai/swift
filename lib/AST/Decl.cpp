@@ -1519,7 +1519,7 @@ bool AbstractStorageDecl::isFormallyResilient() const {
   // Private and (unversioned) internal variables always have a
   // fixed layout.
   if (!getFormalAccessScope(/*useDC=*/nullptr,
-                            /*respectVersionedAttr=*/true).isPublic())
+                            /*treatUsableFromInlineAsPublic=*/true).isPublic())
     return false;
 
   // If we're an instance property of a nominal type, query the type.
@@ -1872,7 +1872,7 @@ OverloadSignature ValueDecl::getOverloadSignature() const {
   }
 
   if (auto *extension = dyn_cast<ExtensionDecl>(getDeclContext()))
-    if (extension->getGenericSignature())
+    if (extension->isGeneric())
       signature.InExtensionOfGenericType = true;
 
   return signature;
@@ -2106,12 +2106,16 @@ SourceLoc ValueDecl::getAttributeInsertionLoc(bool forModifier) const {
 bool ValueDecl::isUsableFromInline() const {
   assert(getFormalAccess() == AccessLevel::Internal);
 
-  if (getAttrs().hasAttribute<UsableFromInlineAttr>())
+  if (getAttrs().hasAttribute<UsableFromInlineAttr>() ||
+      getAttrs().hasAttribute<InlinableAttr>())
     return true;
 
-  if (auto *accessor = dyn_cast<AccessorDecl>(this))
-    if (accessor->getStorage()->getAttrs().hasAttribute<UsableFromInlineAttr>())
+  if (auto *accessor = dyn_cast<AccessorDecl>(this)) {
+    auto *storage = accessor->getStorage();
+    if (storage->getAttrs().hasAttribute<UsableFromInlineAttr>() ||
+        storage->getAttrs().hasAttribute<InlinableAttr>())
       return true;
+  }
 
   if (auto *EED = dyn_cast<EnumElementDecl>(this))
     if (EED->getParentEnum()->getAttrs().hasAttribute<UsableFromInlineAttr>())
@@ -2140,8 +2144,9 @@ static AccessLevel getTestableAccess(const ValueDecl *decl) {
 }
 
 AccessLevel ValueDecl::getEffectiveAccess() const {
-  auto effectiveAccess = getFormalAccess(/*useDC=*/nullptr,
-                                         /*respectVersionedAttr=*/true);
+  auto effectiveAccess =
+    getFormalAccess(/*useDC=*/nullptr,
+                    /*treatUsableFromInlineAsPublic=*/true);
 
   // Handle @testable.
   switch (effectiveAccess) {
@@ -2204,28 +2209,31 @@ AccessLevel ValueDecl::getFormalAccessImpl(const DeclContext *useDC) const {
   return getFormalAccess();
 }
 
-AccessScope ValueDecl::getFormalAccessScope(const DeclContext *useDC,
-                                            bool respectVersionedAttr) const {
+AccessScope
+ValueDecl::getFormalAccessScope(const DeclContext *useDC,
+                                bool treatUsableFromInlineAsPublic) const {
   const DeclContext *result = getDeclContext();
-  AccessLevel access = getFormalAccess(useDC, respectVersionedAttr);
+  AccessLevel access = getFormalAccess(useDC, treatUsableFromInlineAsPublic);
 
   while (!result->isModuleScopeContext()) {
     if (result->isLocalContext() || access == AccessLevel::Private)
       return AccessScope(result, true);
 
     if (auto enclosingNominal = dyn_cast<NominalTypeDecl>(result)) {
-      access = std::min(access,
-                        enclosingNominal->getFormalAccess(useDC,
-                                                          respectVersionedAttr));
+      auto enclosingAccess =
+        enclosingNominal->getFormalAccess(useDC,
+                                          treatUsableFromInlineAsPublic);
+      access = std::min(access, enclosingAccess);
 
     } else if (auto enclosingExt = dyn_cast<ExtensionDecl>(result)) {
       // Just check the base type. If it's a constrained extension, Sema should
       // have already enforced access more strictly.
       if (auto extendedTy = enclosingExt->getExtendedType()) {
         if (auto nominal = extendedTy->getAnyNominal()) {
-          access = std::min(access,
-                            nominal->getFormalAccess(useDC,
-                                                     respectVersionedAttr));
+          auto nominalAccess =
+            nominal->getFormalAccess(useDC,
+                                     treatUsableFromInlineAsPublic);
+          access = std::min(access, nominalAccess);
         }
       }
 
@@ -2257,7 +2265,9 @@ void ValueDecl::copyFormalAccessFrom(ValueDecl *source) {
   }
 
   // Inherit the @usableFromInline attribute.
-  if (source->getAttrs().hasAttribute<UsableFromInlineAttr>()) {
+  if (source->getAttrs().hasAttribute<UsableFromInlineAttr>() &&
+      !getAttrs().hasAttribute<UsableFromInlineAttr>() &&
+      !getAttrs().hasAttribute<InlinableAttr>()) {
     auto &ctx = getASTContext();
     auto *clonedAttr = new (ctx) UsableFromInlineAttr(/*implicit=*/true);
     getAttrs().add(clonedAttr);
@@ -2332,7 +2342,7 @@ bool NominalTypeDecl::isFormallyResilient() const {
   // Private and (unversioned) internal types always have a
   // fixed layout.
   if (!getFormalAccessScope(/*useDC=*/nullptr,
-                            /*respectVersionedAttr=*/true).isPublic())
+                            /*treatUsableFromInlineAsPublic=*/true).isPublic())
     return false;
 
   // Check for an explicit @_fixed_layout or @_frozen attribute.

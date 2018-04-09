@@ -387,6 +387,19 @@ SILFunction *SILDeserializer::readSILFunction(DeclID FID,
                                               StringRef name,
                                               bool declarationOnly,
                                               bool errorIfEmptyBody) {
+  // We can't deserialize function bodies after IRGen lowering passes have
+  // happened since other definitions in the module will no longer be in
+  // canonical SIL form.
+  switch (SILMod.getStage()) {
+  case SILStage::Raw:
+  case SILStage::Canonical:
+    break;
+    
+  case SILStage::Lowered:
+    llvm_unreachable("cannot deserialize into a module that has entered "
+                     "Lowered stage");
+  }
+  
   if (FID == 0)
     return nullptr;
   assert(FID <= Funcs.size() && "invalid SILFunction ID");
@@ -2813,6 +2826,14 @@ SILWitnessTable *SILDeserializer::readWitnessTable(DeclID WId,
     wT = SILWitnessTable::create(SILMod, *Linkage, theConformance);
     if (Callback)
       Callback->didDeserialize(MF->getAssociatedModule(), wT);
+  }
+  
+  // We may see multiple shared-linkage definitions of the same witness table
+  // for the same conformance.
+  if (wT->isDefinition() && hasSharedVisibility(*Linkage)
+      && hasSharedVisibility(wT->getLinkage())) {
+    wTableOrOffset.set(wT, /*fully deserialized*/ true);
+    return wT;
   }
 
   assert(wT->isDeclaration() && "Our witness table at this point must be a "

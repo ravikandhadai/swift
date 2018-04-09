@@ -238,6 +238,7 @@ func closure<FunctionSignature><ParameterClause>() </ParameterClause></FunctionS
     return <IntegerLiteralExpr>2</IntegerLiteralExpr></ReturnStmt>
   }</ClosureExpr></SequenceExpr><SequenceExpr><DiscardAssignmentExpr>
   _ </DiscardAssignmentExpr><AssignmentExpr>= </AssignmentExpr><ClosureExpr>{ <ClosureSignature><ClosureParam>a, </ClosureParam><ClosureParam>b </ClosureParam>in </ClosureSignature>}</ClosureExpr></SequenceExpr><SequenceExpr><DiscardAssignmentExpr>
+  _ </DiscardAssignmentExpr><AssignmentExpr>= </AssignmentExpr><ClosureExpr>{ <ClosureSignature><ParameterClause>(<FunctionParameter>a, </FunctionParameter><FunctionParameter>b</FunctionParameter>) </ParameterClause>in </ClosureSignature>}</ClosureExpr></SequenceExpr><SequenceExpr><DiscardAssignmentExpr>
   _ </DiscardAssignmentExpr><AssignmentExpr>= </AssignmentExpr><ClosureExpr>{}</ClosureExpr></SequenceExpr><SequenceExpr><DiscardAssignmentExpr>
   _ </DiscardAssignmentExpr><AssignmentExpr>= </AssignmentExpr><ClosureExpr>{ <ClosureSignature><ClosureParam>s1, </ClosureParam><ClosureParam>s2 </ClosureParam>in </ClosureSignature><SequenceExpr><IdentifierExpr>s1 </IdentifierExpr><BinaryOperatorExpr>> </BinaryOperatorExpr><IdentifierExpr>s2 </IdentifierExpr></SequenceExpr>}</ClosureExpr></SequenceExpr><SequenceExpr><DiscardAssignmentExpr>
   _ </DiscardAssignmentExpr><AssignmentExpr>= </AssignmentExpr><ClosureExpr>{ <SequenceExpr><IdentifierExpr>$0 </IdentifierExpr><BinaryOperatorExpr>> </BinaryOperatorExpr><IdentifierExpr>$1 </IdentifierExpr></SequenceExpr>}</ClosureExpr></SequenceExpr>
@@ -289,9 +290,9 @@ class C <MemberDeclBlock>{<VariableDecl>
 protocol P <MemberDeclBlock>{<VariableDecl>
   var <PatternBinding><IdentifierPattern>a</IdentifierPattern><TypeAnnotation>: <SimpleTypeIdentifier>Int </SimpleTypeIdentifier></TypeAnnotation><AccessorBlock>{ <AccessorDecl>get </AccessorDecl><AccessorDecl>set </AccessorDecl>}</AccessorBlock></PatternBinding></VariableDecl><VariableDecl>
   var <PatternBinding><IdentifierPattern>a</IdentifierPattern><TypeAnnotation>: <SimpleTypeIdentifier>Int </SimpleTypeIdentifier></TypeAnnotation><AccessorBlock>{}</AccessorBlock></PatternBinding></VariableDecl>
-}</MemberDeclBlock></ProtocolDecl><ClassDecl>
+}</MemberDeclBlock></ProtocolDecl><ClassDecl><DeclModifier>
 
-class C <MemberDeclBlock>{<VariableDecl><Attribute>
+private </DeclModifier><DeclModifier>final </DeclModifier>class D <MemberDeclBlock>{<VariableDecl><Attribute>
   @objc</Attribute><DeclModifier>
   static </DeclModifier><DeclModifier>private </DeclModifier>var <PatternBinding><IdentifierPattern>a</IdentifierPattern><TypeAnnotation>: <SimpleTypeIdentifier>Int </SimpleTypeIdentifier></TypeAnnotation><InitializerClause>= <IntegerLiteralExpr>3 </IntegerLiteralExpr></InitializerClause><AccessorBlock>{ <ReturnStmt>return <IntegerLiteralExpr>3 </IntegerLiteralExpr></ReturnStmt>}</AccessorBlock>, </PatternBinding><PatternBinding><IdentifierPattern>b</IdentifierPattern><TypeAnnotation>: <SimpleTypeIdentifier>Int</SimpleTypeIdentifier></TypeAnnotation>, </PatternBinding><PatternBinding><IdentifierPattern>c </IdentifierPattern><InitializerClause>= <IntegerLiteralExpr>4</IntegerLiteralExpr></InitializerClause>, </PatternBinding><PatternBinding><IdentifierPattern>d </IdentifierPattern><TypeAnnotation>: <SimpleTypeIdentifier>Int </SimpleTypeIdentifier></TypeAnnotation><AccessorBlock>{ <AccessorDecl>get <CodeBlock>{} </CodeBlock></AccessorDecl><AccessorDecl>get <CodeBlock>{}</CodeBlock></AccessorDecl>}</AccessorBlock>, </PatternBinding><PatternBinding><TuplePattern>(<TuplePatternElement><IdentifierPattern>a</IdentifierPattern>, </TuplePatternElement><TuplePatternElement><IdentifierPattern>b</IdentifierPattern></TuplePatternElement>)</TuplePattern><TypeAnnotation>: <TupleType>(<TupleTypeElement><SimpleTypeIdentifier>Int</SimpleTypeIdentifier>, </TupleTypeElement><TupleTypeElement><SimpleTypeIdentifier>Int</SimpleTypeIdentifier></TupleTypeElement>)</TupleType></TypeAnnotation></PatternBinding></VariableDecl><VariableDecl>
   let <PatternBinding><TuplePattern>(<TuplePatternElement><IdentifierPattern>a</IdentifierPattern>, </TuplePatternElement><TuplePatternElement><IdentifierPattern>b</IdentifierPattern></TuplePatternElement>) </TuplePattern><InitializerClause>= <TupleExpr>(<TupleElement><IntegerLiteralExpr>1</IntegerLiteralExpr>,</TupleElement><TupleElement><IntegerLiteralExpr>2</IntegerLiteralExpr></TupleElement>)</TupleExpr></InitializerClause>, </PatternBinding><PatternBinding><WildcardPattern>_ </WildcardPattern><InitializerClause>= <IntegerLiteralExpr>4 </IntegerLiteralExpr></InitializerClause><AccessorBlock>{}</AccessorBlock></PatternBinding></VariableDecl><FunctionDecl>
@@ -425,4 +426,14 @@ func objectLiterals<FunctionSignature><ParameterClause>() </ParameterClause></Fu
   #file</PoundFileExpr><PoundFunctionExpr>
   #function</PoundFunctionExpr><PoundDsohandleExpr>
   #dsohandle</PoundDsohandleExpr>
-}</CodeBlock></FunctionDecl>
+}</CodeBlock></FunctionDecl><EnumDecl>
+
+enum E1 <TypeInheritanceClause>: <InheritedType><SimpleTypeIdentifier>String </SimpleTypeIdentifier></InheritedType></TypeInheritanceClause><MemberDeclBlock>{<EnumCaseDecl>
+  case <EnumCaseElement>foo <InitializerClause>= <IntegerLiteralExpr>1</IntegerLiteralExpr></InitializerClause></EnumCaseElement></EnumCaseDecl><EnumCaseDecl>
+  case <EnumCaseElement>bar <InitializerClause>= <StringLiteralExpr>"test"</StringLiteralExpr></InitializerClause>, </EnumCaseElement><EnumCaseElement>baz<ParameterClause>(<FunctionParameter>x: <SimpleTypeIdentifier>Int</SimpleTypeIdentifier>, </FunctionParameter><FunctionParameter><SimpleTypeIdentifier>String</SimpleTypeIdentifier></FunctionParameter>) </ParameterClause><InitializerClause>= <IntegerLiteralExpr>12</IntegerLiteralExpr></InitializerClause></EnumCaseElement></EnumCaseDecl><EnumCaseDecl><DeclModifier>
+  indirect </DeclModifier>case <EnumCaseElement>qux<ParameterClause>(<FunctionParameter><SimpleTypeIdentifier>E1</SimpleTypeIdentifier></FunctionParameter>)</ParameterClause></EnumCaseElement></EnumCaseDecl><EnumDecl><DeclModifier>
+
+  indirect </DeclModifier><DeclModifier>private </DeclModifier>enum E2<GenericParameterClause><<GenericParameter>T</GenericParameter>></GenericParameterClause><TypeInheritanceClause>: <InheritedType><SimpleTypeIdentifier>String </SimpleTypeIdentifier></InheritedType></TypeInheritanceClause><GenericWhereClause>where <ConformanceRequirement><SimpleTypeIdentifier>T</SimpleTypeIdentifier>: <SimpleTypeIdentifier>SomeProtocol </SimpleTypeIdentifier></ConformanceRequirement></GenericWhereClause><MemberDeclBlock>{<EnumCaseDecl>
+    case <EnumCaseElement>foo, </EnumCaseElement><EnumCaseElement>bar, </EnumCaseElement><EnumCaseElement>baz</EnumCaseElement></EnumCaseDecl>
+  }</MemberDeclBlock></EnumDecl>
+}</MemberDeclBlock></EnumDecl>

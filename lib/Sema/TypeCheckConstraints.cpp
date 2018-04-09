@@ -819,10 +819,8 @@ namespace {
       if (auto captureList = dyn_cast<CaptureListExpr>(expr)) {
         // Validate the capture list.
         for (auto capture : captureList->getCaptureList()) {
-          TC.typeCheckDecl(capture.Init, true);
-          TC.typeCheckDecl(capture.Init, false);
-          TC.typeCheckDecl(capture.Var, true);
-          TC.typeCheckDecl(capture.Var, false);
+          TC.typeCheckDecl(capture.Init);
+          TC.typeCheckDecl(capture.Var);
         }
 
         // Since closure expression is contained by capture list
@@ -2228,6 +2226,11 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
                             nullptr, TypeLoc())) {
       return true;
     }
+
+    // If we're performing an binding to a weak or unowned variable from a
+    // constructor call, emit a warning that the instance will be immediately
+    // deallocated.
+    diagnoseUnownedImmediateDeallocation(*this, pattern, initializer);
   }
 
   if (!resultTy && !initializer->getType())
@@ -2326,8 +2329,7 @@ bool TypeChecker::typeCheckForEachBinding(DeclContext *dc, ForEachStmt *stmt) {
         return true;
       }
 
-      SequenceType =
-        cs.createTypeVariable(Locator, /*options=*/0);
+      SequenceType = cs.createTypeVariable(Locator);
       cs.addConstraint(ConstraintKind::Conversion, cs.getType(expr),
                        SequenceType, Locator);
       cs.addConstraint(ConstraintKind::ConformsTo, SequenceType,
@@ -2400,7 +2402,7 @@ bool TypeChecker::typeCheckForEachBinding(DeclContext *dc, ForEachStmt *stmt) {
       }
 
       if (elementType.isNull()) {
-        elementType = cs.createTypeVariable(elementLocator, /*options=*/0);
+        elementType = cs.createTypeVariable(elementLocator);
       }
 
       // Add a conversion constraint between the element type of the sequence
@@ -2484,8 +2486,7 @@ Type ConstraintSystem::computeAssignDestType(Expr *dest, SourceLoc equalLoc) {
   if (auto typeVar = dyn_cast<TypeVariableType>(destTy.getPointer())) {
     // Newly allocated type should be explicitly materializable,
     // it's invalid to use non-materializable types as assignment destination.
-    auto objectTv = createTypeVariable(getConstraintLocator(dest),
-                                       /*options=*/0);
+    auto objectTv = createTypeVariable(getConstraintLocator(dest));
     auto refTv = LValueType::get(objectTv);
     addConstraint(ConstraintKind::Bind, typeVar, refTv,
                   getConstraintLocator(dest));
@@ -2709,7 +2710,7 @@ static Type replaceArchetypesWithTypeVariables(ConstraintSystem &cs,
           return Type();
 
         auto locator = cs.getConstraintLocator(nullptr);
-        auto replacement = cs.createTypeVariable(locator, /*options*/0);
+        auto replacement = cs.createTypeVariable(locator);
 
         if (auto superclass = archetypeType->getSuperclass()) {
           cs.addConstraint(ConstraintKind::Subtype, replacement,
@@ -2726,7 +2727,7 @@ static Type replaceArchetypesWithTypeVariables(ConstraintSystem &cs,
       // FIXME: Remove this case
       assert(cast<GenericTypeParamType>(origType));
       auto locator = cs.getConstraintLocator(nullptr);
-      auto replacement = cs.createTypeVariable(locator, /*options*/0);
+      auto replacement = cs.createTypeVariable(locator);
       types[origType] = replacement;
       return replacement;
     },

@@ -263,15 +263,48 @@ LookupResult &ConstraintSystem::lookupMember(Type base, DeclName name) {
     return *result;
 
   // We are performing dynamic lookup. Filter out redundant results early.
-  llvm::DenseSet<std::tuple<char, ObjCSelector, CanType>> known;
-  result->filter([&](LookupResultEntry entry) -> bool {
+  llvm::DenseMap<std::tuple<char, ObjCSelector, CanType>, ValueDecl *> known;
+  bool anyRemovals = false;
+  for (const auto &entry : *result) {
     auto *decl = entry.getValueDecl();
 
-    if (decl->isInvalid())
-      return false;
+    // Remove invalid declarations so the constraint solver doesn't need to
+    // cope with them.
+    if (decl->isInvalid()) {
+      anyRemovals = true;
+      continue;
+    }
 
-    return known.insert(getDynamicResultSignature(decl)).second;
-  });
+    // If this is the first entry with the signature, record it.
+    auto &uniqueEntry = known[getDynamicResultSignature(decl)];
+    if (!uniqueEntry) {
+      uniqueEntry = decl;
+      continue;
+    }
+
+    // We have duplication; note that we'll need to remove something,
+    anyRemovals = true;
+
+    // If the entry we recorded was unavailable but this new entry is not,
+    // replace the recorded entry with this one.
+    if (uniqueEntry->getAttrs().isUnavailable(TC.Context) &&
+        !decl->getAttrs().isUnavailable(TC.Context)) {
+      uniqueEntry = decl;
+    }
+  }
+
+  // If there's anything to remove, filter it out now.
+  if (anyRemovals) {
+    result->filter([&](LookupResultEntry entry) -> bool {
+      auto *decl = entry.getValueDecl();
+
+      // Remove invalid declarations so the constraint solver doesn't need to
+      // cope with them.
+      if (decl->isInvalid()) return false;
+
+      return known[getDynamicResultSignature(decl)] == decl;
+    });
+  }
 
   return *result;
 }
@@ -1376,6 +1409,64 @@ ConstraintSystem::getTypeOfMemberReference(
   return { openedType, type };
 }
 
+// Performance hack: if there are two generic overloads, and one is
+// more specialized than the other, prefer the more-specialized one.
+static void tryOptimizeGenericDisjunction(ConstraintSystem &cs,
+                                          ArrayRef<OverloadChoice> choices,
+                                          OverloadChoice *&favoredChoice) {
+  if (favoredChoice || choices.size() != 2)
+    return;
+
+  const auto &choiceA = choices[0];
+  const auto &choiceB = choices[1];
+
+  if (!choiceA.isDecl() || !choiceB.isDecl())
+    return;
+
+  auto isViable = [](ValueDecl *decl) -> bool {
+    assert(decl);
+
+    auto *AFD = dyn_cast<AbstractFunctionDecl>(decl);
+    if (!AFD || !AFD->isGeneric())
+      return false;
+
+    auto funcType = AFD->getInterfaceType();
+    auto hasAny = funcType.findIf([](Type type) -> bool {
+      if (auto objType = type->getOptionalObjectType())
+        return objType->isAny();
+
+      return type->isAny();
+    });
+
+    // If function declaration references `Any` or `Any?` type
+    // let's not attempt it, because it's unclear
+    // without solving which overload is going to be better.
+    return !hasAny;
+  };
+
+  auto *declA = choiceA.getDecl();
+  auto *declB = choiceB.getDecl();
+
+  if (!isViable(declA) || !isViable(declB))
+    return;
+
+  auto &TC = cs.TC;
+  auto *DC = cs.DC;
+
+  switch (TC.compareDeclarations(DC, declA, declB)) {
+  case Comparison::Better:
+    favoredChoice = const_cast<OverloadChoice *>(&choiceA);
+    break;
+
+  case Comparison::Worse:
+    favoredChoice = const_cast<OverloadChoice *>(&choiceB);
+    break;
+
+  case Comparison::Unordered:
+    break;
+  }
+}
+
 void ConstraintSystem::addOverloadSet(Type boundType,
                                       ArrayRef<OverloadChoice> choices,
                                       DeclContext *useDC,
@@ -1389,28 +1480,7 @@ void ConstraintSystem::addOverloadSet(Type boundType,
     return;
   }
 
-  // Performance hack: if there are two generic overloads, and one is
-  // more specialized than the other, prefer the more-specialized one.
-  if (!favoredChoice && choices.size() == 2 &&
-      choices[0].isDecl() && choices[1].isDecl() &&
-      isa<AbstractFunctionDecl>(choices[0].getDecl()) &&
-      cast<AbstractFunctionDecl>(choices[0].getDecl())->isGeneric() &&
-      isa<AbstractFunctionDecl>(choices[1].getDecl()) &&
-      cast<AbstractFunctionDecl>(choices[1].getDecl())->isGeneric()) {
-    switch (TC.compareDeclarations(DC, choices[0].getDecl(),
-                                   choices[1].getDecl())) {
-    case Comparison::Better:
-      favoredChoice = const_cast<OverloadChoice *>(&choices[0]);
-      break;
-
-    case Comparison::Worse:
-      favoredChoice = const_cast<OverloadChoice *>(&choices[1]);
-      break;
-
-    case Comparison::Unordered:
-      break;
-    }
-  }
+  tryOptimizeGenericDisjunction(*this, choices, favoredChoice);
 
   SmallVector<Constraint *, 4> overloads;
   
@@ -1466,12 +1536,10 @@ resolveOverloadForDeclWithSpecialTypeCheckingSemantics(ConstraintSystem &CS,
     // existentials (as seen from the current abstraction level), which can't
     // be expressed in the type system currently.
     auto input = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
-      /*options*/0);
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     auto output = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionResult),
-      /*options*/0);
-    
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionResult));
+
     auto inputArg = TupleTypeElt(input, CS.getASTContext().getIdentifier("of"));
     auto inputTuple = TupleType::get(inputArg, CS.getASTContext());
     
@@ -1486,17 +1554,14 @@ resolveOverloadForDeclWithSpecialTypeCheckingSemantics(ConstraintSystem &CS,
     // receives a copy of the argument closure that is temporarily made
     // @escaping.
     auto noescapeClosure = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
-      /*options*/0);
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     auto escapeClosure = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
-      /*options*/0);
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     CS.addConstraint(ConstraintKind::EscapableFunctionOf,
          escapeClosure, noescapeClosure,
          CS.getConstraintLocator(locator, ConstraintLocator::RvalueAdjustment));
     auto result = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionResult),
-      /*options*/0);
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionResult));
     auto bodyClosure = FunctionType::get(
       ParenType::get(CS.getASTContext(), escapeClosure), result,
         FunctionType::ExtInfo(FunctionType::Representation::Swift,
@@ -1521,17 +1586,14 @@ resolveOverloadForDeclWithSpecialTypeCheckingSemantics(ConstraintSystem &CS,
     // The body closure receives a freshly-opened archetype constrained by the
     // existential type as its input.
     auto openedTy = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
-      /*options*/0);
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     auto existentialTy = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
-      /*options*/0);
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     CS.addConstraint(ConstraintKind::OpenedExistentialOf,
          openedTy, existentialTy,
          CS.getConstraintLocator(locator, ConstraintLocator::RvalueAdjustment));
     auto result = CS.createTypeVariable(
-      CS.getConstraintLocator(locator, ConstraintLocator::FunctionResult),
-      /*options*/0);
+        CS.getConstraintLocator(locator, ConstraintLocator::FunctionResult));
     auto bodyClosure = FunctionType::get(
       ParenType::get(CS.getASTContext(), openedTy), result,
         FunctionType::ExtInfo(FunctionType::Representation::Swift,
@@ -1629,7 +1691,7 @@ void ConstraintSystem::resolveOverload(ConstraintLocator *locator,
       if (choice.isImplicitlyUnwrappedValueOrReturnValue()) {
         // Build the disjunction to attempt binding both T? and T (or
         // function returning T? and function returning T).
-        Type ty = createTypeVariable(locator, /*options*/0);
+        Type ty = createTypeVariable(locator);
         buildDisjunctionForImplicitlyUnwrappedOptional(ty, refType,
                                                        locator);
         addConstraint(ConstraintKind::Bind, boundType,
@@ -1659,7 +1721,7 @@ void ConstraintSystem::resolveOverload(ConstraintLocator *locator,
           // For our original type T -> U?? we will generate:
           // A disjunction V = { U?, U }
           // and a disjunction boundType = { T -> V?, T -> V }
-          Type ty = createTypeVariable(locator, /*options*/0);
+          Type ty = createTypeVariable(locator);
 
           buildDisjunctionForImplicitlyUnwrappedOptional(ty, optTy, locator);
 
@@ -1769,14 +1831,12 @@ void ConstraintSystem::resolveOverload(ConstraintLocator *locator,
     // The element type is T or @lvalue T based on the key path subtype and
     // the mutability of the base.
     auto keyPathIndexTy = createTypeVariable(
-      getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
-      /*options*/0);
+        getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     auto elementTy = createTypeVariable(
             getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
             TVO_CanBindToLValue);
     auto elementObjTy = createTypeVariable(
-        getConstraintLocator(locator, ConstraintLocator::FunctionArgument),
-        /*options*/0);
+        getConstraintLocator(locator, ConstraintLocator::FunctionArgument));
     addConstraint(ConstraintKind::Equal, elementTy, elementObjTy, locator);
     
     // The element result is an lvalue or rvalue based on the key path class.

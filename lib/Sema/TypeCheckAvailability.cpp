@@ -736,7 +736,7 @@ public:
 
   /// The type of a match predicate, which takes as input a node and its
   /// parent and returns a bool indicating whether the node matches.
-  typedef std::function<bool(ASTNode, ASTWalker::ParentTy)> MatchPredicate;
+  using MatchPredicate = std::function<bool(ASTNode, ASTWalker::ParentTy)>;
 
 private:
   const SourceRange TargetRange;
@@ -1245,8 +1245,9 @@ static void fixAvailabilityByAddingVersionCheck(
     return;
 
   SourceLoc ReplaceLocStart = RangeToWrap.Start;
-  StringRef OriginalIndent =
-      Lexer::getIndentationForLine(TC.Context.SourceMgr, ReplaceLocStart);
+  StringRef ExtraIndent;
+  StringRef OriginalIndent = Lexer::getIndentationForLine(
+      TC.Context.SourceMgr, ReplaceLocStart, &ExtraIndent);
 
   std::string IfText;
   {
@@ -1260,16 +1261,15 @@ static void fixAvailabilityByAddingVersionCheck(
                                                          ReplaceLocStart,
                                                          ReplaceLocEnd)).str();
 
-    // We'll indent with 4 spaces
-    std::string ExtraIndent = "    ";
     std::string NewLine = "\n";
+    std::string NewLineReplacement = (NewLine + ExtraIndent).str();
 
     // Indent the body of the Fix-It if. Because the body may be a compound
     // statement, we may have to indent multiple lines.
     size_t StartAt = 0;
     while ((StartAt = GuardedText.find(NewLine, StartAt)) !=
            std::string::npos) {
-      GuardedText.replace(StartAt, NewLine.length(), NewLine + ExtraIndent);
+      GuardedText.replace(StartAt, NewLine.length(), NewLineReplacement);
       StartAt += NewLine.length();
     }
 
@@ -2233,10 +2233,18 @@ class AvailabilityWalker : public ASTWalker {
   DeclContext *DC;
   MemberAccessContext AccessContext = MemberAccessContext::Getter;
   SmallVector<const Expr *, 16> ExprStack;
+  ResilienceExpansion Expansion;
+  Optional<TypeChecker::FragileFunctionKind> FragileKind;
+  bool TreatUsableFromInlineAsPublic = false;
 
 public:
   AvailabilityWalker(
-      TypeChecker &TC, DeclContext *DC) : TC(TC), DC(DC) {}
+      TypeChecker &TC, DeclContext *DC) : TC(TC), DC(DC) {
+    Expansion = DC->getResilienceExpansion();
+    if (Expansion == ResilienceExpansion::Minimal)
+      std::tie(FragileKind, TreatUsableFromInlineAsPublic)
+        = TC.getFragileFunctionKind(DC);
+  }
 
   std::pair<bool, Expr *> walkToExprPre(Expr *E) override {
     ExprStack.push_back(E);
@@ -2457,9 +2465,11 @@ bool AvailabilityWalker::diagAvailability(const ValueDecl *D, SourceRange R,
       return true;
   }
 
-  if (R.isValid())
-    if (TC.diagnoseInlinableDeclRef(R.Start, D, DC))
-      return true;
+  if (FragileKind)
+    if (R.isValid())
+      if (TC.diagnoseInlinableDeclRef(R.Start, D, DC, *FragileKind,
+                                      TreatUsableFromInlineAsPublic))
+        return true;
 
   if (TC.diagnoseExplicitUnavailability(D, R, DC, call))
     return true;

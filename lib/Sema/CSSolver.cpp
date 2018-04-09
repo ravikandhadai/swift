@@ -984,7 +984,7 @@ void ConstraintSystem::Candidate::applySolutions(
 }
 
 void ConstraintSystem::shrink(Expr *expr) {
-  typedef llvm::SmallDenseMap<Expr *, ArrayRef<ValueDecl *>> DomainMap;
+  using DomainMap = llvm::SmallDenseMap<Expr *, ArrayRef<ValueDecl *>>;
 
   // A collection of original domains of all of the expressions,
   // so they can be restored in case of failure.
@@ -1364,7 +1364,7 @@ ConstraintSystem::solve(Expr *&expr,
     if (allowFreeTypeVariables == FreeTypeVariableBinding::UnresolvedType) {
       convertType = convertType.transform([&](Type type) -> Type {
         if (type->is<UnresolvedType>())
-          return createTypeVariable(getConstraintLocator(expr), /*options*/0);
+          return createTypeVariable(getConstraintLocator(expr));
         return type;
       });
     }

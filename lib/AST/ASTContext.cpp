@@ -67,7 +67,6 @@ STATISTIC(NumCollapsedSpecializedProtocolConformances,
 #define SWIFT_GSB_EXPENSIVE_ASSERTIONS 0
 
 LazyResolver::~LazyResolver() = default;
-DelegatingLazyResolver::~DelegatingLazyResolver() = default;
 void ModuleLoader::anchor() {}
 void ClangModuleLoader::anchor() {}
 
@@ -1340,6 +1339,16 @@ void ASTContext::addExternalDecl(Decl *decl) {
   ExternalDefinitions.insert(decl);
 }
 
+void ASTContext::addSynthesizedDecl(Decl *decl) {
+  auto *mod = cast<FileUnit>(decl->getDeclContext()->getModuleScopeContext());
+  if (mod->getKind() == FileUnitKind::ClangModule) {
+    ExternalDefinitions.insert(decl);
+    return;
+  }
+
+  cast<SourceFile>(mod)->SynthesizedDecls.push_back(decl);
+}
+
 void ASTContext::addCleanup(std::function<void(void)> cleanup) {
   Impl.Cleanups.push_back(std::move(cleanup));
 }
@@ -1604,7 +1613,7 @@ static int compareSimilarAssociatedTypes(AssociatedTypeDecl *const *lhs,
                                          AssociatedTypeDecl *const *rhs) {
   auto lhsProto = (*lhs)->getProtocol();
   auto rhsProto = (*rhs)->getProtocol();
-  return ProtocolType::compareProtocols(&lhsProto, &rhsProto);
+  return TypeDecl::compare(lhsProto, rhsProto);
 }
 
 ArrayRef<AssociatedTypeDecl *> AssociatedTypeDecl::getOverriddenDecls() const {

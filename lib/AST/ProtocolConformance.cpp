@@ -199,6 +199,13 @@ ProtocolConformanceState ProtocolConformance::getState() const {
   CONFORMANCE_SUBCLASS_DISPATCH(getState, ())
 }
 
+ConformanceEntryKind ProtocolConformance::getSourceKind() const {
+  CONFORMANCE_SUBCLASS_DISPATCH(getSourceKind, ())
+}
+NormalProtocolConformance *ProtocolConformance::getImplyingConformance() const {
+  CONFORMANCE_SUBCLASS_DISPATCH(getImplyingConformance, ())
+}
+
 bool
 ProtocolConformance::hasTypeWitness(AssociatedTypeDecl *assocType,
                                     LazyResolver *resolver) const {
@@ -1181,8 +1188,7 @@ DeclContext::getLocalProtocols(
 
   // Sort if required.
   if (sorted) {
-    llvm::array_pod_sort(result.begin(), result.end(),
-                         &ProtocolType::compareProtocols);
+    llvm::array_pod_sort(result.begin(), result.end(), TypeDecl::compare);
   }
 
   return result;

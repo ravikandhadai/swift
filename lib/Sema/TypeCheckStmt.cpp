@@ -480,8 +480,7 @@ public:
   }
     
   Stmt *visitDeferStmt(DeferStmt *DS) {
-    TC.typeCheckDecl(DS->getTempDecl(), /*isFirstPass*/true);
-    TC.typeCheckDecl(DS->getTempDecl(), /*isFirstPass*/false);
+    TC.typeCheckDecl(DS->getTempDecl());
 
     Expr *theCall = DS->getCallExpr();
     TC.typeCheckExpression(theCall, DC);
@@ -836,8 +835,7 @@ public:
     // the list of raw cases.
     for (auto node : S->getRawCases()) {
       if (!node.is<Decl*>()) continue;
-      TC.typeCheckDecl(node.get<Decl*>(), /*isFirstPass*/true);
-      TC.typeCheckDecl(node.get<Decl*>(), /*isFirstPass*/false);
+      TC.typeCheckDecl(node.get<Decl*>());
     }
 
     auto cases = S->getCases();
@@ -1356,8 +1354,7 @@ Stmt *StmtChecker::visitBraceStmt(BraceStmt *BS) {
         (Loc == EndTypeCheckLoc || SM.isBeforeInBuffer(EndTypeCheckLoc, Loc)))
       break;
 
-    TC.typeCheckDecl(SubDecl, /*isFirstPass*/true);
-    TC.typeCheckDecl(SubDecl, /*isFirstPass*/false);
+    TC.typeCheckDecl(SubDecl);
   }
   
   return BS;
@@ -1397,28 +1394,26 @@ static void checkDefaultArguments(TypeChecker &tc,
 /// Check the default arguments that occur within this pattern.
 void TypeChecker::checkDefaultArguments(ArrayRef<ParameterList *> paramLists,
                                         ValueDecl *VD) {
+  auto access =
+    VD->getFormalAccessScope(/*useDC=*/nullptr,
+                             /*treatUsableFromInlineAsPublic=*/true);
+
   // In Swift 4 mode, default argument bodies are inlined into the
   // caller.
   if (auto *func = dyn_cast<AbstractFunctionDecl>(VD)) {
     auto expansion = func->getResilienceExpansion();
-    if (!Context.isSwiftVersion3() &&
-        func->getFormalAccessScope(/*useDC=*/nullptr,
-                                   /*respectVersionedAttr=*/true).isPublic())
+    if (!Context.isSwiftVersion3() && access.isPublic())
       expansion = ResilienceExpansion::Minimal;
 
     func->setDefaultArgumentResilienceExpansion(expansion);
   } else {
     auto *EED = cast<EnumElementDecl>(VD);
-    auto expansion = EED->getParentEnum()->getResilienceExpansion();
-    // Enum payloads parameter lists may have default arguments as of Swift 5.
-    if (Context.isSwiftVersionAtLeast(5) &&
-        EED->getFormalAccessScope(/*useDC=*/nullptr,
-                                  /*respectVersionedAttr=*/true).isPublic())
+    auto expansion = ResilienceExpansion::Maximal;
+    if (access.isPublic())
       expansion = ResilienceExpansion::Minimal;
 
     EED->setDefaultArgumentResilienceExpansion(expansion);
   }
-
 
   unsigned nextArgIndex = 0;
   for (auto *paramList : paramLists)
@@ -1443,8 +1438,17 @@ bool TypeChecker::typeCheckAbstractFunctionBodyUntil(AbstractFunctionDecl *AFD,
 }
 
 bool TypeChecker::typeCheckAbstractFunctionBody(AbstractFunctionDecl *AFD) {
+  // HACK: don't type-check the same function body twice.  This is
+  // supposed to be handled by just not enqueuing things twice,
+  // but that gets tricky with synthesized function bodies.
+  if (AFD->isBodyTypeChecked())
+    return false;
+
   if (!AFD->getBody())
     return false;
+
+  FrontendStatsTracer StatsTracer(Context.Stats, "typecheck-fn", AFD);
+  PrettyStackTraceDecl StackEntry("type-checking", AFD);
 
   if (Context.Stats)
     Context.Stats->getFrontendCounters().NumFunctionsTypechecked++;
@@ -1456,9 +1460,12 @@ bool TypeChecker::typeCheckAbstractFunctionBody(AbstractFunctionDecl *AFD) {
   for (auto paramList : AFD->getParameterLists())
     requestRequiredNominalTypeLayoutForParameters(paramList);
 
-  if (typeCheckAbstractFunctionBodyUntil(AFD, SourceLoc()))
+  bool error = typeCheckAbstractFunctionBodyUntil(AFD, SourceLoc());
+  AFD->setBodyTypeCheckedIfPresent();
+
+  if (error)
     return true;
-  
+
   performAbstractFuncDeclDiagnostics(*this, AFD);
   return false;
 }
@@ -1659,9 +1666,10 @@ bool TypeChecker::typeCheckConstructorBodyUntil(ConstructorDecl *ctor,
     // declarations.
     if (!isDelegating && ClassD->isResilient() &&
         ctor->getResilienceExpansion() == ResilienceExpansion::Minimal) {
+      auto kind = getFragileFunctionKind(ctor);
       diagnose(ctor, diag::class_designated_init_inlinable_resilient,
                ClassD->getDeclaredInterfaceType(),
-               static_cast<unsigned>(getFragileFunctionKind(ctor)));
+               static_cast<unsigned>(kind.first));
     }
   }
 

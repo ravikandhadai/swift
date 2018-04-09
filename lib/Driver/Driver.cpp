@@ -268,6 +268,47 @@ class Driver::InputInfoMap
 };
 using InputInfoMap = Driver::InputInfoMap;
 
+/// Get the filename for build record. Returns true if failed.
+/// Additionally, set 'outputBuildRecordForModuleOnlyBuild' to true if this is
+/// full compilation with swiftmodule.
+static bool getCompilationRecordPath(std::string &buildRecordPath,
+                                     bool &outputBuildRecordForModuleOnlyBuild,
+                                     const OutputInfo &OI,
+                                     const Optional<OutputFileMap> &OFM,
+                                     DiagnosticEngine *Diags) {
+  if (!OFM) {
+    // FIXME: This should work without an output file map. We should have
+    // another way to specify a build record and where to put intermediates.
+    if (Diags)
+      Diags->diagnose(SourceLoc(), diag::incremental_requires_output_file_map);
+    return true;
+  }
+
+  if (auto *masterOutputMap = OFM->getOutputMapForSingleOutput())
+    buildRecordPath = masterOutputMap->lookup(file_types::TY_SwiftDeps);
+
+  if (buildRecordPath.empty()) {
+    if (Diags)
+      Diags->diagnose(SourceLoc(),
+                      diag::incremental_requires_build_record_entry,
+                      file_types::getTypeName(file_types::TY_SwiftDeps));
+    return true;
+  }
+
+  // In 'emit-module' only mode, use build-record filename suffixed with
+  // '~moduleonly'. So that module-only mode doesn't mess up build-record
+  // file for full compilation.
+  if (OI.CompilerOutputType == file_types::TY_SwiftModuleFile) {
+    buildRecordPath = buildRecordPath.append("~moduleonly");
+  } else if (OI.ShouldTreatModuleAsTopLevelOutput) {
+    // If we emit module along with full compilation, emit build record
+    // file for '-emit-module' only mode as well.
+    outputBuildRecordForModuleOnlyBuild = true;
+  }
+
+  return false;
+}
+
 static bool failedToReadOutOfDateMap(bool ShowIncrementalBuildDecisions,
                                      StringRef buildRecordPath,
                                      StringRef reason = "") {
@@ -282,7 +323,9 @@ static bool failedToReadOutOfDateMap(bool ShowIncrementalBuildDecisions,
   return true;
 }
 
-static bool populateOutOfDateMap(InputInfoMap &map, StringRef argsHashStr,
+static bool populateOutOfDateMap(InputInfoMap &map,
+                                 llvm::sys::TimePoint<> &LastBuildTime,
+                                 StringRef argsHashStr,
                                  const InputFileList &inputs,
                                  StringRef buildRecordPath,
                                  bool ShowIncrementalBuildDecisions) {
@@ -392,7 +435,7 @@ static bool populateOutOfDateMap(InputInfoMap &map, StringRef argsHashStr,
       llvm::sys::TimePoint<> timeVal;
       if (readTimeValue(i->getValue(), timeVal))
         return true;
-      map[nullptr] = { InputInfo::NeedsCascadingBuild, timeVal };
+      LastBuildTime = timeVal;
 
     } else if (keyStr == compilation_record::getName(TopLevelKey::Inputs)) {
       auto *inputMap = dyn_cast<yaml::MappingNode>(i->getValue());
@@ -551,10 +594,6 @@ Driver::buildCompilation(const ToolChain &TC,
     Incremental = false;
   }
 
-  bool BatchMode = ArgList->hasFlag(options::OPT_enable_batch_mode,
-                                    options::OPT_disable_batch_mode,
-                                    false);
-
   bool SaveTemps = ArgList->hasArg(options::OPT_save_temps);
   bool ContinueBuildingAfterErrors =
     ArgList->hasArg(options::OPT_continue_building_after_errors);
@@ -588,6 +627,8 @@ Driver::buildCompilation(const ToolChain &TC,
 
   // Determine the OutputInfo for the driver.
   OutputInfo OI;
+  bool BatchMode = false;
+  OI.CompilerMode = computeCompilerMode(*TranslatedArgList, Inputs, BatchMode);
   buildOutputInfo(TC, *TranslatedArgList, BatchMode, Inputs, OI);
 
   if (Diags.hadAnyError())
@@ -637,40 +678,22 @@ Driver::buildCompilation(const ToolChain &TC,
     return nullptr;
   }
 
+  std::string buildRecordPath;
+  bool outputBuildRecordForModuleOnlyBuild = false;
+  getCompilationRecordPath(buildRecordPath, outputBuildRecordForModuleOnlyBuild,
+                           OI, OFM, Incremental ? &Diags : nullptr);
+
   SmallString<32> ArgsHash;
   computeArgsHash(ArgsHash, *TranslatedArgList);
-
+  llvm::sys::TimePoint<> LastBuildTime = llvm::sys::TimePoint<>::min();
   InputInfoMap outOfDateMap;
   bool rebuildEverything = true;
-  if (Incremental) {
-    if (!OFM) {
-      // FIXME: This should work without an output file map. We should have
-      // another way to specify a build record and where to put intermediates.
-      Diags.diagnose(SourceLoc(), diag::incremental_requires_output_file_map);
-
+  if (Incremental && !buildRecordPath.empty()) {
+    if (populateOutOfDateMap(outOfDateMap, LastBuildTime, ArgsHash, Inputs,
+                             buildRecordPath, ShowIncrementalBuildDecisions)) {
+      // FIXME: Distinguish errors from "file removed", which is benign.
     } else {
-      StringRef buildRecordPath;
-      if (auto *masterOutputMap = OFM->getOutputMapForSingleOutput()) {
-        auto iter = masterOutputMap->find(file_types::TY_SwiftDeps);
-        if (iter != masterOutputMap->end())
-          buildRecordPath = iter->second;
-      }
-
-      if (buildRecordPath.empty()) {
-        Diags.diagnose(SourceLoc(),
-                       diag::incremental_requires_build_record_entry,
-                       file_types::getTypeName(file_types::TY_SwiftDeps));
-        rebuildEverything = true;
-
-      } else {
-        if (populateOutOfDateMap(outOfDateMap, ArgsHash, Inputs,
-                                 buildRecordPath,
-                                 ShowIncrementalBuildDecisions)) {
-          // FIXME: Distinguish errors from "file removed", which is benign.
-        } else {
-          rebuildEverything = false;
-        }
-      }
+      rebuildEverything = false;
     }
   }
 
@@ -697,20 +720,26 @@ Driver::buildCompilation(const ToolChain &TC,
       llvm_unreachable("Unknown OutputLevel argument!");
   }
 
-  std::unique_ptr<Compilation> C(new Compilation(Diags, TC, OI, Level,
-                                                 std::move(ArgList),
-                                                 std::move(TranslatedArgList),
-                                                 std::move(Inputs),
-                                                 ArgsHash, StartTime,
-                                                 NumberOfParallelCommands,
-                                                 Incremental,
-                                                 BatchMode,
-                                                 DriverBatchSeed,
-                                                 DriverForceOneBatchRepartition,
-                                                 DriverSkipExecution,
-                                                 SaveTemps,
-                                                 ShowDriverTimeCompilation,
-                                                 std::move(StatsReporter)));
+  std::unique_ptr<Compilation> C(
+      new Compilation(Diags, TC, OI, Level,
+                      std::move(ArgList),
+                      std::move(TranslatedArgList),
+                      std::move(Inputs),
+                      buildRecordPath,
+                      outputBuildRecordForModuleOnlyBuild,
+                      ArgsHash,
+                      StartTime,
+                      LastBuildTime,
+                      NumberOfParallelCommands,
+                      Incremental,
+                      BatchMode,
+                      DriverBatchSeed,
+                      DriverForceOneBatchRepartition,
+                      DriverSkipExecution,
+                      SaveTemps,
+                      ShowDriverTimeCompilation,
+                      std::move(StatsReporter)));
+
   // Construct the graph of Actions.
   SmallVector<const Action *, 8> TopLevelActions;
   buildActions(TopLevelActions, TC, OI, OFM ? OFM.getPointer() : nullptr,
@@ -747,17 +776,6 @@ Driver::buildCompilation(const ToolChain &TC,
   // emit .swiftdeps files for the next build.
   if (rebuildEverything)
     C->disableIncrementalBuild();
-
-  if (OFM) {
-    if (auto *masterOutputMap = OFM->getOutputMapForSingleOutput()) {
-      C->setCompilationRecordPath(
-          masterOutputMap->lookup(file_types::TY_SwiftDeps));
-
-      auto buildEntry = outOfDateMap.find(nullptr);
-      if (buildEntry != outOfDateMap.end())
-        C->setLastBuildTime(buildEntry->second.previousModTime);
-    }
-  }
 
   if (Diags.hadAnyError())
     return nullptr;
@@ -1102,8 +1120,6 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
                               ? file_types::TY_Nothing
                               : file_types::TY_Object;
 
-  OI.CompilerMode = computeCompilerMode(Args, Inputs);
-
   if (const Arg *A = Args.getLastArg(options::OPT_num_threads)) {
     if (BatchMode) {
       Diags.diagnose(SourceLoc(), diag::warning_cannot_multithread_batch_mode);
@@ -1373,26 +1389,31 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
 
 OutputInfo::Mode
 Driver::computeCompilerMode(const DerivedArgList &Args,
-                            const InputFileList &Inputs) const {
+                            const InputFileList &Inputs,
+                            bool &BatchModeOut) const {
 
   if (driverKind == Driver::DriverKind::Interactive)
     return Inputs.empty() ? OutputInfo::Mode::REPL
                           : OutputInfo::Mode::Immediate;
 
-  const Arg *ArgRequiringWMO = Args.getLastArg(
+  const Arg *ArgRequiringSingleCompile = Args.getLastArg(
       options::OPT_whole_module_optimization, options::OPT_index_file);
 
-  if (!ArgRequiringWMO)
+  BatchModeOut = Args.hasFlag(options::OPT_enable_batch_mode,
+                              options::OPT_disable_batch_mode,
+                              false);
+
+  if (!ArgRequiringSingleCompile)
     return OutputInfo::Mode::StandardCompile;
 
-  // Test for -enable-batch-mode, rather than the BatchMode flag that is
-  // passed into the caller because the diagnostic is intended to warn against
-  // overriding *explicit* batch mode. No warning should be given if in batch
-  // mode by default.
-  if (Args.hasArg(options::OPT_enable_batch_mode))
+  // Override batch mode if given -wmo or -index-file.
+  if (BatchModeOut) {
+    BatchModeOut = false;
+    // Emit a warning about such overriding (FIXME: we might conditionalize
+    // this based on the user or xcode passing -disable-batch-mode).
     Diags.diagnose(SourceLoc(), diag::warn_ignoring_batch_mode,
-                   ArgRequiringWMO->getOption().getPrefixedName());
-
+                   ArgRequiringSingleCompile->getOption().getPrefixedName());
+  }
   return OutputInfo::Mode::SingleCompile;
 }
 

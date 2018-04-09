@@ -217,7 +217,7 @@ private:
   // Callbacks registered by the SIL optimizer to run on each deserialized
   // function body. This is intentionally a stateless type because the
   // ModuleDecl and SILFunction should be sufficient context.
-  typedef void (*SILFunctionBodyCallback)(ModuleDecl *, SILFunction *F);
+  using SILFunctionBodyCallback = void (*)(ModuleDecl *, SILFunction *F);
   SmallVector<SILFunctionBodyCallback, 0> DeserializationCallbacks;
 
   /// The SILLoader used when linking functions into this module.
@@ -708,6 +708,11 @@ public:
   bool isDefaultAtomic() const {
     return ! getOptions().AssumeSingleThreaded;
   }
+  
+  /// Returns true if SIL entities associated with declarations in the given
+  /// declaration context ought to be serialized as part of this module.
+  bool shouldSerializeEntitiesAssociatedWithDeclContext(const DeclContext *DC)
+    const;
 };
 
 inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, const SILModule &M){

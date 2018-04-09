@@ -2659,6 +2659,9 @@ static void inferObjCName(TypeChecker &tc, ValueDecl *decl) {
   if (isa<DestructorDecl>(decl))
     return;
 
+  auto attr = decl->getAttrs().getAttribute<ObjCAttr>();
+  assert(attr && "should only be called on decls already marked @objc");
+
   // If this declaration overrides an @objc declaration, use its name.
   if (auto overridden = decl->getOverriddenDecl()) {
     if (overridden->isObjC()) {
@@ -2666,17 +2669,6 @@ static void inferObjCName(TypeChecker &tc, ValueDecl *decl) {
       if (auto overriddenFunc = dyn_cast<AbstractFunctionDecl>(overridden)) {
         // Determine the selector of the overridden method.
         ObjCSelector overriddenSelector = overriddenFunc->getObjCSelector();
-
-        // Dig out the @objc attribute on the method, if it exists.
-        auto attr = decl->getAttrs().getAttribute<ObjCAttr>();
-        if (!attr) {
-          // There was no @objc attribute; add one with the
-          // appropriate name.
-          decl->getAttrs().add(ObjCAttr::create(tc.Context,
-                                                overriddenSelector,
-                                                true));
-          return;
-        }
 
         // Determine whether there is a name conflict.
         bool shouldFixName = !attr->hasName();
@@ -2711,18 +2703,6 @@ static void inferObjCName(TypeChecker &tc, ValueDecl *decl) {
         Identifier overriddenName = overriddenProp->getObjCPropertyName();
         ObjCSelector overriddenNameAsSel(tc.Context, 0, overriddenName);
 
-        // Dig out the @objc attribute, if specified.
-        auto attr = decl->getAttrs().getAttribute<ObjCAttr>();
-        if (!attr) {
-          // There was no @objc attribute; add one with the
-          // appropriate name.
-          decl->getAttrs().add(
-            ObjCAttr::createNullary(tc.Context,
-                                    overriddenName,
-                                    /*isNameImplicit=*/true));
-          return;
-        }
-
         // Determine whether there is a name conflict.
         bool shouldFixName = !attr->hasName();
         if (attr->hasName() && *attr->getName() != overriddenNameAsSel) {
@@ -2751,11 +2731,9 @@ static void inferObjCName(TypeChecker &tc, ValueDecl *decl) {
     }
   }
 
-  // Dig out the @objc attribute. If it already has a name, do
-  // nothing; the protocol conformance checker will handle any
-  // mismatches.
-  auto attr = decl->getAttrs().getAttribute<ObjCAttr>();
-  if (attr && attr->hasName()) return;
+  // If the decl already has a name, do nothing; the protocol conformance
+  // checker will handle any mismatches.
+  if (attr->hasName()) return;
 
   // When no override determined the Objective-C name, look for
   // requirements for which this declaration is a witness.
@@ -2799,13 +2777,8 @@ static void inferObjCName(TypeChecker &tc, ValueDecl *decl) {
 
   // If we have a name, install it via an @objc attribute.
   if (requirementObjCName) {
-    if (attr)
-      const_cast<ObjCAttr *>(attr)->setName(*requirementObjCName,
-                                            /*implicit=*/true);
-    else
-      decl->getAttrs().add(
-        ObjCAttr::create(tc.Context, *requirementObjCName,
-                         /*implicitName=*/true));
+    const_cast<ObjCAttr *>(attr)->setName(*requirementObjCName,
+                                          /*implicit=*/true);
   }
 }
 
@@ -3943,6 +3916,16 @@ static void validateAbstractStorageDecl(TypeChecker &TC,
   storage->setIsGetterMutating(computeIsGetterMutating(TC, storage));
   storage->setIsSetterMutating(computeIsSetterMutating(TC, storage));
 
+  // We can't delay validation of getters and setters on @objc properties,
+  // because if they never get validated at all then conformance checkers
+  // will complain about selector mismatches.
+  if (storage->isObjC()) {
+    if (auto *getter = storage->getGetter())
+      TC.validateDecl(getter);
+    if (auto *setter = storage->getSetter())
+      TC.validateDecl(setter);
+  }
+
   // Create a materializeForSet function if necessary.  This needs to
   // happen immediately so that subclass materializeForSet functions
   // will be properly marked as overriding it.
@@ -3976,20 +3959,15 @@ class DeclChecker : public DeclVisitor<DeclChecker> {
 public:
   TypeChecker &TC;
 
-  // For library-style parsing, we need to make two passes over the global
-  // scope.  These booleans indicate whether this is currently the first or
-  // second pass over the global scope (or neither, if we're in a context where
-  // we only visit each decl once).
-  unsigned IsFirstPass : 1;
-
-  DeclChecker(TypeChecker &TC, bool IsFirstPass)
-      : TC(TC), IsFirstPass(IsFirstPass) {}
+  explicit DeclChecker(TypeChecker &TC) : TC(TC) {}
 
   void visit(Decl *decl) {
     FrontendStatsTracer StatsTracer(TC.Context.Stats, "typecheck-decl", decl);
     PrettyStackTraceDecl StackTrace("type-checking", decl);
     
     DeclVisitor<DeclChecker>::visit(decl);
+
+    TC.checkUnsupportedProtocolType(decl);
 
     if (auto VD = dyn_cast<ValueDecl>(decl)) {
       checkRedeclaration(TC, VD);
@@ -4009,17 +3987,6 @@ public:
         TC.diagnose(VD->getNameLoc(), diag::backticks_to_escape)
             .fixItReplace(VD->getNameLoc(),
                           "`" + VD->getBaseName().userFacingName().str() + "`");
-      }
-    }
-
-    if (!IsFirstPass) {
-      TC.checkUnsupportedProtocolType(decl);
-      if (auto nominal = dyn_cast<NominalTypeDecl>(decl)) {
-        TC.checkDeclCircularity(nominal);
-      }
-      if (auto protocol = dyn_cast<ProtocolDecl>(decl)) {
-        if (protocol->isResilient())
-          TC.inferDefaultWitnesses(protocol);
       }
     }
   }
@@ -4139,14 +4106,12 @@ public:
     // (that were previously only validated at point of synthesis)
     if (auto getter = VD->getGetter()) {
       if (getter->hasBody()) {
-        TC.typeCheckDecl(getter, true);
-        TC.typeCheckDecl(getter, false);
+        TC.typeCheckDecl(getter);
       }
     }
     if (auto setter = VD->getSetter()) {
       if (setter->hasBody()) {
-        TC.typeCheckDecl(setter, true);
-        TC.typeCheckDecl(setter, false);
+        TC.typeCheckDecl(setter);
       }
     }
 
@@ -4159,66 +4124,56 @@ public:
   }
 
   void visitPatternBindingDecl(PatternBindingDecl *PBD) {
-    // Check all the pattern/init pairs in the PBD.
-    validatePatternBindingEntries(TC, PBD);
-
     if (PBD->isBeingValidated())
       return;
 
-    // If the initializers in the PBD aren't checked yet, do so now.
-    if (!IsFirstPass) {
-      for (unsigned i = 0, e = PBD->getNumPatternEntries(); i != e; ++i) {
-        if (!PBD->isInitializerChecked(i) && PBD->getInit(i))
-          TC.typeCheckPatternBinding(PBD, i, /*skipApplyingSolution*/false);
-      }
-    }
+    // Check all the pattern/init pairs in the PBD.
+    validatePatternBindingEntries(TC, PBD);
 
     TC.checkDeclAttributesEarly(PBD);
 
-    if (IsFirstPass) {
-      for (unsigned i = 0, e = PBD->getNumPatternEntries(); i != e; ++i) {
-        // Type check each VarDecl that this PatternBinding handles.
-        visitBoundVars(PBD->getPattern(i));
+    for (unsigned i = 0, e = PBD->getNumPatternEntries(); i != e; ++i) {
+      // Type check each VarDecl that this PatternBinding handles.
+      visitBoundVars(PBD->getPattern(i));
 
-        // If we have a type but no initializer, check whether the type is
-        // default-initializable. If so, do it.
-        if (PBD->getPattern(i)->hasType() &&
-            !PBD->getInit(i) &&
-            PBD->getPattern(i)->hasStorage() &&
-            !PBD->getPattern(i)->getType()->hasError()) {
+      // If we have a type but no initializer, check whether the type is
+      // default-initializable. If so, do it.
+      if (PBD->getPattern(i)->hasType() &&
+          !PBD->getInit(i) &&
+          PBD->getPattern(i)->hasStorage() &&
+          !PBD->getPattern(i)->getType()->hasError()) {
 
-          // If we have a type-adjusting attribute (like ownership), apply it now.
-          if (auto var = PBD->getSingleVar())
-            TC.checkTypeModifyingDeclAttributes(var);
+        // If we have a type-adjusting attribute (like ownership), apply it now.
+        if (auto var = PBD->getSingleVar())
+          TC.checkTypeModifyingDeclAttributes(var);
 
-          // Decide whether we should suppress default initialization.
-          //
-          // Note: Swift 4 had a bug where properties with a desugared optional
-          // type like Optional<Int> had a half-way behavior where sometimes
-          // they behave like they are default initialized, and sometimes not.
-          //
-          // In Swift 5 mode, use the right condition here, and only default
-          // initialize properties with a sugared Optional type.
-          //
-          // (The restriction to sugared types only comes because we don't have
-          // the iterative declaration checker yet; so in general, we cannot
-          // look at the type of a property at all, and can only look at the
-          // TypeRepr, because we haven't validated the property yet.)
-          if (TC.Context.isSwiftVersionAtLeast(5)) {
-            if (!PBD->isDefaultInitializable(i))
-              continue;
-          } else {
-            if (PBD->getPattern(i)->isNeverDefaultInitializable())
-              continue;
-          }
+        // Decide whether we should suppress default initialization.
+        //
+        // Note: Swift 4 had a bug where properties with a desugared optional
+        // type like Optional<Int> had a half-way behavior where sometimes
+        // they behave like they are default initialized, and sometimes not.
+        //
+        // In Swift 5 mode, use the right condition here, and only default
+        // initialize properties with a sugared Optional type.
+        //
+        // (The restriction to sugared types only comes because we don't have
+        // the iterative declaration checker yet; so in general, we cannot
+        // look at the type of a property at all, and can only look at the
+        // TypeRepr, because we haven't validated the property yet.)
+        if (TC.Context.isSwiftVersionAtLeast(5)) {
+          if (!PBD->isDefaultInitializable(i))
+            continue;
+        } else {
+          if (PBD->getPattern(i)->isNeverDefaultInitializable())
+            continue;
+        }
 
-          auto type = PBD->getPattern(i)->getType();
-          if (auto defaultInit = buildDefaultInitializer(TC, type)) {
-            // If we got a default initializer, install it and re-type-check it
-            // to make sure it is properly coerced to the pattern type.
-            PBD->setInit(i, defaultInit);
-            TC.typeCheckPatternBinding(PBD, i, /*skipApplyingSolution*/false);
-          }
+        auto type = PBD->getPattern(i)->getType();
+        if (auto defaultInit = buildDefaultInitializer(TC, type)) {
+          // If we got a default initializer, install it and re-type-check it
+          // to make sure it is properly coerced to the pattern type.
+          PBD->setInit(i, defaultInit);
+          TC.typeCheckPatternBinding(PBD, i, /*skipApplyingSolution*/false);
         }
       }
     }
@@ -4285,26 +4240,22 @@ public:
     }
 
     TC.checkDeclAttributes(PBD);
+    checkAccessControl(TC, PBD);
 
-    if (IsFirstPass)
-      checkAccessControl(TC, PBD);
+    // If the initializers in the PBD aren't checked yet, do so now.
+    for (unsigned i = 0, e = PBD->getNumPatternEntries(); i != e; ++i) {
+      if (!PBD->isInitializerChecked(i) && PBD->getInit(i))
+        TC.typeCheckPatternBinding(PBD, i, /*skipApplyingSolution*/false);
+    }
   }
 
   void visitSubscriptDecl(SubscriptDecl *SD) {
-    if (!IsFirstPass) {
-      return;
-    }
-
     TC.validateDecl(SD);
     TC.checkDeclAttributes(SD);
     checkAccessControl(TC, SD);
   }
 
   void visitTypeAliasDecl(TypeAliasDecl *TAD) {
-    if (!IsFirstPass) {
-      return;
-    }
-
     TC.checkDeclAttributesEarly(TAD);
     TC.computeAccessLevel(TAD);
 
@@ -4314,10 +4265,6 @@ public:
   }
   
   void visitAssociatedTypeDecl(AssociatedTypeDecl *AT) {
-    if (!IsFirstPass) {
-      return;
-    }
-
     TC.validateDecl(AT);
 
     auto *proto = AT->getProtocol();
@@ -4380,49 +4327,36 @@ public:
     TC.checkDeclAttributesEarly(ED);
     TC.computeAccessLevel(ED);
 
-    if (IsFirstPass) {
-      checkUnsupportedNestedType(ED);
+    checkUnsupportedNestedType(ED);
 
-      TC.validateDecl(ED);
+    TC.validateDecl(ED);
+    TC.DeclsToFinalize.remove(ED);
 
-      TC.DeclsToFinalize.remove(ED);
-
-      {
-        // Check for circular inheritance of the raw type.
-        SmallVector<EnumDecl *, 8> path;
-        path.push_back(ED);
-        checkCircularity(TC, ED, diag::circular_enum_inheritance,
-                         diag::enum_here, path);
-      }
-    }
-
-    if (!IsFirstPass) {
-      checkAccessControl(TC, ED);
-
-      if (ED->hasRawType() && !ED->isObjC()) {
-        // ObjC enums have already had their raw values checked, but pure Swift
-        // enums haven't.
-        checkEnumRawValues(TC, ED);
-      }
-
-      TC.checkConformancesInContext(ED, ED);
+    {
+      // Check for circular inheritance of the raw type.
+      SmallVector<EnumDecl *, 8> path;
+      path.push_back(ED);
+      checkCircularity(TC, ED, diag::circular_enum_inheritance,
+                       diag::enum_here, path);
     }
 
     for (Decl *member : ED->getMembers())
       visit(member);
-    
 
     TC.checkDeclAttributes(ED);
+    checkAccessControl(TC, ED);
+
+    if (ED->hasRawType() && !ED->isObjC()) {
+      // ObjC enums have already had their raw values checked, but pure Swift
+      // enums haven't.
+      checkEnumRawValues(TC, ED);
+    }
+
+    TC.checkDeclCircularity(ED);
+    TC.ConformanceContexts.push_back(ED);
   }
 
   void visitStructDecl(StructDecl *SD) {
-    if (!IsFirstPass) {
-      for (Decl *Member : SD->getMembers())
-        visit(Member);
-
-      return;
-    }
-
     TC.checkDeclAttributesEarly(SD);
     TC.computeAccessLevel(SD);
 
@@ -4439,8 +4373,8 @@ public:
     TC.checkDeclAttributes(SD);
     checkAccessControl(TC, SD);
 
-    if (!SD->isInvalid())
-      TC.checkConformancesInContext(SD, SD);
+    TC.checkDeclCircularity(SD);
+    TC.ConformanceContexts.push_back(SD);
   }
 
   /// Check whether the given properties can be @NSManaged in this class.
@@ -4550,33 +4484,19 @@ public:
     TC.checkDeclAttributesEarly(CD);
     TC.computeAccessLevel(CD);
 
-    if (IsFirstPass) {
-      checkUnsupportedNestedType(CD);
+    checkUnsupportedNestedType(CD);
 
-      TC.validateDecl(CD);
-      if (!CD->hasValidSignature())
-        return;
+    TC.validateDecl(CD);
+    TC.requestSuperclassLayout(CD);
+    TC.DeclsToFinalize.remove(CD);
 
-      TC.requestSuperclassLayout(CD);
-      TC.DeclsToFinalize.remove(CD);
-
-      {
-        // Check for circular inheritance.
-        SmallVector<ClassDecl *, 8> path;
-        path.push_back(CD);
-        checkCircularity(TC, CD, diag::circular_class_inheritance,
-                         diag::class_here, path);
-      }
+    {
+      // Check for circular inheritance.
+      SmallVector<ClassDecl *, 8> path;
+      path.push_back(CD);
+      checkCircularity(TC, CD, diag::circular_class_inheritance,
+                       diag::class_here, path);
     }
-
-    // If this class needs an implicit constructor, add it.
-    if (!IsFirstPass)
-      TC.addImplicitConstructors(CD);
-
-    CD->addImplicitDestructor();
-
-    if (!IsFirstPass && !CD->isInvalid())
-      TC.checkConformancesInContext(CD, CD);
 
     for (Decl *Member : CD->getMembers())
       visit(Member);
@@ -4586,106 +4506,105 @@ public:
     if (CD->requiresStoredPropertyInits())
       checkRequiredInClassInits(CD);
 
-    if (!IsFirstPass) {
-      if (auto superclassTy = CD->getSuperclass()) {
-        ClassDecl *Super = superclassTy->getClassOrBoundGenericClass();
+    TC.addImplicitConstructors(CD);
+    CD->addImplicitDestructor();
 
-        if (auto *SF = CD->getParentSourceFile()) {
-          if (auto *tracker = SF->getReferencedNameTracker()) {
-            bool isPrivate =
-                CD->getFormalAccess() <= AccessLevel::FilePrivate;
-            tracker->addUsedMember({Super, Identifier()}, !isPrivate);
-          }
+    if (auto superclassTy = CD->getSuperclass()) {
+      ClassDecl *Super = superclassTy->getClassOrBoundGenericClass();
+
+      if (auto *SF = CD->getParentSourceFile()) {
+        if (auto *tracker = SF->getReferencedNameTracker()) {
+          bool isPrivate =
+              CD->getFormalAccess() <= AccessLevel::FilePrivate;
+          tracker->addUsedMember({Super, Identifier()}, !isPrivate);
         }
+      }
 
-        bool isInvalidSuperclass = false;
+      bool isInvalidSuperclass = false;
 
-        if (Super->isFinal()) {
-          TC.diagnose(CD, diag::inheritance_from_final_class,
-                      Super->getName());
-          // FIXME: should this really be skipping the rest of decl-checking?
-          return;
-        }
+      if (Super->isFinal()) {
+        TC.diagnose(CD, diag::inheritance_from_final_class,
+                    Super->getName());
+        // FIXME: should this really be skipping the rest of decl-checking?
+        return;
+      }
 
-        if (Super->hasClangNode() && Super->getGenericParams()
-            && superclassTy->hasTypeParameter()) {
-          TC.diagnose(CD,
-                      diag::inheritance_from_unspecialized_objc_generic_class,
-                      Super->getName());
-        }
+      if (Super->hasClangNode() && Super->getGenericParams()
+          && superclassTy->hasTypeParameter()) {
+        TC.diagnose(CD,
+                    diag::inheritance_from_unspecialized_objc_generic_class,
+                    Super->getName());
+      }
 
-        switch (Super->getForeignClassKind()) {
-        case ClassDecl::ForeignKind::Normal:
-          break;
-        case ClassDecl::ForeignKind::CFType:
-          TC.diagnose(CD, diag::inheritance_from_cf_class,
-                      Super->getName());
-          isInvalidSuperclass = true;
-          break;
-        case ClassDecl::ForeignKind::RuntimeOnly:
-          TC.diagnose(CD, diag::inheritance_from_objc_runtime_visible_class,
-                      Super->getName());
-          isInvalidSuperclass = true;
-          break;
-        }
+      switch (Super->getForeignClassKind()) {
+      case ClassDecl::ForeignKind::Normal:
+        break;
+      case ClassDecl::ForeignKind::CFType:
+        TC.diagnose(CD, diag::inheritance_from_cf_class,
+                    Super->getName());
+        isInvalidSuperclass = true;
+        break;
+      case ClassDecl::ForeignKind::RuntimeOnly:
+        TC.diagnose(CD, diag::inheritance_from_objc_runtime_visible_class,
+                    Super->getName());
+        isInvalidSuperclass = true;
+        break;
+      }
 
-        if (!isInvalidSuperclass && Super->hasMissingVTableEntries()) {
-          auto *superFile = Super->getModuleScopeContext();
-          if (auto *serialized = dyn_cast<SerializedASTFile>(superFile)) {
-            if (serialized->getLanguageVersionBuiltWith() !=
-                TC.getLangOpts().EffectiveLanguageVersion) {
-              TC.diagnose(CD,
-                          diag::inheritance_from_class_with_missing_vtable_entries_versioned,
-                          Super->getName(),
-                          serialized->getLanguageVersionBuiltWith(),
-                          TC.getLangOpts().EffectiveLanguageVersion);
-              isInvalidSuperclass = true;
-            }
-          }
-          if (!isInvalidSuperclass) {
-            TC.diagnose(
-                CD, diag::inheritance_from_class_with_missing_vtable_entries,
-                Super->getName());
+      if (!isInvalidSuperclass && Super->hasMissingVTableEntries()) {
+        auto *superFile = Super->getModuleScopeContext();
+        if (auto *serialized = dyn_cast<SerializedASTFile>(superFile)) {
+          if (serialized->getLanguageVersionBuiltWith() !=
+              TC.getLangOpts().EffectiveLanguageVersion) {
+            TC.diagnose(CD,
+                        diag::inheritance_from_class_with_missing_vtable_entries_versioned,
+                        Super->getName(),
+                        serialized->getLanguageVersionBuiltWith(),
+                        TC.getLangOpts().EffectiveLanguageVersion);
             isInvalidSuperclass = true;
           }
         }
-
-        // Require the superclass to be open if this is outside its
-        // defining module.  But don't emit another diagnostic if we
-        // already complained about the class being inherently
-        // un-subclassable.
-        if (!isInvalidSuperclass &&
-            Super->getFormalAccess(CD->getDeclContext())
-              < AccessLevel::Open &&
-            Super->getModuleContext() != CD->getModuleContext()) {
-          TC.diagnose(CD, diag::superclass_not_open, superclassTy);
+        if (!isInvalidSuperclass) {
+          TC.diagnose(
+              CD, diag::inheritance_from_class_with_missing_vtable_entries,
+              Super->getName());
           isInvalidSuperclass = true;
         }
-
-        // Require superclasses to be open if the subclass is open.
-        // This is a restriction we can consider lifting in the future,
-        // e.g. to enable a "sealed" superclass whose subclasses are all
-        // of one of several alternatives.
-        if (!isInvalidSuperclass &&
-            CD->getFormalAccess() == AccessLevel::Open &&
-            Super->getFormalAccess() != AccessLevel::Open) {
-          TC.diagnose(CD, diag::superclass_of_open_not_open, superclassTy);
-          TC.diagnose(Super, diag::superclass_here);
-        }
-
       }
 
-      checkAccessControl(TC, CD);
+      // Require the superclass to be open if this is outside its
+      // defining module.  But don't emit another diagnostic if we
+      // already complained about the class being inherently
+      // un-subclassable.
+      if (!isInvalidSuperclass &&
+          Super->getFormalAccess(CD->getDeclContext())
+            < AccessLevel::Open &&
+          Super->getModuleContext() != CD->getModuleContext()) {
+        TC.diagnose(CD, diag::superclass_not_open, superclassTy);
+        isInvalidSuperclass = true;
+      }
+
+      // Require superclasses to be open if the subclass is open.
+      // This is a restriction we can consider lifting in the future,
+      // e.g. to enable a "sealed" superclass whose subclasses are all
+      // of one of several alternatives.
+      if (!isInvalidSuperclass &&
+          CD->getFormalAccess() == AccessLevel::Open &&
+          Super->getFormalAccess() != AccessLevel::Open) {
+        TC.diagnose(CD, diag::superclass_of_open_not_open, superclassTy);
+        TC.diagnose(Super, diag::superclass_here);
+      }
+
     }
 
     TC.checkDeclAttributes(CD);
+    checkAccessControl(TC, CD);
+
+    TC.checkDeclCircularity(CD);
+    TC.ConformanceContexts.push_back(CD);
   }
 
   void visitProtocolDecl(ProtocolDecl *PD) {
-    if (!IsFirstPass) {
-      return;
-    }
-
     TC.checkDeclAttributesEarly(PD);
     TC.computeAccessLevel(PD);
 
@@ -4727,13 +4646,14 @@ public:
     TC.checkDeclAttributes(PD);
 
     checkAccessControl(TC, PD);
-    for (auto member : PD->getMembers()) {
-      TC.checkUnsupportedProtocolType(member);
-    }
     TC.checkInheritanceClause(PD);
 
     GenericTypeToArchetypeResolver resolver(PD);
     TC.validateWhereClauses(PD, &resolver);
+
+    TC.checkDeclCircularity(PD);
+    if (PD->isResilient())
+      TC.inferDefaultWitnesses(PD);
 
     if (TC.Context.LangOpts.DebugGenericSignatures) {
       auto requirementsSig =
@@ -4774,6 +4694,10 @@ public:
     if (decl->isInvalid() || decl->isImplicit() || decl->hasClangNode())
       return false;
 
+    // Protocol requirements do not require definitions.
+    if (isa<ProtocolDecl>(decl->getDeclContext()))
+      return false;
+
     // Functions can have _silgen_name, semantics, and NSManaged attributes.
     if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
       if (func->getAttrs().hasAttribute<SILGenNameAttr>() ||
@@ -4793,22 +4717,17 @@ public:
   }
 
   void visitFuncDecl(FuncDecl *FD) {
-    if (!IsFirstPass) {
-      if (FD->hasBody()) {
-        // Record the body.
-        TC.definedFunctions.push_back(FD);
-      } else if (requiresDefinition(FD)) {
-        // Complain if we should have a body.
-        TC.diagnose(FD->getLoc(), diag::func_decl_without_brace);
-      }
-
-      return;
-    }
-
     TC.validateDecl(FD);
     checkAccessControl(TC, FD);
-  }
 
+    if (FD->hasBody()) {
+      // Record the body.
+      TC.definedFunctions.push_back(FD);
+    } else if (requiresDefinition(FD)) {
+      // Complain if we should have a body.
+      TC.diagnose(FD->getLoc(), diag::func_decl_without_brace);
+    }
+  }
 
   void visitModuleDecl(ModuleDecl *) { }
 
@@ -6209,22 +6128,12 @@ public:
   }
 
   void visitEnumElementDecl(EnumElementDecl *EED) {
-    if (!IsFirstPass) {
-      return;
-    }
-
     TC.validateDecl(EED);
     TC.checkDeclAttributes(EED);
     checkAccessControl(TC, EED);
   }
 
   void visitExtensionDecl(ExtensionDecl *ED) {
-    if (!IsFirstPass) {
-      for (Decl *Member : ED->getMembers())
-        visit(Member);
-      return;
-    }
-
     TC.validateExtension(ED);
 
     TC.checkDeclAttributesEarly(ED);
@@ -6265,7 +6174,7 @@ public:
     for (Decl *Member : ED->getMembers())
       visit(Member);
 
-    TC.checkConformancesInContext(ED, ED);
+    TC.ConformanceContexts.push_back(ED);
 
     if (!ED->isInvalid())
       TC.checkDeclAttributes(ED);
@@ -6319,19 +6228,6 @@ public:
   }
 
   void visitConstructorDecl(ConstructorDecl *CD) {
-    if (!IsFirstPass) {
-      if (CD->getBody()) {
-        TC.definedFunctions.push_back(CD);
-      } else if (requiresDefinition(CD)) {
-        // Complain if we should have a body.
-        TC.diagnose(CD->getLoc(), diag::missing_initializer_def);
-      }
-    }
-
-    if (!IsFirstPass) {
-      return;
-    }
-
     TC.validateDecl(CD);
 
     // If this initializer overrides a 'required' initializer, it must itself
@@ -6376,18 +6272,21 @@ public:
 
     TC.checkDeclAttributes(CD);
     checkAccessControl(TC, CD);
+
+    if (CD->hasBody() && !CD->isMemberwiseInitializer()) {
+      TC.definedFunctions.push_back(CD);
+    } else if (requiresDefinition(CD)) {
+      // Complain if we should have a body.
+      TC.diagnose(CD->getLoc(), diag::missing_initializer_def);
+    }
   }
 
   void visitDestructorDecl(DestructorDecl *DD) {
-    if (!IsFirstPass) {
-      if (DD->getBody())
-        TC.definedFunctions.push_back(DD);
-
-      return;
-    }
-
     TC.validateDecl(DD);
     TC.checkDeclAttributes(DD);
+
+    if (DD->hasBody())
+      TC.definedFunctions.push_back(DD);
   }
 };
 } // end anonymous namespace
@@ -6452,9 +6351,9 @@ bool TypeChecker::isAvailabilitySafeForConformance(
   return requirementInfo.isContainedIn(witnessInfo);
 }
 
-void TypeChecker::typeCheckDecl(Decl *D, bool isFirstPass) {
+void TypeChecker::typeCheckDecl(Decl *D) {
   checkForForbiddenPrefix(D);
-  DeclChecker(*this, isFirstPass).visit(D);
+  DeclChecker(*this).visit(D);
 }
 
 // A class is @objc if it does not have generic ancestry, and it either has
@@ -7060,6 +6959,10 @@ void TypeChecker::validateDecl(ValueDecl *D) {
   case DeclKind::Param: {
     auto VD = cast<VarDecl>(D);
 
+    if (PatternBindingDecl *PBD = VD->getParentPatternBinding())
+      if (PBD->isBeingValidated())
+        return;
+
     D->setIsBeingValidated();
 
     if (!VD->hasInterfaceType()) {
@@ -7070,25 +6973,12 @@ void TypeChecker::validateDecl(ValueDecl *D) {
         }
         recordSelfContextType(cast<AbstractFunctionDecl>(VD->getDeclContext()));
       } else if (PatternBindingDecl *PBD = VD->getParentPatternBinding()) {
-        if (PBD->isBeingValidated()) {
-          diagnose(VD, diag::pattern_used_in_type, VD->getName());
-
-        } else {
-          validatePatternBindingEntries(*this, PBD);
-        }
+        validatePatternBindingEntries(*this, PBD);
 
         auto parentPattern = VD->getParentPattern();
         if (PBD->isInvalid() || !parentPattern->hasType()) {
           parentPattern->setType(ErrorType::get(Context));
           setBoundVarsTypeError(parentPattern, Context);
-          
-          // If no type has been set for the initializer, we need to diagnose
-          // the failure.
-          if (VD->getParentInitializer() &&
-              !VD->getParentInitializer()->getType()) {
-            diagnose(parentPattern->getLoc(), diag::identifier_init_failure,
-                     parentPattern->getBoundName());
-          }
         }
       } else {
         // FIXME: This case is hit when code completion occurs in a function
@@ -7196,6 +7086,14 @@ void TypeChecker::validateDecl(ValueDecl *D) {
     auto *FD = cast<FuncDecl>(D);
     assert(!FD->hasInterfaceType());
 
+    // Bail out if we're in a recursive validation situation.
+    if (auto accessor = dyn_cast<AccessorDecl>(FD)) {
+      auto *storage = accessor->getStorage();
+      validateDecl(storage);
+      if (!storage->hasValidSignature())
+        return;
+    }
+
     checkDeclAttributesEarly(FD);
     computeAccessLevel(FD);
 
@@ -7232,7 +7130,6 @@ void TypeChecker::validateDecl(ValueDecl *D) {
     // FIXME: should this include the generic signature?
     if (auto accessor = dyn_cast<AccessorDecl>(FD)) {
       auto storage = accessor->getStorage();
-      validateDecl(storage);
 
       // Note that it's important for correctness that we're filling in
       // empty TypeLocs, because otherwise revertGenericFuncSignature might
@@ -8719,8 +8616,9 @@ static void diagnoseMissingRequiredInitializer(
                                            insertionLoc);
 
   // Find the indentation used on the indentation line.
-  StringRef indentation = Lexer::getIndentationForLine(TC.Context.SourceMgr,
-                                                       indentationLoc);
+  StringRef extraIndentation;
+  StringRef indentation = Lexer::getIndentationForLine(
+      TC.Context.SourceMgr, indentationLoc, &extraIndentation);
 
   // Pretty-print the superclass initializer into a string.
   // FIXME: Form a new initializer by performing the appropriate
@@ -8750,12 +8648,9 @@ static void diagnoseMissingRequiredInitializer(
       superInitializer->print(printer, options);
     }
 
-    // FIXME: Infer body indentation from the source rather than hard-coding
-    // 4 spaces.
-
     // Add a dummy body.
     out << " {\n";
-    out << indentation << "    fatalError(\"";
+    out << indentation << extraIndentation << "fatalError(\"";
     superInitializer->getFullName().printPretty(out);
     out << " has not been implemented\")\n";
     out << indentation << "}\n";
@@ -9061,6 +8956,7 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
       // We have a designated initializer. Create an override of it.
       if (auto ctor = createDesignatedInitOverride(
                         *this, classDecl, superclassCtor, kind)) {
+        Context.addSynthesizedDecl(ctor);
         classDecl->addMember(ctor);
       }
     }
@@ -9291,6 +9187,9 @@ void TypeChecker::defineDefaultConstructor(NominalTypeDecl *decl) {
   // Create an empty body for the default constructor. The type-check of the
   // constructor body will introduce default initializations of the members.
   ctor->setBody(BraceStmt::create(Context, SourceLoc(), { }, SourceLoc()));
+
+  // Make sure we type check the constructor later.
+  Context.addSynthesizedDecl(ctor);
 }
 
 static void validateAttributes(TypeChecker &TC, Decl *D) {

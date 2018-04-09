@@ -2243,17 +2243,17 @@ public:
   /// being used), features that affect formal access such as \c \@testable are
   /// taken into account.
   ///
-  /// If \p isUsageFromInline is true, the presence of the \c @usableFromInline
-  /// attribute will treat internal declarations as public. This is normally
+  /// If \p treatUsableFromInlineAsPublic is true, declarations marked with the
+  /// \c @usableFromInline attribute are treated as public. This is normally
   /// false for name lookup and other source language concerns, but true when
   /// computing the linkage of generated functions.
   ///
   /// \sa getFormalAccessScope
   AccessLevel getFormalAccess(const DeclContext *useDC = nullptr,
-                              bool isUsageFromInline = false) const {
+                              bool treatUsableFromInlineAsPublic = false) const {
     assert(hasAccess() && "access not computed yet");
     AccessLevel result = TypeAndAccess.getInt().getValue();
-    if (isUsageFromInline &&
+    if (treatUsableFromInlineAsPublic &&
         result == AccessLevel::Internal &&
         isUsableFromInline()) {
       assert(!useDC);
@@ -2264,6 +2264,18 @@ public:
       return getFormalAccessImpl(useDC);
     return result;
   }
+
+  /// If this declaration is a member of a protocol extension, return the
+  /// minimum of the given access level and the protocol's access level.
+  ///
+  /// Otherwise, return the given access level unmodified.
+  ///
+  /// This is used when checking name lookup visibility. Protocol extension
+  /// members can be found when performing name lookup on a concrete type;
+  /// if the concrete type is visible from the lookup context but the
+  /// protocol is not, we do not want the protocol extension members to be
+  /// visible.
+  AccessLevel adjustAccessLevelForProtocolExtension(AccessLevel access) const;
 
   /// Determine whether this Decl has either Private or FilePrivate access.
   bool isOutermostPrivateOrFilePrivateScope() const;
@@ -2277,13 +2289,19 @@ public:
   /// taken into account.
   ///
   /// \invariant
-  /// <code>value.isAccessibleFrom(value.getFormalAccessScope())</code>
+  /// <code>value.isAccessibleFrom(
+  ///     value.getFormalAccessScope().getDeclContext())</code>
+  ///
+  /// If \p treatUsableFromInlineAsPublic is true, declarations marked with the
+  /// \c @usableFromInline attribute are treated as public. This is normally
+  /// false for name lookup and other source language concerns, but true when
+  /// computing the linkage of generated functions.
   ///
   /// \sa getFormalAccess
   /// \sa isAccessibleFrom
   AccessScope
   getFormalAccessScope(const DeclContext *useDC = nullptr,
-                       bool respectVersionedAttr = false) const;
+                       bool treatUsableFromInlineAsPublic = false) const;
 
 
   /// Copy the formal access level and @usableFromInline attribute from source.
@@ -2319,7 +2337,14 @@ public:
   /// A public declaration is accessible everywhere.
   ///
   /// If \p DC is null, returns true only if this declaration is public.
-  bool isAccessibleFrom(const DeclContext *DC) const;
+  ///
+  /// If \p forConformance is true, we ignore the visibility of the protocol
+  /// when evaluating protocol extension members. This language rule allows a
+  /// protocol extension of a private protocol to provide default
+  /// implementations for the requirements of a public protocol, even when
+  /// the default implementations are not visible to name lookup.
+  bool isAccessibleFrom(const DeclContext *DC,
+                        bool forConformance = false) const;
 
   /// Retrieve the "interface" type of this value, which uses
   /// GenericTypeParamType if the declaration is generic. For a generic
@@ -2485,6 +2510,14 @@ public:
 
   /// Compute an ordering between two type declarations that is ABI-stable.
   static int compare(const TypeDecl *type1, const TypeDecl *type2);
+
+  /// Compute an ordering between two type declarations that is ABI-stable.
+  /// This version takes a pointer-to-a-pointer for use with
+  /// llvm::array_pod_sort() and similar.
+  template<typename T>
+  static int compare(T * const* type1, T * const* type2) {
+    return compare(*type1, *type2);
+  }
 };
 
 /// A type declaration that can have generic parameters attached to it.  Because
@@ -4443,7 +4476,11 @@ public:
   /// context.
   ///
   /// If \p DC is null, returns true only if the setter is public.
-  bool isSetterAccessibleFrom(const DeclContext *DC) const;
+  ///
+  /// See \c isAccessibleFrom for a discussion of the \p forConformance
+  /// parameter.
+  bool isSetterAccessibleFrom(const DeclContext *DC,
+                              bool forConformance=false) const;
 
   /// Determine how this storage declaration should actually be accessed.
   AccessStrategy getAccessStrategy(AccessSemantics semantics,

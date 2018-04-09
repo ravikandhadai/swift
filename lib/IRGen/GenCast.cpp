@@ -98,7 +98,6 @@ FailableCastResult irgen::emitClassIdenticalCast(IRGenFunction &IGF,
     toType = IGF.IGM.getLoweredType(metaType.getInstanceType());
   }
   // Emit a reference to the heap metadata for the target type.
-  const bool allowConservative = true;
 
   // If we're allowed to do a conservative check, try to just use the
   // global class symbol.  If the class has been re-allocated, this
@@ -106,17 +105,16 @@ FailableCastResult irgen::emitClassIdenticalCast(IRGenFunction &IGF,
   // test might fail; but it's a much faster check.
   // TODO: use ObjC class references
   llvm::Value *targetMetadata;
-  if (allowConservative &&
-      (targetMetadata =
-        tryEmitConstantHeapMetadataRef(IGF.IGM, toType.getSwiftRValueType(),
-                                       /*allowUninitialized*/ true))) {
+  if ((targetMetadata =
+           tryEmitConstantHeapMetadataRef(IGF.IGM, toType.getSwiftRValueType(),
+                                          /*allowUninitialized*/ false))) {
     // ok
   } else {
     targetMetadata
       = emitClassHeapMetadataRef(IGF, toType.getSwiftRValueType(),
                                  MetadataValueType::ObjCClass,
                                  MetadataState::Complete,
-                                 /*allowUninitialized*/ allowConservative);
+                                 /*allowUninitialized*/ false);
   }
 
   // Handle checking a metatype object's type by directly comparing the address
@@ -805,8 +803,35 @@ void irgen::emitScalarCheckedCast(IRGenFunction &IGF,
   assert(sourceType.isObject());
   assert(targetType.isObject());
 
-  if (auto sourceOptObjectType = sourceType.getOptionalObjectType()) {
+  llvm::BasicBlock *nilCheckBB = nullptr;
+  llvm::BasicBlock *nilMergeBB = nullptr;
 
+  // Merge the nil check and return the merged result: either nil or the value.
+  auto returnNilCheckedResult = [&](IRBuilder &Builder,
+                                    Explosion &nonNilResult) {
+    if (nilCheckBB) {
+      auto notNilBB = Builder.GetInsertBlock();
+      Builder.CreateBr(nilMergeBB);
+
+      Builder.emitBlock(nilMergeBB);
+      // Insert result phi.
+      Explosion result;
+      while (!nonNilResult.empty()) {
+        auto val = nonNilResult.claimNext();
+        auto valTy = cast<llvm::PointerType>(val->getType());
+        auto nil = llvm::ConstantPointerNull::get(valTy);
+        auto phi = Builder.CreatePHI(valTy, 2);
+        phi->addIncoming(nil, nilCheckBB);
+        phi->addIncoming(val, notNilBB);
+        result.add(phi);
+      }
+      out = std::move(result);
+    } else {
+      out = std::move(nonNilResult);
+    }
+  };
+
+  if (auto sourceOptObjectType = sourceType.getOptionalObjectType()) {
     // Translate the value from an enum representation to a possibly-null
     // representation.  Note that we assume that this projection is safe
     // for the particular case of an optional class-reference or metatype
@@ -818,6 +843,22 @@ void irgen::emitScalarCheckedCast(IRGenFunction &IGF,
     assert(value.empty());
     value = std::move(optValue);
     sourceType = sourceOptObjectType;
+
+    // We need a null-check because the runtime function can't handle null in
+    // some of the cases.
+    if (targetType.isExistentialType()) {
+      auto &Builder = IGF.Builder;
+      auto val = value.getAll()[0];
+      auto isNotNil = Builder.CreateICmpNE(
+          val, llvm::ConstantPointerNull::get(
+                   cast<llvm::PointerType>(val->getType())));
+      auto *isNotNilContBB = llvm::BasicBlock::Create(IGF.IGM.getLLVMContext());
+      nilMergeBB = llvm::BasicBlock::Create(IGF.IGM.getLLVMContext());
+      nilCheckBB = Builder.GetInsertBlock();
+      Builder.CreateCondBr(isNotNil, isNotNilContBB, nilMergeBB);
+
+      Builder.emitBlock(isNotNilContBB);
+    }
   }
 
   // If the source value is a metatype, either do a metatype-to-metatype
@@ -882,11 +923,14 @@ void irgen::emitScalarCheckedCast(IRGenFunction &IGF,
   }
 
   if (targetType.isExistentialType()) {
+    Explosion outRes;
     emitScalarExistentialDowncast(IGF, instance, sourceType, targetType,
-                                  mode, /*not a metatype*/ None, out);
+                                  mode, /*not a metatype*/ None, outRes);
+    returnNilCheckedResult(IGF.Builder, outRes);
     return;
   }
 
+  Explosion outRes;
   llvm::Value *result = emitClassDowncast(IGF, instance, targetType, mode);
   out.add(result);
 }

@@ -865,46 +865,43 @@ ClangImporter::create(ASTContext &ctx,
     }
   }
 
-  // FIXME: These can't be controlled from the command line.
-  llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions> diagnosticOpts{
-    new clang::DiagnosticOptions
-  };
-
-  std::unique_ptr<ClangDiagnosticConsumer> diagClient{
-    new ClangDiagnosticConsumer(importer->Impl, *diagnosticOpts,
-                                importerOpts.DumpClangDiagnostics)
-  };
-  auto clangDiags =
-      clang::CompilerInstance::createDiagnostics(diagnosticOpts.get(),
-                                                 diagClient.release());
-
   // Create a new Clang compiler invocation.
-  importer->Impl.Invocation =
-      clang::createInvocationFromCommandLine(invocationArgs, clangDiags);
-  if (!importer->Impl.Invocation)
-    return nullptr;
+  {
+    // Set up a temporary diagnostic client to report errors from parsing the
+    // command line, which may be important for Swift clients if, for example,
+    // they're using -Xcc options. Unfortunately this diagnostic engine has to
+    // use the default options because the /actual/ options haven't been parsed
+    // yet.
+    //
+    // The long-term client for Clang diagnostics is set up below, after the
+    // clang::CompilerInstance is created.
+    llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions> tempDiagOpts{
+      new clang::DiagnosticOptions
+    };
 
-  // Don't stop emitting messages if we ever can't load a module.
-  // FIXME: This is actually a general problem: any "fatal" error could mess up
-  // the CompilerInvocation when we're not in "show diagnostics after fatal 
-  // error" mode.
-  clangDiags->setSeverity(clang::diag::err_module_not_found,
-                          clang::diag::Severity::Error,
-                          clang::SourceLocation());
-  clangDiags->setSeverity(clang::diag::err_module_not_built,
-                          clang::diag::Severity::Error,
-                          clang::SourceLocation());
-  clangDiags->setSuppressAfterFatalError(
-                          !ctx.Diags.getShowDiagnosticsAfterFatalError());
+    ClangDiagnosticConsumer tempDiagClient{importer->Impl, *tempDiagOpts,
+                                           importerOpts.DumpClangDiagnostics};
+    llvm::IntrusiveRefCntPtr<clang::DiagnosticsEngine> tempClangDiags =
+        clang::CompilerInstance::createDiagnostics(tempDiagOpts.get(),
+                                                   &tempDiagClient,
+                                                   /*owned*/false);
 
-  // Create an almost-empty memory buffer.
-  auto sourceBuffer = llvm::MemoryBuffer::getMemBuffer(
-    "extern int __swift __attribute__((unavailable));",
-    Implementation::moduleImportBufferName);
-  clang::PreprocessorOptions &ppOpts =
-      importer->Impl.Invocation->getPreprocessorOpts();
-  ppOpts.addRemappedFile(Implementation::moduleImportBufferName,
-                         sourceBuffer.release());
+    importer->Impl.Invocation =
+        clang::createInvocationFromCommandLine(invocationArgs, tempClangDiags);
+    if (!importer->Impl.Invocation)
+      return nullptr;
+  }
+
+  {
+    // Create an almost-empty memory buffer.
+    auto sourceBuffer = llvm::MemoryBuffer::getMemBuffer(
+      "extern int __swift __attribute__((unavailable));",
+      Implementation::moduleImportBufferName);
+    clang::PreprocessorOptions &ppOpts =
+        importer->Impl.Invocation->getPreprocessorOpts();
+    ppOpts.addRemappedFile(Implementation::moduleImportBufferName,
+                           sourceBuffer.release());
+  }
 
   // Install a Clang module file extension to build Swift name lookup tables.
   importer->Impl.Invocation->getFrontendOpts().ModuleFileExtensions.push_back(
@@ -915,20 +912,44 @@ ClangImporter::create(ASTContext &ctx,
           importer->Impl.InferImportAsMember));
 
   // Create a compiler instance.
-  auto PCHContainerOperations =
-    std::make_shared<clang::PCHContainerOperations>();
-  PCHContainerOperations->registerWriter(
-      llvm::make_unique<clang::ObjectFilePCHContainerWriter>());
-  PCHContainerOperations->registerReader(
-      llvm::make_unique<clang::ObjectFilePCHContainerReader>());
-  importer->Impl.Instance.reset(
-      new clang::CompilerInstance(PCHContainerOperations));
+  {
+    auto PCHContainerOperations =
+      std::make_shared<clang::PCHContainerOperations>();
+    PCHContainerOperations->registerWriter(
+        llvm::make_unique<clang::ObjectFilePCHContainerWriter>());
+    PCHContainerOperations->registerReader(
+        llvm::make_unique<clang::ObjectFilePCHContainerReader>());
+    importer->Impl.Instance.reset(
+        new clang::CompilerInstance(std::move(PCHContainerOperations)));
+  }
   auto &instance = *importer->Impl.Instance;
+  instance.setInvocation(importer->Impl.Invocation);
   if (tracker)
     instance.addDependencyCollector(tracker->getClangCollector());
 
-  instance.setDiagnostics(&*clangDiags);
-  instance.setInvocation(importer->Impl.Invocation);
+  {
+    // Now set up the real client for Clang diagnostics---configured with proper
+    // options---as opposed to the temporary one we made above.
+    auto actualDiagClient = llvm::make_unique<ClangDiagnosticConsumer>(
+        importer->Impl, instance.getDiagnosticOpts(),
+        importerOpts.DumpClangDiagnostics);
+    instance.createDiagnostics(actualDiagClient.release());
+  }
+
+  // Don't stop emitting messages if we ever can't load a module.
+  // FIXME: This is actually a general problem: any "fatal" error could mess up
+  // the CompilerInvocation when we're not in "show diagnostics after fatal
+  // error" mode.
+  clang::DiagnosticsEngine &clangDiags = instance.getDiagnostics();
+  clangDiags.setSeverity(clang::diag::err_module_not_found,
+                         clang::diag::Severity::Error,
+                         clang::SourceLocation());
+  clangDiags.setSeverity(clang::diag::err_module_not_built,
+                         clang::diag::Severity::Error,
+                         clang::SourceLocation());
+  clangDiags.setSuppressAfterFatalError(
+      !ctx.Diags.getShowDiagnosticsAfterFatalError());
+
 
   // Create the associated action.
   importer->Impl.Action.reset(new ParsingAction(ctx, *importer,
@@ -945,7 +966,7 @@ ClangImporter::create(ASTContext &ctx,
 
   // Create the target instance.
   instance.setTarget(
-    clang::TargetInfo::CreateTargetInfo(*clangDiags,
+    clang::TargetInfo::CreateTargetInfo(clangDiags,
                                         instance.getInvocation().TargetOpts));
   if (!instance.hasTarget())
     return nullptr;
@@ -1661,7 +1682,6 @@ ClangImporter::Implementation::Implementation(ASTContext &ctx,
       nameImporter() {}
 
 ClangImporter::Implementation::~Implementation() {
-  assert(NumCurrentImportingEntities == 0);
 #ifndef NDEBUG
   SwiftContext.SourceMgr.verifyAllBuffers();
 #endif

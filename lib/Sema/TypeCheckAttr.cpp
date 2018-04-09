@@ -1946,7 +1946,7 @@ void AttributeChecker::visitFixedLayoutAttr(FixedLayoutAttr *attr) {
   auto *VD = cast<ValueDecl>(D);
 
   auto access = VD->getFormalAccess(/*useDC=*/nullptr,
-                                    /*isUsageFromInline=*/true);
+                                    /*treatUsableFromInlineAsPublic=*/true);
   if (access < AccessLevel::Public) {
     diagnoseAndRemoveAttr(attr, diag::fixed_layout_attr_on_internal_type,
                           VD->getFullName(), access);
@@ -1959,13 +1959,14 @@ void AttributeChecker::visitUsableFromInlineAttr(UsableFromInlineAttr *attr) {
   // FIXME: Once protocols can contain nominal types, do we want to allow
   // these nominal types to have access control (and also @usableFromInline)?
   if (isa<ProtocolDecl>(VD->getDeclContext())) {
-    diagnoseAndRemoveAttr(attr, diag::versioned_attr_in_protocol);
+    diagnoseAndRemoveAttr(attr, diag::usable_from_inline_attr_in_protocol);
     return;
   }
 
   // @usableFromInline can only be applied to internal declarations.
   if (VD->getFormalAccess() != AccessLevel::Internal) {
-    diagnoseAndRemoveAttr(attr, diag::versioned_attr_with_explicit_access,
+    diagnoseAndRemoveAttr(attr,
+                          diag::usable_from_inline_attr_with_explicit_access,
                           VD->getFullName(),
                           VD->getFormalAccess());
     return;
@@ -1974,7 +1975,13 @@ void AttributeChecker::visitUsableFromInlineAttr(UsableFromInlineAttr *attr) {
   // Symbols of dynamically-dispatched declarations are never referenced
   // directly, so marking them as @usableFromInline does not make sense.
   if (VD->isDynamic()) {
-    diagnoseAndRemoveAttr(attr, diag::versioned_dynamic_not_supported);
+    diagnoseAndRemoveAttr(attr, diag::usable_from_inline_dynamic_not_supported);
+    return;
+  }
+
+  // On internal declarations, @inlinable implies @usableFromInline.
+  if (VD->getAttrs().hasAttribute<InlinableAttr>()) {
+    diagnoseAndRemoveAttr(attr, diag::inlinable_implies_usable_from_inline);
     return;
   }
 }
@@ -2003,11 +2010,9 @@ void AttributeChecker::visitInlinableAttr(InlinableAttr *attr) {
     return;
   }
 
-  // @inlinable can only be applied to public or @usableFromInline
-  // declarations.
-  auto access = VD->getFormalAccess(/*useDC=*/nullptr,
-                                    /*isUsageFromInline=*/true);
-  if (access < AccessLevel::Public) {
+  // @inlinable can only be applied to public or internal declarations.
+  auto access = VD->getFormalAccess();
+  if (access < AccessLevel::Internal) {
     diagnoseAndRemoveAttr(attr, diag::inlinable_decl_not_public,
                           VD->getBaseName(),
                           access);
@@ -2096,7 +2101,7 @@ void AttributeChecker::visitFrozenAttr(FrozenAttr *attr) {
   }
 
   auto access = ED->getFormalAccess(/*useDC=*/nullptr,
-                                    /*isUsageFromInline=*/true);
+                                    /*treatUsableFromInlineAsPublic=*/true);
   if (access < AccessLevel::Public) {
     diagnoseAndRemoveAttr(attr, diag::enum_frozen_nonpublic, attr);
   }

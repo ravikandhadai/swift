@@ -1608,7 +1608,9 @@ Serializer::writeConformance(ProtocolConformanceRef conformanceRef,
   switch (conformance->getKind()) {
   case ProtocolConformanceKind::Normal: {
     auto normal = cast<NormalProtocolConformance>(conformance);
-    if (!isDeclXRef(getDeclForContext(normal->getDeclContext()))) {
+    if (!isDeclXRef(getDeclForContext(normal->getDeclContext()))
+        && !isa<ClangModuleUnit>(normal->getDeclContext()
+                                       ->getModuleScopeContext())) {
       // A normal conformance in this module file.
       unsigned abbrCode = abbrCodes[NormalProtocolConformanceIdLayout::Code];
       NormalProtocolConformanceIdLayout::emitRecord(Out, ScratchRecord,
@@ -4377,8 +4379,8 @@ public:
 
 } // end unnamed namespace
 
-typedef llvm::StringMap<std::string> FileNameToGroupNameMap;
-typedef std::unique_ptr<FileNameToGroupNameMap> pFileNameToGroupNameMap;
+using FileNameToGroupNameMap = llvm::StringMap<std::string>;
+using pFileNameToGroupNameMap = std::unique_ptr<FileNameToGroupNameMap>;
 
 class YamlGroupInputParser {
   StringRef RecordPath;
