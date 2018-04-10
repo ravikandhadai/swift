@@ -23,6 +23,9 @@
 
 #define DEBUG_TYPE "constant-folding"
 #define MYDEBUG 0
+#define DEBUGDIVOVERFLOW 1
+
+#define DIVIDED_REPORTING_OVERFLOW "dividedReportingOverflow(by:)"
 
 using namespace swift;
 
@@ -510,6 +513,53 @@ static SILValue constantFoldCompare(BuiltinInst *BI, BuiltinValueKind ID) {
   return nullptr;
 }
 
+// Checks if the division operation is obtained from `dividedReportingOverflow`
+// or `remainderReportingOverflow` APIs, in which case any overflow in division
+// should not generate a diagnostic error.
+// TODO: Check if the call is made on the Stdlib.Ints and UInts.
+bool isStdlibReportingOverflowAPI(BuiltinInst *BI, BuiltinValueKind ID) {
+  assert(ID == BuiltinValueKind::SDiv ||
+         ID == BuiltinValueKind::SRem ||
+         ID == BuiltinValueKind::UDiv ||
+         ID == BuiltinValueKind::URem);
+
+  ASTContext &astCtx = BI->getModule().getASTContext();
+
+  // we expect a method call expression here. Otherwise return false.
+  DotSyntaxCallExpr* mcallExpr = nullptr;
+  if (auto applyExpr = BI->getLoc().getAsASTNode<ApplyExpr>())
+    mcallExpr = dyn_cast<DotSyntaxCallExpr>(applyExpr->getFn());
+  if (!mcallExpr)
+    return false;
+
+  if (auto methodExpr = dyn_cast<DeclRefExpr>(mcallExpr->getFn())) {
+    if (auto mdecl = dyn_cast<FuncDecl>(methodExpr->getDeclRef().getDecl())) {
+
+      // check if the method invoked is an implementation of
+      // FixedWidthInteger::`op`ReportingOverflow API.
+      auto decls = mdecl->getSatisfiedProtocolRequirements();
+      auto protocols = llvm::SmallPtrSet<ValueDecl *, 5>(decls.begin(),
+                                                         decls.end());
+      bool stdlibProtocol = false;
+      if(ID == BuiltinValueKind::SDiv || ID == BuiltinValueKind::UDiv) {
+        FuncDecl *stdlibDiv= astCtx.getDividedReportingOverflow(nullptr);
+        stdlibProtocol = protocols.count(stdlibDiv) >= 1;
+      } else {
+        FuncDecl *stdlibRem = astCtx.getRemainderReportingOverflow(nullptr);
+        stdlibProtocol = protocols.count(stdlibRem) >= 1;
+      }
+
+      // check if the method is implemented/defined in the standard library
+      auto stdlibImpl = mdecl->getModuleContext()->isStdlibModule();
+      return stdlibProtocol && stdlibImpl;
+      // Note: Is it required to test if the receiver is an integer type
+      // There are 20 cases to test. So we need to create a static array etc.
+      // to do this.
+    }
+  }
+  return false;
+}
+
 static SILValue
 constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
                              Optional<bool> &ResultsInError) {
@@ -533,6 +583,10 @@ constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
     if (!ResultsInError.hasValue())
       return nullptr;
 
+    // Suppress the disgnostic when called through the reportingOverflow API
+    if(isStdlibReportingOverflowAPI(BI, ID))
+      return nullptr;
+
     // Otherwise emit a diagnosis error and set ResultsInError to true.
     diagnose(M.getASTContext(), BI->getLoc().getSourceLoc(),
              diag::division_by_zero);
@@ -553,6 +607,10 @@ constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
   if (Overflowed) {
     // And we are not asked to produce diagnostics, just return nullptr...
     if (!ResultsInError.hasValue())
+      return nullptr;
+
+    // suppress the diagnostics when called through the reportingOverflow API
+    if(isStdlibReportingOverflowAPI(BI, ID))
       return nullptr;
 
     bool IsRem = ID == BuiltinValueKind::SRem || ID == BuiltinValueKind::URem;

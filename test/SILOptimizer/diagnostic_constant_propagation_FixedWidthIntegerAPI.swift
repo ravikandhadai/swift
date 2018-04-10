@@ -25,6 +25,8 @@ func testReportingOverflowInt8() {
     // Need to disable divide-by-zero diagnostics.
     // Divide-by-zero is not an error under this API.
 
+  var _ = UInt8.max.dividedReportingOverflow(by: 0)
+
   var _ = mone.dividingFullWidth((-1, 0x80))
     // This is equivalent to -128/-1 (an overflow).
     // There is no static or runtime check in this case.
@@ -104,6 +106,8 @@ func testReportingOverflowInt64() {
     // Need to disable divide-by-zero diagnostics.
     // Divide-by-zero is not an error under this API.
 
+  var _ = UInt64.max.dividedReportingOverflow(by: 0)
+
   var _ = mone.dividingFullWidth((-1, 0x8000_0000_0000_0000))
     // This is equivalent to Int64.min/-1 (an overflow).
     // There is no static or runtime check in this case.
@@ -162,5 +166,20 @@ func testBoundedArithmeticInt64() {
   var _ = min64 &- one
 }
 
+// Here the behavior of diagnostics is tested when there is inlining in the
+// source code. Currently we can have false positives (see <rdar://39293788>)
+func testWithInlining() {
+  let min : Int8 = -128
+  let zero : Int8 = 0
+  let mone : Int8 = -1
 
+  // FIXME: the following errors are false positives due to inlining
+  var _ = testDiv(min, zero) // expected-error {{division by zero}}
+  var _ = testDiv(min, mone) // expected-error {{division '-128 / -1' results in an overflow}}
+}
 
+@_transparent
+func testDiv<T: FixedWidthInteger>(_ lhs: T, _ rhs: T) -> T {
+  let (r, _) = lhs.dividedReportingOverflow(by: rhs)
+  return r
+}

@@ -180,8 +180,10 @@ FOR_KNOWN_FOUNDATION_TYPES(CACHE_FOUNDATION_DECL)
 
   // Declare cached declarations for each of the known declarations.
 #define FUNC_DECL(Name, Id) FuncDecl *Get##Name = nullptr;
+#define METHOD_DECL(Name, TypeId, MethodId) \
+  FuncDecl *Get##Name = nullptr;
 #include "swift/AST/KnownDecls.def"
-  
+
   /// func _getBool(Builtin.Int1) -> Bool
   FuncDecl *GetBoolDecl = nullptr;
   
@@ -1303,9 +1305,45 @@ static FuncDecl *findLibraryFunction(const ASTContext &ctx, FuncDecl *&cache,
   return cache;
 }
 
+// Find a method in the standard library.
+//
+//  - First retrieve the type declaration based on the name
+//  - then use it to retrieve the method declaration.
+// TODO: is the use of resolvers needed here?
+static FuncDecl *findLibraryMethod(const ASTContext &ctx, FuncDecl *&cache,
+       StringRef typeName, StringRef methodName, LazyResolver *resolver) {
+  if (cache) return cache;
+
+  SmallVector<ValueDecl *, 1> results;
+  ctx.lookupInSwiftModule(typeName, results);
+  if (results.size() == 1) {
+    if (auto ntDecl = dyn_cast<NominalTypeDecl>(results.front())) {
+      if (resolver)
+        resolver->resolveDeclSignature(ntDecl);
+
+      TinyPtrVector<ValueDecl *> memDecls =
+        ntDecl->lookupDirect(DeclName(ctx.getIdentifier(methodName)));
+      if (memDecls.size() == 1) {
+        if (auto funcDecl = dyn_cast<FuncDecl>(memDecls.front())) {
+          if (resolver)
+            resolver->resolveDeclSignature(funcDecl);
+
+          cache = funcDecl; // update the cache
+          return funcDecl;
+        }
+      }
+    }
+  }
+  return nullptr;
+}
+
 #define FUNC_DECL(Name, Id)                                         \
 FuncDecl *ASTContext::get##Name(LazyResolver *resolver) const {     \
   return findLibraryFunction(*this, Impl.Get##Name, Id, resolver);  \
+}
+#define METHOD_DECL(Name, TypeId, MethodId)                                    \
+FuncDecl *ASTContext::get##Name(LazyResolver *resolver) const {                \
+  return findLibraryMethod(*this, Impl.Get##Name, TypeId, MethodId, resolver); \
 }
 #include "swift/AST/KnownDecls.def"
 
