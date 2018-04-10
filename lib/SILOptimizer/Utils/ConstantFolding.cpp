@@ -502,6 +502,44 @@ static SILValue constantFoldCompare(BuiltinInst *BI, BuiltinValueKind ID) {
   return nullptr;
 }
 
+/// Determines if a FunDecl has the attribute: @_semantics("ignore.overflow").
+bool hasIgnoreOverflowAttr(FuncDecl &fDecl) {
+  for (auto *semAttr : fDecl.getAttrs().getAttributes<SemanticsAttr>()) {
+    if (semAttr->Value == "ignore.overflow")
+      return true;
+  }
+  return false;
+}
+
+/// This function determines whether the given division/remainder instruction
+/// may be obtained from a method with @_semantics("ignore.overflow") attribute
+/// through mandatory inlining. If so, any overflow in division should not
+/// generate an error. This strategy is used to avoid reporting suprious errors
+/// when arithmetic operations are performed through the 'ReportingOverflow'
+/// APIs of the standard library.
+bool mayBeInlinedFromIgnoreOverflowFun(BuiltinInst *BI) {
+  auto loc = BI->getLoc();
+
+  if (loc.getKind() != SILLocation::LocationKind::MandatoryInlinedKind) {
+    return false;
+  }
+
+  // Look up the (mandatorily) inlined call site and check for the attribute.
+  // The SIL Location of BI will contain the inlined apply expr, if the AST
+  // information is available.
+  auto *applyExpr = loc.getAsASTNode<ApplyExpr>();
+  if (!applyExpr) {
+    return true; // Be conservative if there is no AST info.
+  }
+
+  // If the inlined call site is known, ignore the overflow iff the inlined
+  // callee has the "ignore.overflow" attribute.
+  if (auto *funDecl = dyn_cast<FuncDecl>(applyExpr->getCalledValue())) {
+    return hasIgnoreOverflowAttr(*funDecl);
+  }
+  return false;
+}
+
 static SILValue
 constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
                              Optional<bool> &ResultsInError) {
@@ -525,6 +563,10 @@ constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
     if (!ResultsInError.hasValue())
       return nullptr;
 
+    // Suppress the disgnostic when called through the reportingOverflow API
+    if (mayBeInlinedFromIgnoreOverflowFun(BI))
+      return nullptr;
+
     // Otherwise emit a diagnosis error and set ResultsInError to true.
     diagnose(M.getASTContext(), BI->getLoc().getSourceLoc(),
              diag::division_by_zero);
@@ -545,6 +587,10 @@ constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
   if (Overflowed) {
     // And we are not asked to produce diagnostics, just return nullptr...
     if (!ResultsInError.hasValue())
+      return nullptr;
+
+    // suppress the diagnostics when called through the reportingOverflow API
+    if (mayBeInlinedFromIgnoreOverflowFun(BI))
       return nullptr;
 
     bool IsRem = ID == BuiltinValueKind::SRem || ID == BuiltinValueKind::URem;

@@ -3391,6 +3391,7 @@ ${assignmentOperatorComment(x.operator, True)}
 ${overflowOperationComment(x.operator)}
   @inlinable // FIXME(sil-serialize-all)
   @_transparent
+  @_semantics("ignore.overflow")
   public func ${x.name}ReportingOverflow(
     ${x.firstArg} other: ${Self}
   ) -> (partialValue: ${Self}, overflow: Bool) {

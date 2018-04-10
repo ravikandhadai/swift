@@ -1,0 +1,92 @@
+// RUN: %target-sil-opt %s -diagnostic-constant-propagation -o /dev/null -verify
+//
+// Tests for checking the behavior of constant propagation diagnostics on
+// SIL inputs. The constant propagation diagnostics rely on AST information to
+// suppress diagnostics in some cases. This file tests to make sure that errors
+// aren't emitted when AST information is not available.
+
+sil_stage raw
+
+import Builtin
+import Swift
+
+sil @testOverflowInDivSIL : $@convention(thin) () -> (Int8, Bool) {
+  bb0:
+  %0 = metatype $@thin Int8.Type
+  %1 = integer_literal $Builtin.Int2048, -128
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %2 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %3 = apply %2(%1, %0) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %5 = metatype $@thin Int8.Type
+  %6 = integer_literal $Builtin.Int2048, -1
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %7 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %8 = apply %7(%6, %5) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  // function_ref Int8.dividedReportingOverflow(by:)
+  %9 = function_ref @$Ss4Int8V24dividedReportingOverflow2byAB12partialValue_Sb8overflowtAB_tF : $@convention(method) (Int8, Int8) -> (Int8, Bool)  // no error expected
+  %10 = apply %9(%8, %3) : $@convention(method) (Int8, Int8) -> (Int8, Bool)
+  return %10 : $(Int8, Bool)
+}
+
+sil @testDivByZeroSIL : $@convention(thin) () -> (Int8, Bool) {
+  bb0:
+  %0 = metatype $@thin Int8.Type
+  %1 = integer_literal $Builtin.Int2048, 128
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %2 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %3 = apply %2(%1, %0) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %5 = metatype $@thin Int8.Type
+  %6 = integer_literal $Builtin.Int2048, 0
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %7 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %8 = apply %7(%6, %5) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  // function_ref Int8.dividedReportingOverflow(by:)
+  %9 = function_ref @$Ss4Int8V24dividedReportingOverflow2byAB12partialValue_Sb8overflowtAB_tF : $@convention(method) (Int8, Int8) -> (Int8, Bool)  // no error expected
+  %10 = apply %9(%8, %3) : $@convention(method) (Int8, Int8) -> (Int8, Bool)
+  return %10 : $(Int8, Bool)
+}
+
+sil @testOverflowInRemSIL : $@convention(thin) () -> (Int8, Bool) {
+  bb0:
+  %0 = metatype $@thin Int8.Type
+  %1 = integer_literal $Builtin.Int2048, -128
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %2 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %3 = apply %2(%1, %0) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %5 = metatype $@thin Int8.Type
+  %6 = integer_literal $Builtin.Int2048, -1
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %7 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %8 = apply %7(%6, %5) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  // function_ref Int8.remainderReportingOverflow(dividingBy:)
+  %9 = function_ref @$Ss4Int8V26remainderReportingOverflow10dividingByAB12partialValue_Sb8overflowtAB_tF : $@convention(method) (Int8, Int8) -> (Int8, Bool)  // no error expected
+  %10 = apply %9(%8, %3) : $@convention(method) (Int8, Int8) -> (Int8, Bool)
+  return %10 : $(Int8, Bool)
+}
+
+sil @testRemByZeroSIL : $@convention(thin) () -> (Int8, Bool) {
+  bb0:
+  %0 = metatype $@thin Int8.Type
+  %1 = integer_literal $Builtin.Int2048, 128
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %2 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %3 = apply %2(%1, %0) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %5 = metatype $@thin Int8.Type
+  %6 = integer_literal $Builtin.Int2048, 0
+  // function_ref Int8.init(_builtinIntegerLiteral:)
+  %7 = function_ref @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  %8 = apply %7(%6, %5) : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+  // function_ref Int8.remainderReportingOverflow(dividingBy:)
+  %9 = function_ref @$Ss4Int8V26remainderReportingOverflow10dividingByAB12partialValue_Sb8overflowtAB_tF : $@convention(method) (Int8, Int8) -> (Int8, Bool)
+  %10 = apply %9(%8, %3) : $@convention(method) (Int8, Int8) -> (Int8, Bool)
+  return %10 : $(Int8, Bool)
+}
+
+// Int8.init(_builtinIntegerLiteral:)
+sil [transparent] [serialized] @$Ss4Int8V22_builtinIntegerLiteralABBi2048__tcfC : $@convention(method) (Builtin.Int2048, @thin Int8.Type) -> Int8
+
+// Int8.dividedReportingOverflow(by:)
+sil [transparent] [serialized] [_semantics "ignore.overflow"] @$Ss4Int8V24dividedReportingOverflow2byAB12partialValue_Sb8overflowtAB_tF : $@convention(method) (Int8, Int8) -> (Int8, Bool)
+
+// Int8.remainderReportingOverflow(dividingBy:)
+sil [transparent] [serialized] [_semantics "ignore.overflow"] @$Ss4Int8V26remainderReportingOverflow10dividingByAB12partialValue_Sb8overflowtAB_tF : $@convention(method) (Int8, Int8) -> (Int8, Bool)
