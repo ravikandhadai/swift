@@ -436,6 +436,9 @@ public:
   // Declare accessors for the known declarations.
 #define FUNC_DECL(Name, Id) \
   FuncDecl *get##Name(LazyResolver *resolver) const;
+
+#define METHOD_DECL(Name, TypeId, MethodId) \
+  FuncDecl *get##Name(LazyResolver *resolver) const;
 #include "swift/AST/KnownDecls.def"
 
   /// Get the '+' function on two RangeReplaceableCollection.

@@ -79,3 +79,17 @@ FUNC_DECL(ProjectKeyPathReferenceWritable, "_projectKeyPathReferenceWritable")
 FUNC_DECL(Swap, "swap")
 
 #undef FUNC_DECL
+
+#ifndef METHOD_DECL
+#  define METHOD_DECL(Name, TypeId, MethodId)
+#endif
+
+// A list of methods that are known to the compiler and treated specially
+METHOD_DECL(DividedReportingOverflow, "FixedWidthInteger",
+            "dividedReportingOverflow")
+
+METHOD_DECL(RemainderReportingOverflow, "FixedWidthInteger",
+            "remainderReportingOverflow")
+
+#undef METHOD_DECL
+
