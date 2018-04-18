@@ -1302,13 +1302,15 @@ ConstantFolder::processWorkList() {
       continue;
     }
 
-
+    llvm::dbgs() << "I: " << *I << "\n";
     // Go through all users of the constant and try to fold them.
     // TODO: MultiValueInstruction
     FoldedUsers.clear();
     for (auto Use : cast<SingleValueInstruction>(I)->getUses()) {
       SILInstruction *User = Use->getUser();
       DEBUG(llvm::dbgs() << "    User: " << *User);
+
+      llvm::dbgs() << "    User: " << *User << "\n";
 
       // It is possible that we had processed this user already. Do not try
       // to fold it again if we had previously produced an error while folding
