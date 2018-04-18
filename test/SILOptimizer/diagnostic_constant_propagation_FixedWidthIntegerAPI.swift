@@ -165,21 +165,3 @@ func testBoundedArithmeticInt64() {
   var _ = min64 &* min64
   var _ = min64 &- one
 }
-
-// Here the behavior of diagnostics is tested when there is inlining in the
-// source code. Currently we can have false positives (see <rdar://39293788>)
-func testWithInlining() {
-  let min : Int8 = -128
-  let zero : Int8 = 0
-  let mone : Int8 = -1
-
-  // FIXME: the following errors are false positives due to inlining
-  var _ = testDiv(min, zero) // expected-error {{division by zero}}
-  var _ = testDiv(min, mone) // expected-error {{division '-128 / -1' results in an overflow}}
-}
-
-@_transparent
-func testDiv<T: FixedWidthInteger>(_ lhs: T, _ rhs: T) -> T {
-  let (r, _) = lhs.dividedReportingOverflow(by: rhs)
-  return r
-}
