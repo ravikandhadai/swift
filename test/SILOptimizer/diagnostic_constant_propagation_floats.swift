@@ -88,3 +88,117 @@ func testFPToIntConversion() {
   _blackHole(Int64(1E6000)) // expected-error {{invalid conversion: '1E6000' overflows 'Int64'}}
   _blackHole(UInt64(1E6000)) // expected-error {{invalid conversion: '1E6000' overflows 'UInt64'}}
 }
+
+func testFloatConvertOverflow() {
+  let f1: Float = 1E38
+  _blackHole(f1)
+  let f2: Float = 1E39 // expected-warning {{floating-point literal '9.99999999999999999993E+38' overflows 32-bit floating-point type}}
+  _blackHole(f2)
+  let f3: Float = 123456789101234567891234567123456123451234123121.0 // expected-warning {{floating-point literal '1.23456789101234567893E+47' overflows 32-bit floating-point type}}
+  _blackHole(f3)
+  let f4: Float = 0.123456789101234567891234567123456123451234123121
+  _blackHole(f4)
+
+  let f5: Float32 = 3.4028236e+38 // expected-warning {{floating-point literal '3.40282360000000000005E+38' overflows 32-bit floating-point type}}
+  _blackHole(f5)
+  let f6: Float32 = -3.4028236e+38 // expected-warning {{floating-point literal '-3.40282360000000000005E+38' overflows 32-bit floating-point type}}
+  _blackHole(f6)
+  let f7: Float32 = 1.0e999 // expected-warning {{floating-point literal '1.00000000000000000003E+999' overflows 32-bit floating-point type}}
+  _blackHole(f7)
+  let f8: Float32 = -1.0e999 // expected-warning {{floating-point literal '-1.00000000000000000003E+999' overflows 32-bit floating-point type}}
+  _blackHole(f8)
+  
+  _blackHole(Float(1E38))
+  _blackHole(Float(1E39)) // expected-warning {{floating-point literal '9.9999999999999994E+38' overflows 32-bit floating-point type}}
+  _blackHole(Float(123456789101234567891234567123456123451234123121.0)) // expected-warning {{floating-point literal '1.2345678910123456E+47' overflows 32-bit floating-point type}}
+  _blackHole(Float(100000000000000000000000000000000000000000000000.0)) // expected-warning {{floating-point literal '1.0E+47' overflows 32-bit floating-point type}}
+
+  let d1: Double = 1E308
+  _blackHole(d1)
+  let d2: Double = 123456789101234567891234567123456123451234123121.0
+  _blackHole(d2)
+  let d3: Double = 0.123456789101234567891234567123456123451234123121
+  _blackHole(d3)
+  let d4: Double = 1E309 // expected-warning {{floating-point literal '9.99999999999999999986E+308' overflows 64-bit floating-point type}}
+  _blackHole(d4)
+
+  let d5: Float64 = 1.0e999 // expected-warning {{floating-point literal '1.00000000000000000003E+999' overflows 64-bit floating-point type}}
+  _blackHole(d5)
+  let d6: Float64 = -1.0e999 // expected-warning {{floating-point literal '-1.00000000000000000003E+999' overflows 64-bit floating-point type}}
+  _blackHole(d6)
+  let d7: Float64 = 1.7976931348623159e+308 // expected-warning {{floating-point literal '1.79769313486231590003E+308' overflows 64-bit floating-point type}}
+  _blackHole(d7)
+  let d8: Float64 = -1.7976931348623159e+308 // expected-warning {{floating-point literal '-1.79769313486231590003E+308' overflows 64-bit floating-point type}}
+  _blackHole(d8)
+
+  // Double.init() is getting optimized away when using `let _`.
+  // Why is this behavior specific to Double Inits?
+  _blackHole(Double(1E308))
+  _blackHole(Double(1E309)) // expected-warning {{floating-point literal '9.99999999999999999986E+308' overflows 64-bit floating-point type}}
+
+  // In the following cases, the input literal is bigger than what can be
+  // represented in Swift and hence is represented as Inf
+  
+  let e1: Float80 = 1E6000 // expected-warning {{input literal is outside the range of largest representable floating-point literal}}
+  _blackHole(Float80(1E6000)) // expected-warning {{input literal is outside the range of largest representable floating-point literal}}
+  let e2: Float80 = 1.18973149535723176515e+4932 // expected-warning {{input literal is outside the range of largest representable floating-point literal}}
+  let e3: Float80 = -1.18973149535723176515e+4932 // expected-warning {{input literal is outside the range of largest representable floating-point literal}}
+  _blackHole(e1)
+  _blackHole(e2)
+  _blackHole(e3)
+
+  _blackHole(Float(1E6000)) // expected-warning {{input literal is outside the range of largest representable floating-point literal}}
+  _blackHole(Double(1E6000)) // expected-warning {{input literal is outside the range of largest representable floating-point literal}}
+}
+
+func testFloatConvertUnderflow() {
+  let f1: Float = 1E-37
+  _blackHole(f1)
+  let f2: Float = 1E-39 // expected-warning {{floating-point literal '1.00000000000000000003E-39' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  _blackHole(f2)
+  let f3: Float = 0x0.800000p-126 // a precisely represented subnormal number. The underflow flag will not be set here.
+  _blackHole(f3)
+  let f4: Float = 0x0.000002p-126 // smallest Float subnormal number
+  _blackHole(f4)
+  let f5: Float = 1E-45 // expected-warning {{floating-point literal '9.99999999999999999981E-46' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  _blackHole(f5)
+  
+  let f6: Float = 0x1.000000p-126 // Smallest normal number, which is
+  // approximately 1.1754943508
+  _blackHole(f6)
+  let f7: Float = 1.1754943e-38 // This number is smaller than the smallest
+  // normal number and is imprecise. Nonetheless, underflow wont be detected
+  // here as underflow detection happens after rounding. This is due to
+  // LLVM's APFloat behavior. We do not warn in these cases.
+  _blackHole(f7)
+  
+  _blackHole(Float(1E-37))
+  _blackHole(Float(1E-39)) // expected-warning {{floating-point literal '9.9999999999999992E-40' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  _blackHole(Float(0x0.000002p-126))
+  _blackHole(Float(1E-45)) // expected-warning {{floating-point literal '9.9999999999999998E-46' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  
+  let d1: Double = 1E-307
+  _blackHole(d1)
+  let d2: Double = 1E-309 // expected-warning {{floating-point literal '9.99999999999999999974E-310' is subnormal and is not precisely representable in a 64-bit floating-point type}}
+  _blackHole(d2)
+  let d3: Double = 0x0.0000000000004p-1024 // smallest Double subnormal number
+  _blackHole(d3)
+  let d4: Double = 5e-324 // expected-warning {{floating-point literal '4.99999999999999999976E-324' is subnormal and is not precisely representable in a 64-bit floating-point type}}
+  _blackHole(d4)
+  
+  _blackHole(Double(1E-307))
+  _blackHole(Double(1E-309)) // expected-warning {{floating-point literal '9.99999999999999999974E-310' is subnormal and is not precisely representable in a 64-bit floating-point type}}
+  _blackHole(Double(0x0.0000000000004p-1024))
+  _blackHole(Double(5e-324)) // expected-warning {{floating-point literal '4.99999999999999999976E-324' is subnormal and is not precisely representable in a 64-bit floating-point type}})
+}
+
+func testFloatArithmetic() {
+  // Ignore Inf and Nan during arithmetic operations.
+  // This may become a warning in the future.
+  let infV: Float = 3.0 / 0.0
+  _blackHole(infV)
+  
+  let a: Float = 1E38
+  let b: Float = 10.0
+  _blackHole(a * b)
+}
