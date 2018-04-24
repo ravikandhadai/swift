@@ -85,10 +85,10 @@ FUNC_DECL(Swap, "swap")
 #endif
 
 // A list of methods that are known to the compiler and treated specially
-METHOD_DECL(DividedReportingOverflow, "FixedWidthInteger",
+METHOD_DECL(FixedWidthIntegerDividedReportingOverflow, "FixedWidthInteger",
             "dividedReportingOverflow")
 
-METHOD_DECL(RemainderReportingOverflow, "FixedWidthInteger",
+METHOD_DECL(FixedWidthIntegerRemainderReportingOverflow, "FixedWidthInteger",
             "remainderReportingOverflow")
 
 #undef METHOD_DECL

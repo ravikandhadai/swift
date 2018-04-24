@@ -500,10 +500,13 @@ static SILValue constantFoldCompare(BuiltinInst *BI, BuiltinValueKind ID) {
   return nullptr;
 }
 
-// Checks if the division operation is obtained from `dividedReportingOverflow`
-// or `remainderReportingOverflow` APIs, in which case any overflow in division
-// should not generate a diagnostic error.
-bool isStdlibReportingOverflowAPI(BuiltinInst *BI, BuiltinValueKind ID) {
+// Checks whether the given division/remainder instruction could appear
+// within a `dividedReportingOverflow` or `remainderReportingOverflow` method
+// defined in the standard library. In such cases any overflow in division
+// should not generate an error.
+// FIXME: support transitive inlinings of `reportingOverflow` APIs
+// due to nested @_transparent annotations in the std library.
+bool mayBeStdlibReportingOverflowAPI(BuiltinInst *BI, BuiltinValueKind ID) {
   assert(ID == BuiltinValueKind::SDiv ||
          ID == BuiltinValueKind::SRem ||
          ID == BuiltinValueKind::UDiv ||
@@ -511,35 +514,56 @@ bool isStdlibReportingOverflowAPI(BuiltinInst *BI, BuiltinValueKind ID) {
 
   ASTContext &astCtx = BI->getModule().getASTContext();
 
-  // we expect a method call expression here. Otherwise return false.
-  DotSyntaxCallExpr *mcallExpr = nullptr;
-  if (auto applyExpr = BI->getLoc().getAsASTNode<ApplyExpr>())
-    mcallExpr = dyn_cast<DotSyntaxCallExpr>(applyExpr->getFn());
+  auto *applyExpr = BI->getLoc().getAsASTNode<ApplyExpr>();
+  if (!applyExpr) {
+    // There is no AST node for `BI` here.
+    // So, `BI` could possibly have come from a `reportingOverflow` API
+    return true;
+  }
+
+  // In the sequel, we pattern match on the AST node and check if it is an
+  // implementation of FixedWidthInteger::reportingOverflow API.
+  // If the pattern matching fails at any point, we return false as it
+  // guarantees that `BI` did not come from a `reportingOverflow`
+  // method defined in the standard library.
+  auto *mcallExpr = dyn_cast<DotSyntaxCallExpr>(applyExpr->getFn());
   if (!mcallExpr)
     return false;
 
-  if (auto methodExpr = dyn_cast<DeclRefExpr>(mcallExpr->getFn())) {
-    if (auto mdecl = dyn_cast<FuncDecl>(methodExpr->getDeclRef().getDecl())) {
+  if (auto *methodExpr = dyn_cast<DeclRefExpr>(mcallExpr->getFn())) {
+    if (auto *mDecl = dyn_cast<FuncDecl>(methodExpr->getDeclRef().getDecl())) {
 
-      // check if the method invoked is an implementation of
-      // FixedWidthInteger::`op`ReportingOverflow API.
-      auto decls = mdecl->getSatisfiedProtocolRequirements();
-      auto protocols = llvm::SmallPtrSet<ValueDecl *, 5>(decls.begin(),
-                                                         decls.end());
-      bool stdlibProtocol = false;
-      if(ID == BuiltinValueKind::SDiv || ID == BuiltinValueKind::UDiv) {
-        FuncDecl *stdlibDiv= astCtx.getDividedReportingOverflow(nullptr);
-        stdlibProtocol = protocols.count(stdlibDiv) >= 1;
-      } else {
-        FuncDecl *stdlibRem = astCtx.getRemainderReportingOverflow(nullptr);
-        stdlibProtocol = protocols.count(stdlibRem) >= 1;
+      // return false if the method is not implemented in the std library
+      if (!mDecl->getModuleContext()->isStdlibModule())
+        return false;
+
+      // get the protocol conformances of the enclosing type
+      auto *enclosingType = mDecl->getDeclContext()->
+      getAsNominalTypeOrNominalTypeExtensionContext();
+      if (!enclosingType)
+        return false;
+
+      auto *fixedWidthIntegerProtocol = astCtx.getFixedWidthIntegerDecl();
+
+      SmallVector<ProtocolConformance *, 1> conformances;
+      enclosingType->lookupConformance(mDecl->getModuleContext(),
+                                       fixedWidthIntegerProtocol, conformances);
+      if (conformances.size() == 0)
+        return false;
+
+      FuncDecl *requirement = nullptr;
+      if (ID == BuiltinValueKind::SDiv || ID == BuiltinValueKind::UDiv)
+        requirement =
+          astCtx.getFixedWidthIntegerDividedReportingOverflow(nullptr);
+      else
+        requirement =
+          astCtx.getFixedWidthIntegerRemainderReportingOverflow(nullptr);
+
+      for (auto *conformance : conformances) {
+        if (conformance->getWitnessDecl(requirement, nullptr) == mDecl) {
+          return true;
+        }
       }
-
-      // check if the method is implemented/defined in the standard library
-      auto stdlibImpl = mdecl->getModuleContext()->isStdlibModule();
-      return stdlibProtocol && stdlibImpl;
-      // Note: Is it required to test if the receiver is an integer type?
-      // There are 20 different integers in the std library.
     }
   }
   return false;
@@ -569,7 +593,7 @@ constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
       return nullptr;
 
     // Suppress the disgnostic when called through the reportingOverflow API
-    if(isStdlibReportingOverflowAPI(BI, ID))
+    if (mayBeStdlibReportingOverflowAPI(BI, ID))
       return nullptr;
 
     // Otherwise emit a diagnosis error and set ResultsInError to true.
@@ -595,7 +619,7 @@ constantFoldAndCheckDivision(BuiltinInst *BI, BuiltinValueKind ID,
       return nullptr;
 
     // suppress the diagnostics when called through the reportingOverflow API
-    if(isStdlibReportingOverflowAPI(BI, ID))
+    if (mayBeStdlibReportingOverflowAPI(BI, ID))
       return nullptr;
 
     bool IsRem = ID == BuiltinValueKind::SRem || ID == BuiltinValueKind::URem;

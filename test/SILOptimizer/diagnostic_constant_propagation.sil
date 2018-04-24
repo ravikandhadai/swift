@@ -1,0 +1,48 @@
+// RUN: %target-sil-opt %s -diagnostic-constant-propagation -o /dev/null -verify
+//
+// Unit tests for checking the behavior of constant propagation diagnostics on
+// SIL inputs. Note that constant propagation diagnostic relies on AST
+// information sometimes and the tests here check these aspects.
+
+sil_stage raw
+
+import Builtin
+import Swift
+
+sil @testOverflowInDivSIL : $@convention(thin) () -> Int8 {
+  bb0:
+  %0 = integer_literal $Builtin.Int8, -128
+  %1 = integer_literal $Builtin.Int8, -1
+  %2 = builtin "sdiv_Int8"(%0 : $Builtin.Int8, %1 : $Builtin.Int8) : $Builtin.Int8 // no error expected
+  %3 = struct $Int8 (%2 : $Builtin.Int8)
+  return %3 : $Int8
+}
+
+sil @testDivByZeroSIL : $@convention(thin) () -> UInt8 {
+  bb0:
+  %0 = integer_literal $Builtin.Int8, 128
+  %1 = integer_literal $Builtin.Int8, 0
+  %2 = builtin "sdiv_Int8"(%0 : $Builtin.Int8, %1 : $Builtin.Int8) : $Builtin.Int8 // no error expected
+  %3 = builtin "udiv_Int8"(%0 : $Builtin.Int8, %1 : $Builtin.Int8) : $Builtin.Int8 // no error expected
+  %4 = struct $UInt8 (%3 : $Builtin.Int8)
+  return %4 : $UInt8
+}
+
+sil @testOverflowInRemSIL : $@convention(thin) () -> Int8 {
+  bb0:
+  %0 = integer_literal $Builtin.Int8, -128
+  %1 = integer_literal $Builtin.Int8, -1
+  %2 = builtin "srem_Int8"(%0 : $Builtin.Int8, %1 : $Builtin.Int8) : $Builtin.Int8 // no error expected
+  %3 = struct $Int8 (%2 : $Builtin.Int8)
+  return %3 : $Int8
+}
+
+sil @testRemByZeroSIL : $@convention(thin) () -> UInt8 {
+  bb0:
+  %0 = integer_literal $Builtin.Int8, 128
+  %1 = integer_literal $Builtin.Int8, 0
+  %2 = builtin "srem_Int8"(%0 : $Builtin.Int8, %1 : $Builtin.Int8) : $Builtin.Int8 // no error expected
+  %3 = builtin "urem_Int8"(%0 : $Builtin.Int8, %1 : $Builtin.Int8) : $Builtin.Int8 // no error expected
+  %4 = struct $UInt8 (%3 : $Builtin.Int8)
+  return %4 : $UInt8
+}

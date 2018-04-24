@@ -1308,7 +1308,8 @@ static FuncDecl *findLibraryFunction(const ASTContext &ctx, FuncDecl *&cache,
 // Find a method in the standard library.
 //  - First retrieve the type declaration based on the name
 //  - then use it to retrieve the method declaration.
-// TODO: is the use of resolvers needed here?
+// The function returns nullptr if there are two methods with the
+// same base name (ignoring parameter names/types) in the nominal type.
 static FuncDecl *findLibraryMethod(const ASTContext &ctx, FuncDecl *&cache,
        StringRef typeName, StringRef methodName, LazyResolver *resolver) {
   if (cache) return cache;
