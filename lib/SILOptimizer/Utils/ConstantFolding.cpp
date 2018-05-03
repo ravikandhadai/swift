@@ -20,6 +20,7 @@
 #include "swift/SILOptimizer/Utils/Local.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/ADT/APSInt.h"
 
 #define DEBUG_TYPE "constant-folding"
 
@@ -859,6 +860,64 @@ constantFoldAndCheckIntegerConversions(BuiltinInst *BI,
 
 }
 
+static SILValue foldFPToIntConversion(BuiltinInst *BI,
+      const BuiltinInfo &Builtin, Optional<bool> &ResultsInError) {
+
+  assert(Builtin.ID == BuiltinValueKind::FPToSI ||
+         Builtin.ID == BuiltinValueKind::FPToUI);
+
+  OperandValueArrayRef Args = BI->getArguments();
+  bool conversionToUnsigned = (Builtin.ID == BuiltinValueKind::FPToUI);
+
+  auto *fpLitInst = dyn_cast<FloatLiteralInst>(Args[0]);
+  if (!fpLitInst)
+    return nullptr;
+  APFloat fpVal = fpLitInst->getValue();
+
+  // Check non-negativeness of 'fpVal' for conversion to unsigned int.
+  if(conversionToUnsigned && fpVal.isNegative() && !fpVal.isZero()) {
+    // Stop folding and emit diagnostics if enabled.
+    if(ResultsInError.hasValue()) {
+      SmallString<10> fpStr;
+      fpVal.toString(fpStr);
+      SILModule &M = BI->getModule();
+      diagnose(M.getASTContext(), BI->getLoc().getSourceLoc(),
+               diag::negative_fp_literal_overflow_unsigned, fpStr);
+      ResultsInError = Optional<bool>(true);
+    }
+    return nullptr;
+  }
+
+  auto *destTy = Builtin.Types[1]->castTo<BuiltinIntegerType>();
+
+  llvm::APSInt resInt(destTy->getFixedWidth(), conversionToUnsigned);
+  bool isExact = false;
+  APFloat::opStatus status =
+    fpVal.convertToInteger(resInt, APFloat::rmTowardZero, &isExact);
+
+  if (status & APFloat::opStatus::opInvalidOp) {
+    // Stop folding and emit diagnostics if enabled.
+    if (ResultsInError.hasValue()) {
+      SmallString<10> fpStr;
+      fpVal.toString(fpStr);
+      SILModule &M = BI->getModule();
+      diagnose(M.getASTContext(), BI->getLoc().getSourceLoc(),
+               diag::float_to_int_overflow, fpStr, destTy->getFixedWidth(),
+               conversionToUnsigned);
+      ResultsInError = Optional<bool>(true);
+    }
+    return nullptr;
+  }
+
+  if (status != APFloat::opStatus::opOK &&
+      status != APFloat::opStatus::opInexact) {
+    return nullptr;
+  }
+  // The call to the builtin should be replaced with the constant value.
+  SILBuilderWithScope B(BI);
+  return B.createIntegerLiteral(BI->getLoc(), BI->getType(), resInt);
+}
+
 static SILValue constantFoldBuiltin(BuiltinInst *BI,
                                     Optional<bool> &ResultsInError) {
   const IntrinsicInfo &Intrinsic = BI->getIntrinsicInfo();
@@ -987,6 +1046,12 @@ case BuiltinValueKind::id:
     // The call to the builtin should be replaced with the constant value.
     SILBuilderWithScope B(BI);
     return B.createFloatLiteral(Loc, BI->getType(), TruncVal);
+  }
+
+  // Conversions from floating point to integer,
+  case BuiltinValueKind::FPToSI:
+  case BuiltinValueKind::FPToUI: {
+    return foldFPToIntConversion(BI, Builtin, ResultsInError);
   }
 
   case BuiltinValueKind::AssumeNonNegative: {
