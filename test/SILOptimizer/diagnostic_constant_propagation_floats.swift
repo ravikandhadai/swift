@@ -67,6 +67,50 @@ func testFloatConvertOverflow() {
   _blackHole(Double(1E6000)) // expected-warning {{input literal is outside the range of largest representable floating-point literal}}
 }
 
+func testFloatConvertUnderflow() {
+  let f1: Float = 1E-37
+  _blackHole(f1)
+  let f2: Float = 1E-39 // expected-warning {{floating-point literal '1.00000000000000000003E-39' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  _blackHole(f2)
+  let f3: Float = 0x0.800000p-126 // a precisely represented subnormal number. The underflow flag will not be set here.
+  _blackHole(f3)
+  let f4: Float = 0x0.000002p-126 // smallest Float subnormal number
+  _blackHole(f4)
+  let f5: Float = 1E-45 // expected-warning {{floating-point literal '9.99999999999999999981E-46' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  _blackHole(f5)
+
+  let f6: Float = 0x1.000000p-126 // Smallest normal number, which is
+                                  // approximately 1.1754943508
+  _blackHole(f6)
+  let f7: Float = 1.1754943e-38 // This number is smaller than the smallest
+    // normal number and is imprecise. Nonetheless, underflow wont be detected
+    // here as underflow detection happens after rounding. This is due to
+    // LLVM's APFloat behavior. We do not warn in these cases.
+  _blackHole(f7)
+
+  let f8: Float = 1.17549428e-38 // expected-warning {{floating-point literal '1.17549427999999999999E-38' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  _blackHole(f8)
+
+  _blackHole(Float(1E-37))
+  _blackHole(Float(1E-39)) // expected-warning {{floating-point literal '9.9999999999999992E-40' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+  _blackHole(Float(0x0.000002p-126))
+  _blackHole(Float(1E-45)) // expected-warning {{floating-point literal '9.9999999999999998E-46' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+
+  let d1: Double = 1E-307
+  _blackHole(d1)
+  let d2: Double = 1E-309 // expected-warning {{floating-point literal '9.99999999999999999974E-310' is subnormal and is not precisely representable in a 64-bit floating-point type}}
+  _blackHole(d2)
+  let d3: Double = 0x0.0000000000004p-1024 // smallest Double subnormal number
+  _blackHole(d3)
+  let d4: Double = 5e-324 // expected-warning {{floating-point literal '4.99999999999999999976E-324' is subnormal and is not precisely representable in a 64-bit floating-point type}}
+  _blackHole(d4)
+
+  _blackHole(Double(1E-307))
+  _blackHole(Double(1E-309)) // expected-warning {{floating-point literal '9.99999999999999999974E-310' is subnormal and is not precisely representable in a 64-bit floating-point type}}
+  _blackHole(Double(0x0.0000000000004p-1024))
+  _blackHole(Double(5e-324)) // expected-warning {{floating-point literal '4.99999999999999999976E-324' is subnormal and is not precisely representable in a 64-bit floating-point type}})
+}
+
 func testFloatToIntConversion() {
   _blackHole(Int8(-1.28E2))
   _blackHole(Int8(-1.27E2))
@@ -125,45 +169,35 @@ func testFloatToIntConversion() {
   _blackHole(UInt64(-2E2)) // expected-error {{cannot convert negative floating-point literal '-200' to unsigned integer type}}
 }
 
-func testFloatConvertUnderflow() {
-  let f1: Float = 1E-37
+func testIntToFloatConversion() {
+  let f1: Float = 16777216 // This is 2^24, which is the largest integer precisely representable in 32-bit floating point.
   _blackHole(f1)
-  let f2: Float = 1E-39 // expected-warning {{floating-point literal '1.00000000000000000003E-39' is subnormal and is not precisely representable in a 32-bit floating-point type}}
+
+  let f2: Float = 1_000_000_000_000 // expected-warning {{integer literal '1000000000000' is not exactly representable in a 32-bit floating point type}}
   _blackHole(f2)
-  let f3: Float = 0x0.800000p-126 // a precisely represented subnormal number. The underflow flag will not be set here.
+
+  let f3: Float = 16777217 // expected-warning {{integer literal '16777217' is not exactly representable in a 32-bit floating point type}}
   _blackHole(f3)
-  let f4: Float = 0x0.000002p-126 // smallest Float subnormal number
-  _blackHole(f4)
-  let f5: Float = 1E-45 // expected-warning {{floating-point literal '9.99999999999999999981E-46' is subnormal and is not precisely representable in a 32-bit floating-point type}}
-  _blackHole(f5)
 
-  let f6: Float = 0x1.000000p-126 // Smallest normal number, which is
-                                  // approximately 1.1754943508
-  _blackHole(f6)
-  let f7: Float = 1.1754943e-38 // This number is smaller than the smallest
-    // normal number and is imprecise. Nonetheless, underflow wont be detected
-    // here as underflow detection happens after rounding. This is due to
-    // LLVM's APFloat behavior. We do not warn in these cases.
-  _blackHole(f7)
-
-  _blackHole(Float(1E-37))
-  _blackHole(Float(1E-39)) // expected-warning {{floating-point literal '9.9999999999999992E-40' is subnormal and is not precisely representable in a 32-bit floating-point type}}
-  _blackHole(Float(0x0.000002p-126))
-  _blackHole(Float(1E-45)) // expected-warning {{floating-point literal '9.9999999999999998E-46' is subnormal and is not precisely representable in a 32-bit floating-point type}}
-
-  let d1: Double = 1E-307
+  let d1: Double = 9_007_199_254_740_992 // This value is 2^53
   _blackHole(d1)
-  let d2: Double = 1E-309 // expected-warning {{floating-point literal '9.99999999999999999974E-310' is subnormal and is not precisely representable in a 64-bit floating-point type}}
-  _blackHole(d2)
-  let d3: Double = 0x0.0000000000004p-1024 // smallest Double subnormal number
-  _blackHole(d3)
-  let d4: Double = 5e-324 // expected-warning {{floating-point literal '4.99999999999999999976E-324' is subnormal and is not precisely representable in a 64-bit floating-point type}}
-  _blackHole(d4)
 
-  _blackHole(Double(1E-307))
-  _blackHole(Double(1E-309)) // expected-warning {{floating-point literal '9.99999999999999999974E-310' is subnormal and is not precisely representable in a 64-bit floating-point type}}
-  _blackHole(Double(0x0.0000000000004p-1024))
-  _blackHole(Double(5e-324)) // expected-warning {{floating-point literal '4.99999999999999999976E-324' is subnormal and is not precisely representable in a 64-bit floating-point type}})
+  let d2: Double = 9_007_199_254_740_993 // expected-warning {{integer literal '9007199254740993' is not exactly representable in a 64-bit floating point type}}
+  _blackHole(d2)
+
+  let e1: Float80 =  18_446_744_073_709_551_616 // This value is 2^64
+  _blackHole(e1)
+
+  let e2: Float80 =  18_446_744_073_709_551_617 // expected-warning {{integer literal '18446744073709551617' is not exactly representable in a 80-bit floating point type}}
+  _blackHole(e2)
+
+  // FIXME: no warnings emitted with Float and Double initializers
+  _blackHole(Float(16777217))
+  _blackHole(Double(9_007_199_254_740_993))
+
+   // FIXME: improve diagnosis text by explaining the reason
+  _blackHole(Float80(18_446_744_073_709_551_616)) // expected-error {{integer literal '18446744073709551616' overflows when stored into 'Int'}}
+  _blackHole(Float80(18_446_744_073_709_551_617)) // expected-error {{integer literal '18446744073709551617' overflows when stored into 'Int'}}
 }
 
 func testFloatArithmetic() {

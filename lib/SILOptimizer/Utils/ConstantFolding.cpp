@@ -934,10 +934,9 @@ case BuiltinValueKind::id:
     if (!V)
       return nullptr;
     APInt SrcVal = V->getValue();
-    Type DestTy = Builtin.Types[1];
+    auto *DestTy = Builtin.Types[1]->castTo<BuiltinFloatType>();
 
-    APFloat TruncVal(
-        DestTy->castTo<BuiltinFloatType>()->getAPFloatSemantics());
+    APFloat TruncVal(DestTy->getAPFloatSemantics());
     APFloat::opStatus ConversionStatus = TruncVal.convertFromAPInt(
         SrcVal, /*IsSigned=*/true, APFloat::rmNearestTiesToEven);
 
@@ -957,6 +956,17 @@ case BuiltinValueKind::id:
       diagnose(M.getASTContext(), Loc.getSourceLoc(),
                diag::integer_literal_overflow,
                CE ? CE->getType() : DestTy, SrcAsString);
+      ResultsInError = Optional<bool>(true);
+      return nullptr;
+    }
+
+    // Emit a warning if the result is imprecise.
+    if (ResultsInError.hasValue() && (ConversionStatus & APFloat::opInexact)) {
+      SmallString<10> SrcAsString;
+      SrcVal.toString(SrcAsString, /*radix*/10, true /*isSigned*/);
+      diagnose(M.getASTContext(), Loc.getSourceLoc(),
+               diag::warning_integer_literal_to_fp_inexact, SrcAsString,
+               DestTy->getBitWidth());
       ResultsInError = Optional<bool>(true);
       return nullptr;
     }
@@ -989,7 +999,8 @@ case BuiltinValueKind::id:
         V->getValue().toString(inputValStr);
 
         auto diagId = (ConversionStatus & APFloat::opStatus::opOverflow) ?
-            diag::float_trunc_overflow : diag::float_trunc_underflow;
+            diag::warning_float_trunc_overflow :
+            diag::warning_float_trunc_underflow;
         diagnose(M.getASTContext(), BI->getLoc().getSourceLoc(),
                  diagId, inputValStr, destType->getBitWidth());
         ResultsInError = Optional<bool>(true);
@@ -1201,7 +1212,7 @@ void ConstantFolder::initializeWorklist(SILFunction &F) {
       if (auto floatLit = dyn_cast<FloatLiteralInst>(&I)) {
         if (EnableDiagnostics && floatLit->getValue().isInfinity()) {
           diagnose(I.getModule().getASTContext(), I.getLoc().getSourceLoc(),
-                   diag::float_nonrep);
+                   diag::warning_float_nonrep);
           continue;
         }
       }
