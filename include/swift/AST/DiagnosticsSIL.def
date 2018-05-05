@@ -314,12 +314,10 @@ REMARK(opt_remark_missed, none, "%0", (StringRef))
 
 // Float-point to integer conversions
 ERROR(float_to_int_overflow, none,
-  "floating-point literal '%0' overflows %1-bit %select{signed|unsigned}2 "
-  "integer type", (StringRef, unsigned int, bool))
+  "invalid%select{| implicit}2 conversion: '%0' overflows %1", (StringRef, Type, bool))
 
 ERROR(negative_fp_literal_overflow_unsigned, none,
-  "cannot convert negative floating-point literal '%0' "
-  "to unsigned integer type", (StringRef))
+  "negative literal '%0' cannot be converted to %1", (StringRef, Type))
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)

@@ -1,0 +1,33 @@
+// RUN: %target-sil-opt %s -diagnostic-constant-propagation -o /dev/null -verify
+//
+// Tests for checking floating-point diagnostics produced by constant
+// propagation phase on SIL inputs. The diagnostics rely on AST information.
+// This file tests to make sure that errors aren't emitted when AST information
+// is not available.
+
+sil_stage raw
+
+import Builtin
+import Swift
+
+sil @testFPToInt8Valid : $@convention(thin) () -> Int8 {
+bb0:
+%0 = float_literal $Builtin.FPIEEE80, 0xC0068000000000000000 // -128
+%1 = builtin "fptrunc_FPIEEE80_FPIEEE64"(%0 : $Builtin.FPIEEE80) : $Builtin.FPIEEE64
+%2 = struct $Double (%1 : $Builtin.FPIEEE64)
+%3 = struct_extract %2 : $Double, #Double._value
+%4 = builtin "fptosi_FPIEEE64_Int8"(%3 : $Builtin.FPIEEE64) : $Builtin.Int8
+%5 = struct $Int8 (%4 : $Builtin.Int8)
+return %5 : $Int8
+}
+
+sil @testFPToInt8Invalid : $@convention(thin) () -> Int8 {
+bb0:
+%0 = float_literal $Builtin.FPIEEE80, 0xC0068100000000000000 // -129
+%1 = builtin "fptrunc_FPIEEE80_FPIEEE64"(%0 : $Builtin.FPIEEE80) : $Builtin.FPIEEE64
+%2 = struct $Double (%1 : $Builtin.FPIEEE64)
+%3 = struct_extract %2 : $Double, #Double._value
+%4 = builtin "fptosi_FPIEEE64_Int8"(%3 : $Builtin.FPIEEE64) : $Builtin.Int8 // expected-error {{invalid conversion: '-129' overflows 'Int8'}}
+%5 = struct $Int8 (%4 : $Builtin.Int8)
+return %5 : $Int8
+}
