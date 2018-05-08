@@ -317,7 +317,8 @@ ERROR(float_to_int_overflow, none,
   "invalid%select{| implicit}2 conversion: '%0' overflows %1", (StringRef, Type, bool))
 
 ERROR(negative_fp_literal_overflow_unsigned, none,
-  "negative literal '%0' cannot be converted to %1", (StringRef, Type))
+  "negative literal '%0' cannot be converted to %select{|unsigned }2%1",
+  (StringRef, Type, bool))
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)

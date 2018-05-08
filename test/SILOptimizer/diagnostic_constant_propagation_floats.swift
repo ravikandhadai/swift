@@ -47,11 +47,17 @@ func testFPToIntConversion() {
 
   _blackHole(Int64(9.223372036854775E18))
 
-  // A case where lost precision in double can result in overflow
-  // in conversion to int.
+  // A case where implicit conversion of the float literal to double
+  // results in a unintuitive overflow during conversion to int
   _blackHole(Int64(9.223372036854775807E18)) // expected-error {{invalid conversion: '9.223372036854775807E18' overflows 'Int64'}}
   let i64max: Float80 = 9.223372036854775807E18
   _blackHole(Int64(i64max))
+
+  // A case where implicit conversion of the float literal to double
+  // elides an overflow during conversion to int that one would expect.
+  _blackHole(Int64(-9.223372036854775809E18))
+  let i64overflow: Float80 = -9.223372036854775809E18
+  _blackHole(Int64(i64overflow)) // expected-error {{invalid conversion: '-9.223372036854775809E18' overflows 'Int64'}}
 
   // Cases of definite overflow.
   _blackHole(Int64(9.223372036854775808E18)) // expected-error {{invalid conversion: '9.223372036854775808E18' overflows 'Int64'}}
@@ -59,8 +65,8 @@ func testFPToIntConversion() {
   _blackHole(Int64(j)) // expected-error {{invalid conversion: '9.223372036854775808E18' overflows 'Int64'}}
   _blackHole(Int64(1E19)) // expected-error {{invalid conversion: '1E19' overflows 'Int64'}}
 
-  // A case where lost precision in double can result in overflow
-  // in conversion to unsigned int.
+  // A case where implicit conversion of the float literal to double
+  // results in an unintuitive overflow during conversion to unsigned int.
   _blackHole(UInt64(1.844674407370955E19))
   _blackHole(UInt64(1.8446744073709551615E19)) // expected-error {{invalid conversion: '1.8446744073709551615E19' overflows 'UInt64'}}
   let u64max: Float80 = 1.8446744073709551615E19
@@ -74,7 +80,7 @@ func testFPToIntConversion() {
   _blackHole(UInt64(-2E2)) // expected-error {{negative literal '-2E2' cannot be converted to 'UInt64'}}
 
   // FIXME: False negatives: overflows in implicit coversion to Double
-  // preventd detection of further errors in conversion to Int.
+  // prevented detection of further errors in conversion to Int.
   _blackHole(Int64(1E309))
   _blackHole(UInt64(-1E309))
 
