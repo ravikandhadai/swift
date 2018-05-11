@@ -279,6 +279,9 @@ ERROR(integer_literal_overflow_builtin_types,none,
 WARNING(integer_literal_overflow_warn,none,
       "integer literal overflows when stored into %0",
       (Type))
+ERROR(integer_literal_overflow_maxwidth, none,
+      "'%1' requires more bits than maximum allowed bit width: %0",
+      (unsigned, StringRef))
 ERROR(arithmetic_operation_overflow,none,
       "arithmetic operation '%0 %1 %2' (on type %3) results in an overflow",
       (StringRef, StringRef, StringRef, Type))
