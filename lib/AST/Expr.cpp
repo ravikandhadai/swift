@@ -996,44 +996,37 @@ LiteralExpr *LiteralExpr::shallowClone(
   return Result;
 }
 
-/// This function computes the full integer value of the literal without
-/// truncation even if its bit width exceeds Builtin.Int2048.
-/// - Parameter initialBitWidth: provides an intial estimate of the size of the
-/// literal. Default is 32.
-/// - Returns: an APInt at least as large as initialBitWidth containing the
-/// value of integer literal.
-static APInt getFullIntegerLiteralValue(bool IsNegative, StringRef Text,
-                                        unsigned initialBitWidth = 32) {
-  llvm::APInt Value(initialBitWidth, 0);
+/// A wrapper around LLVM::getAsInteger that can be used on Swift interger
+/// literals. It avoids misinterpreting decimal numbers prefixed with 0 as
+/// octal numbers.
+static bool getAsInteger(StringRef Text, llvm::APInt &Value) {
   // swift encodes octal differently from C
   bool IsCOctal = Text.size() > 1 && Text[0] == '0' && isdigit(Text[1]);
-  bool Error = Text.getAsInteger(IsCOctal ? 10 : 0, Value);
-  assert(!Error && "Invalid IntegerLiteral formed"); (void)Error;
-  if (IsNegative)
-    Value = -Value;
-  return Value;
+  return Text.getAsInteger(IsCOctal ? 10 : 0, Value);
 }
 
 static APInt getIntegerLiteralValue(bool IsNegative, StringRef Text,
                                     unsigned BitWidth) {
-  llvm::APInt Value = getFullIntegerLiteralValue(IsNegative, Text, BitWidth);
+  llvm::APInt Value(BitWidth, 0);
+  bool Error = getAsInteger(Text, Value);
+  assert(!Error && "Invalid IntegerLiteral formed"); (void)Error;
+  if (IsNegative)
+    Value = -Value;
   if (Value.getBitWidth() != BitWidth)
     Value = Value.sextOrTrunc(BitWidth);
   return Value;
 }
 
-/// Returns the value of the integer literal without truncation
-/// even if its bit width exceeds that of Builtin.Int2048.
-APInt IntegerLiteralExpr::getFullValue() const {
-  assert(!getType().isNull() && "Semantic analysis has not completed");
-  assert(!getType()->hasError() && "Should have a valid type");
-  unsigned maxWidth =
-              getType()->castTo<BuiltinIntegerType>()->getGreatestWidth();
-  return getFullIntegerLiteralValue(isNegative(), getDigitsText(), maxWidth);
-}
-
 APInt IntegerLiteralExpr::getValue(StringRef Text, unsigned BitWidth, bool Negative) {
   return getIntegerLiteralValue(Negative, Text, BitWidth);
+}
+
+/// Returns the raw magnitude of the literal text without any truncation.
+APInt IntegerLiteralExpr::getRawMagnitude() const {
+  llvm::APInt Value(64, 0);
+  bool Error = getAsInteger(getDigitsText(), Value);
+  assert(!Error && "Invalid IntegerLiteral formed"); (void)Error;
+  return Value;
 }
 
 APInt IntegerLiteralExpr::getValue() const {

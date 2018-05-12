@@ -1950,6 +1950,23 @@ namespace {
       tc.validateDecl(MaxIntegerTypeDecl);
       auto maxType = MaxIntegerTypeDecl->getUnderlyingTypeLoc().getType();
 
+      // check if the literal value will fit into the maxType bitWidth
+      if (IntegerLiteralExpr *intLitExpr = dyn_cast<IntegerLiteralExpr>(expr)) {
+        unsigned maxWidth =
+                    maxType->castTo<BuiltinIntegerType>()->getGreatestWidth();
+        unsigned litWidth = intLitExpr->getRawMagnitude().getBitWidth();
+        // Note that maxWidth includes the sign bit.
+        if (litWidth >= maxWidth) {
+          SmallString<10> litStr;
+          if (intLitExpr->isNegative())
+            litStr += '-';
+          litStr += intLitExpr->getDigitsText();
+          tc.diagnose(expr->getLoc(), diag::integer_literal_overflow_maxwidth,
+                      maxWidth - 1, litWidth, litStr);
+          return nullptr;
+        }
+      }
+
       DeclName initName(tc.Context, DeclBaseName::createConstructor(),
                         { tc.Context.Id_integerLiteral });
       DeclName builtinInitName(tc.Context, DeclBaseName::createConstructor(),

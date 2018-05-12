@@ -1374,18 +1374,6 @@ RValue RValueEmitter::visitNilLiteralExpr(NilLiteralExpr *E, SGFContext C) {
 
 RValue RValueEmitter::visitIntegerLiteralExpr(IntegerLiteralExpr *E,
                                               SGFContext C) {
-  // Emit diagnostics if the integer literal overflows Builtin.Int2048.
-  unsigned maxWidth =
-              E->getType()->castTo<BuiltinIntegerType>()->getGreatestWidth();
-  APInt litVal = E->getFullValue();
-  if (litVal.getBitWidth() > maxWidth) {
-    // The literal is displayed in base 10 format to make it clear that the
-    // sign bit cannot be set even if the literal is in Hex/Octal format.
-    SmallString<10> litStr;
-    litVal.toString(litStr, /* radix */ 10, /* signed */ true);
-    SGF.SGM.diagnose(E->getLoc(), diag::integer_literal_overflow_maxwidth,
-                     maxWidth, litStr);
-  }
   return RValue(SGF, E,
                 ManagedValue::forUnmanaged(SGF.B.createIntegerLiteral(E)));
 }
