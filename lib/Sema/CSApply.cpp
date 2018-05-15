@@ -1950,19 +1950,29 @@ namespace {
       tc.validateDecl(MaxIntegerTypeDecl);
       auto maxType = MaxIntegerTypeDecl->getUnderlyingTypeLoc().getType();
 
-      // check if the literal value will fit into the maxType bitWidth
+      // Make sure that the literal value will fit within the bit width of the
+      // 'maxType'. Otherwise emit diagnositcs.
       if (IntegerLiteralExpr *intLitExpr = dyn_cast<IntegerLiteralExpr>(expr)) {
         unsigned maxWidth =
                     maxType->castTo<BuiltinIntegerType>()->getGreatestWidth();
-        unsigned litWidth = intLitExpr->getRawMagnitude().getBitWidth();
-        // Note that maxWidth includes the sign bit.
-        if (litWidth >= maxWidth) {
+        APInt magnitude = intLitExpr->getRawMagnitude();
+        unsigned magWidth = magnitude.getActiveBits();
+        bool isNegative = intLitExpr->isNegative();
+
+        // Compute the literal bit width in the signed two's complement form.
+        // This is generally one more than the magnitude width, but is the same
+        // when the literal is of the form -2^i, for some i.
+        unsigned signedLitWidth =
+          (isNegative && (magnitude.countTrailingZeros() == magWidth - 1)) ?
+          magWidth : (magWidth + 1);
+
+        if (signedLitWidth > maxWidth) { // overflow?
           SmallString<10> litStr;
           if (intLitExpr->isNegative())
             litStr += '-';
           litStr += intLitExpr->getDigitsText();
-          tc.diagnose(expr->getLoc(), diag::integer_literal_overflow_maxwidth,
-                      maxWidth - 1, litWidth, litStr);
+          tc.diagnose(expr->getLoc(), diag::integer_literal_overflows_maxwidth,
+                      maxWidth, signedLitWidth, litStr);
           return nullptr;
         }
       }
