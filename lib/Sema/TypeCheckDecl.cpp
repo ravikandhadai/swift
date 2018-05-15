@@ -3001,6 +3001,10 @@ static LiteralExpr *getAutomaticRawValueExpr(TypeChecker &TC,
       return new (TC.Context) IntegerLiteralExpr("0", SourceLoc(),
                                                  /*Implicit=*/true);
     }
+    // If the prevValue is not a well-typed integer, then break.
+    // This could happen if the literal value if exceeds the literal size limit.
+    if (!prevValue->getType())
+      return nullptr;
     
     if (auto intLit = dyn_cast<IntegerLiteralExpr>(prevValue)) {
       APInt nextVal = intLit->getValue() + 1;
@@ -3147,6 +3151,7 @@ static void checkEnumRawValues(TypeChecker &TC, EnumDecl *ED) {
       if (resultTy)
         elt->setTypeCheckedRawValueExpr(typeChecked);
     }
+
     prevValue = elt->getRawValueExpr();
     assert(prevValue && "continued without setting raw value of enum case");
 
