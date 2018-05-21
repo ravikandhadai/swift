@@ -1865,7 +1865,6 @@ namespace {
       return bridgeFromObjectiveC(object, valueType, false);
     }
 
-    TypeAliasDecl *MaxIntegerTypeDecl = nullptr;
     TypeAliasDecl *MaxFloatTypeDecl = nullptr;
     
   public:
@@ -1928,55 +1927,6 @@ namespace {
         }
       }
 
-      // Find the maximum-sized builtin integer type.
-      
-      if (!MaxIntegerTypeDecl) {
-        SmallVector<ValueDecl *, 1> lookupResults;
-        tc.getStdlibModule(dc)->lookupValue(/*AccessPath=*/{},
-                                            tc.Context.Id_MaxBuiltinIntegerType,
-                                            NLKind::QualifiedLookup,
-                                            lookupResults);
-        if (lookupResults.size() == 1) {
-          MaxIntegerTypeDecl = dyn_cast<TypeAliasDecl>(lookupResults.front());
-          tc.validateDecl(MaxIntegerTypeDecl);
-        }
-      }
-      if (!MaxIntegerTypeDecl ||
-          !MaxIntegerTypeDecl->hasInterfaceType() ||
-          !MaxIntegerTypeDecl->getDeclaredInterfaceType()->is<BuiltinIntegerType>()) {
-        tc.diagnose(expr->getLoc(), diag::no_MaxBuiltinIntegerType_found);
-        return nullptr;
-      }
-      tc.validateDecl(MaxIntegerTypeDecl);
-      auto maxType = MaxIntegerTypeDecl->getUnderlyingTypeLoc().getType();
-
-      // Make sure that the literal value will fit within the bit width of the
-      // 'maxType'. Otherwise emit diagnositcs.
-      if (IntegerLiteralExpr *intLitExpr = dyn_cast<IntegerLiteralExpr>(expr)) {
-        unsigned maxWidth =
-                    maxType->castTo<BuiltinIntegerType>()->getGreatestWidth();
-        APInt magnitude = intLitExpr->getRawMagnitude();
-        unsigned magWidth = magnitude.getActiveBits();
-        bool isNegative = intLitExpr->isNegative();
-
-        // Compute the literal bit width in the signed two's complement form.
-        // This is generally one more than the magnitude width, but is the same
-        // when the literal is of the form -2^i, for some i.
-        unsigned signedLitWidth =
-          (isNegative && (magnitude.countTrailingZeros() == magWidth - 1)) ?
-          magWidth : (magWidth + 1);
-
-        if (signedLitWidth > maxWidth) { // overflow?
-          SmallString<10> litStr;
-          if (intLitExpr->isNegative())
-            litStr += '-';
-          litStr += intLitExpr->getDigitsText();
-          tc.diagnose(expr->getLoc(), diag::integer_literal_overflows_maxwidth,
-                      maxWidth, signedLitWidth, litStr);
-          return nullptr;
-        }
-      }
-
       DeclName initName(tc.Context, DeclBaseName::createConstructor(),
                         { tc.Context.Id_integerLiteral });
       DeclName builtinInitName(tc.Context, DeclBaseName::createConstructor(),
@@ -1990,7 +1940,9 @@ namespace {
                tc.Context.Id_IntegerLiteralType,
                initName,
                builtinProtocol,
-               maxType,
+                 // Note that 'MaxIntegerType' is guaranteed to be available.
+                 // Otherwise it would be caught by CSGen::visitLiteralExpr
+               tc.getMaxIntegerType(dc),
                builtinInitName,
                nullptr,
                diag::integer_literal_broken_proto,
