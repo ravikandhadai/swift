@@ -1061,13 +1061,13 @@ bool isLossyUnderflow(APFloat srcVal, BuiltinFloatType* srcType,
 
 /// This function checks whether 'subLoc' is a location within 'superLoc'
 /// in the source file
-bool isLocContainedWithin(SILLocation &subLoc, SILLocation &superLoc,
-                          SourceManager &sm) {
-  return (sm.getLineNumber(subLoc.getStartSourceLoc()) >=
-            sm.getLineNumber(superLoc.getStartSourceLoc())) &&
-          (sm.getLineNumber(subLoc.getEndSourceLoc()) <=
-            sm.getLineNumber(superLoc.getEndSourceLoc()));
-}
+//bool isLocContainedWithin(SILLocation &subLoc, SILLocation &superLoc,
+//                          SourceManager &sm) {
+//  return (sm.getLineNumber(subLoc.getStartSourceLoc()) >=
+//            sm.getLineNumber(superLoc.getStartSourceLoc())) &&
+//          (sm.getLineNumber(subLoc.getEndSourceLoc()) <=
+//            sm.getLineNumber(superLoc.getEndSourceLoc()));
+//}
 
 /// This function determines whether the float literal in the given
 /// SIL instruction is specified using hex-float notation in the Swift source.
@@ -1093,6 +1093,28 @@ bool isHexLiteralInSource(FloatLiteralInst *flitInst) {
   if (!flitExpr)
     return false;
   return flitExpr->getDigitsText().startswith("0x");
+}
+
+bool maybeExplicitFPConversion(BuiltinInst *BI, const BuiltinInfo &Builtin) {
+  assert(Builtin.ID == BuiltinValueKind::FPTrunc);
+
+  auto *callExpr = BI->getLoc().getAsASTNode<CallExpr>();
+  if (!callExpr || !dyn_cast<ConstructorRefCallExpr>(callExpr->getFn()))
+    return true; // not enough information here, so err on the safer side.
+
+  if (!callExpr.isImplicit())
+    return true;
+
+  // Here, the 'callExpr' is implicit but still could be a part of an explicit
+  // conversion. E.g. Float(...) uses an implicit conversion to Double as an
+  // intermediate step. Return false only if this is not the case.
+  auto *destType = Builtin.Types[1]->castTo<BuiltinFloatType>();
+  if (destType.getKind() != BuiltinFloatType::FPKind::IEEE64)
+    return false;
+
+  // get the uses of BI and its uses and check if it is a constructor call that
+  // is explicit.
+
 }
 
 static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
@@ -1123,8 +1145,8 @@ static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
   bool overflow = opStatus & APFloat::opStatus::opOverflow;
   bool tinynInexact = isLossyUnderflow(flitInst->getValue(), srcType, destType);
   bool hexnInexact = (opStatus != APFloat::opStatus::opOK) &&
-                     isHexLiteralInSource(flitInst) &&
-                     isLocContainedWithin(litLoc, Loc, M.getSourceManager());
+  isHexLiteralInSource(flitInst); //&&
+                     //isLocContainedWithin(litLoc, Loc, M.getSourceManager());
 
   if (overflow || tinynInexact || hexnInexact) {
     const ApplyExpr *CE = Loc.getAsASTNode<ApplyExpr>();
@@ -1474,6 +1496,13 @@ ConstantFolder::processWorkList() {
     SILInstruction *I = WorkList.pop_back_val();
     assert(I->getParent() && "SILInstruction must have parent.");
 
+//    llvm::dbgs() << "Inst: " << *I << "\n";
+//    llvm::dbgs() << "Corresponding AST: " <<"\n";
+//    auto astnode = I->getLoc().getAsASTNode<Expr>();
+//    if (astnode) {
+//      astnode->dump(llvm::dbgs());
+//      llvm::dbgs() << "\n";
+//    }
     DEBUG(llvm::dbgs() << "Visiting: " << *I);
 
     Callback(I);
