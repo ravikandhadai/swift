@@ -1095,26 +1095,49 @@ bool isHexLiteralInSource(FloatLiteralInst *flitInst) {
   return flitExpr->getDigitsText().startswith("0x");
 }
 
-bool maybeExplicitFPConversion(BuiltinInst *BI, const BuiltinInfo &Builtin) {
+bool maybeExplicitFPCons(BuiltinInst *BI, const BuiltinInfo &Builtin) {
   assert(Builtin.ID == BuiltinValueKind::FPTrunc);
 
   auto *callExpr = BI->getLoc().getAsASTNode<CallExpr>();
   if (!callExpr || !dyn_cast<ConstructorRefCallExpr>(callExpr->getFn()))
     return true; // not enough information here, so err on the safer side.
 
-  if (!callExpr.isImplicit())
+  if (!callExpr->isImplicit())
     return true;
 
-  // Here, the 'callExpr' is implicit but still could be a part of an explicit
-  // conversion. E.g. Float(...) uses an implicit conversion to Double as an
-  // intermediate step. Return false only if this is not the case.
-  auto *destType = Builtin.Types[1]->castTo<BuiltinFloatType>();
-  if (destType.getKind() != BuiltinFloatType::FPKind::IEEE64)
+  // Here, the 'callExpr' is an implicit FP construction. However, if it is
+  // constructing a Double it could be a part of an explicit construction of
+  // another FP type, which uses an implicit conversion to Double as an
+  // intermediate step. Return true if this is the case and false otherwise.
+  auto &astCtx = BI->getModule().getASTContext();
+  auto *typeDecl = callExpr->getType()->getCanonicalType().getAnyNominal();
+  if (!typeDecl || typeDecl != astCtx.getDoubleDecl())
+    return false;  // only Double constructors can be an intermediate step.
+
+  // Check if a call to Float constructor follows 'BI'.
+  Expr *enclosingASTExpr = nullptr;
+  if (auto *use = BI->getSingleUse())
+    if (auto *user = cast<SingleValueInstruction>(use->getUser()))  // first use should be `struct Double`
+      if (auto *nextUse = user->getSingleUse())
+        if (auto *nextUser = nextUse->getUser())
+          enclosingASTExpr = nextUser->getLoc().getAsASTNode<Expr>();
+
+  if (!enclosingASTExpr)
+    return false; // 'BI' cannot be enclosed by a call to Float constructor.
+
+  if (auto *callExpr = dyn_cast<CallExpr>(enclosingASTExpr))
+    if (callExpr && dyn_cast<ConstructorRefCallExpr>(callExpr->getFn())) {
+      auto *typeDecl = callExpr->getType()->getCanonicalType().getAnyNominal();
+      if (callExpr->isImplicit() || !typeDecl)
+        return false;
+
+      // Return true if this is a FP construction and false otherwise.
+      return (typeDecl == astCtx.getFloatDecl() ||
+                typeDecl == astCtx.getDoubleDecl() ||
+                  (astCtx.getFloat80Decl() &&
+                   typeDecl == astCtx.getFloat80Decl()));
+    }
     return false;
-
-  // get the uses of BI and its uses and check if it is a constructor call that
-  // is explicit.
-
 }
 
 static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
@@ -1145,7 +1168,8 @@ static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
   bool overflow = opStatus & APFloat::opStatus::opOverflow;
   bool tinynInexact = isLossyUnderflow(flitInst->getValue(), srcType, destType);
   bool hexnInexact = (opStatus != APFloat::opStatus::opOK) &&
-  isHexLiteralInSource(flitInst); //&&
+                        isHexLiteralInSource(flitInst) &&
+                        !maybeExplicitFPCons(BI, Builtin);
                      //isLocContainedWithin(litLoc, Loc, M.getSourceManager());
 
   if (overflow || tinynInexact || hexnInexact) {

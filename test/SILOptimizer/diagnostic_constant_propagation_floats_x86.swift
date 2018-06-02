@@ -86,20 +86,22 @@ func testFloatConvertUnderflow() {
 }
 
 func testHexFloatImprecision() {
-  _blackHole(Float(0x1.00000000000001p-127)) // expected-warning {{'0x1.00000000000001p-127' loses precision during implicit conversion to 'Double'}}
-  _blackHole(Float(0x1.0000000000001p-1023)) // expected-warning {{'0x1.0000000000001p-1023' loses precision during implicit conversion to 'Double'}}
+  // In the following cases, there is a precision loss in implicit conversion to
+  // but it should not be reported as it appears during an explicit conversion.
+  _blackHole(Float(0x1.00000000000001p-127))
+  _blackHole(Float(0x1.0000000000001p-1023)) // expected-warning {{precision loss due to tininess during implicit conversion of '0x1.0000000000001p-1023' to 'Double'}}
 
   let d3: Double = 0x1.0000000000001p-1023 // expected-warning {{'0x1.0000000000001p-1023' loses precision during implicit conversion to 'Double'}}
   _blackHole(d3)
   let d4: Double = 0x1.00000000000001p-1000 // expected-warning {{'0x1.00000000000001p-1000' loses precision during implicit conversion to 'Double'}}
   _blackHole(d4)
 
-  _blackHole(Double(0x1.0000000000001p-1023)) // expected-warning {{'0x1.0000000000001p-1023' loses precision during implicit conversion to 'Double'}}
-  _blackHole(Double(0x1.00000000000001p-1000)) // expected-warning {{'0x1.00000000000001p-1000' loses precision during implicit conversion to 'Double'}}
+  _blackHole(Double(0x1.0000000000001p-1023))
+  _blackHole(Double(0x1.00000000000001p-1000))
 
   // Surprising underflow due to implicit conversion to Double when using
   // explicit initializers.
-  _blackHole(Float80(0x1p-1075)) // expected-warning {{'0x1p-1075' loses precision during implicit conversion to 'Double'}}
+  _blackHole(Float80(0x1p-1075))
 
   // FIXME: if a number is so tiny that it underflows even Float80, nothing is reported
   let e1: Float80 = 0x1p-16446

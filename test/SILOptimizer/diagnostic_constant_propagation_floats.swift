@@ -151,13 +151,15 @@ func testHexFloatImprecision() {
   _blackHole(f3)
   let f4: Float = 0x1.000001p-127 // expected-warning {{'0x1.000001p-127' loses precision during conversion to 'Float'}}
   _blackHole(f4)
-
-  _blackHole(Float(0x1.000002p-126))
-  _blackHole(Float(0x1.0000002p-126)) // expected-warning {{'0x1.0000002p-126' loses precision during conversion to 'Float'}}
-  _blackHole(Float(0x1.000002p-127))  // expected-warning {{'0x1.000002p-127' loses precision during conversion to 'Float'}}
-  _blackHole(Float(0x1.000001p-127))  // expected-warning {{'0x1.000001p-127' loses precision during conversion to 'Float'}}
+  let f5: Float = 0x1.0000002p-126 // expected-warning {{'0x1.0000002p-126' loses precision during conversion to 'Float'}}
+  _blackHole(f5)
 
   // The following cases have explicit casts and no errors should be produced.
+  _blackHole(Float(0x1.000002p-126))
+  _blackHole(Float(0x1.0000002p-126))
+  _blackHole(Float(0x1.000002p-127)) // expected-warning {{precision loss due to tininess during conversion of '0x1.000002p-127' to 'Float'}}
+  _blackHole(Float(0x1.000001p-127))
+
   let t1: Double = 0x1.0000002p-126
   _blackHole(Float(t1))
   let t2: Double = 0x1.000001p-126
@@ -165,10 +167,7 @@ func testHexFloatImprecision() {
   let t3 = 0x1.000000fp25
   _blackHole(Float(t3))
 
-  // FIXME: a false positive: the warning here should not be produced.
-  // Here, the call to Double.init() appears as an implicit call in the AST
-  // seen by constant folding.
-  _blackHole(Float(Double(0x1.000000fp25))) // expected-warning {{'0x1.000000fp25' loses precision during conversion to 'Float'}}
+  _blackHole(Float(Double(0x1.000000fp25)))
 
   let d1: Double = 0x0.8p-1022
   _blackHole(d1)
