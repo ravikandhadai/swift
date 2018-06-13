@@ -19,10 +19,10 @@ func testFPToIntConversion() {
   _blackHole(UInt8(-2E2)) // expected-error {{negative literal '-2E2' cannot be converted to 'UInt8'}}
 
   _blackHole(Int8(1E6000)) // expected-error {{invalid conversion: '1E6000' overflows 'Int8'}}
-                           // expected-warning@-1 {{overflow: '1E6000' exceeds limit, represented as inf}}
+                           // expected-warning@-1 {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
 
   _blackHole(UInt8(1E6000)) // expected-error {{invalid conversion: '1E6000' overflows 'UInt8'}}
-                            // expected-warning@-1 {{overflow: '1E6000' exceeds limit, represented as inf}}
+                            // expected-warning@-1 {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
 
   _blackHole(Int16(3.2767E4))
   _blackHole(Int16(3.2768E4)) // expected-error {{invalid conversion: '3.2768E4' overflows 'Int16'}}
@@ -68,25 +68,25 @@ func testFPToIntConversion() {
   _blackHole(UInt64(-2E2)) // expected-error {{negative literal '-2E2' cannot be converted to 'UInt64'}}
 
   _blackHole(Int64(1E6000)) // expected-error {{invalid conversion: '1E6000' overflows 'Int64'}}
-                            // expected-warning@-1 {{overflow: '1E6000' exceeds limit, represented as inf}}
+                            // expected-warning@-1 {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
 
   _blackHole(UInt64(1E6000)) // expected-error {{invalid conversion: '1E6000' overflows 'UInt64'}}
-                             // expected-warning@-1 {{overflow: '1E6000' exceeds limit, represented as inf}}
+                             // expected-warning@-1 {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
 }
 
 func testFloatConvertOverflow() {
   let f1: Float = 1E38
   _blackHole(f1)
-  let f2: Float = 1E39 // expected-warning {{overflow: '1E39' becomes inf during conversion to 'Float'}}
+  let f2: Float = 1E39 // expected-warning {{'1E39' overflows to inf during conversion to 'Float'}}
   _blackHole(f2)
-  let f3: Float = 1234567891012345678912345671234561234512.0 // expected-warning {{overflow: '1234567891012345678912345671234561234512.0' becomes inf during conversion to 'Float'}}
+  let f3: Float = 1234567891012345678912345671234561234512.0 // expected-warning {{'1234567891012345678912345671234561234512.0' overflows to inf during conversion to 'Float'}}
   _blackHole(f3)
   let f4: Float = 0.1234567891012345678912345671234561234512
   _blackHole(f4)
-  let f5: Float32 = -3.4028236E+38 // expected-warning {{overflow: '-3.4028236E+38' becomes -inf during conversion to 'Float32' (aka 'Float')}}
+  let f5: Float32 = -3.4028236E+38 // expected-warning {{'-3.4028236E+38' overflows to -inf during conversion to 'Float32' (aka 'Float')}}
   _blackHole(f5)
 
-  // Note overflow diagnositcs in Double truncations have architecture dependent
+  // Diagnositcs for Double truncations have architecture dependent
   // messages. See _nonx86 and _x86 test files.
   let d1: Double = 1E308
   _blackHole(d1)
@@ -100,8 +100,9 @@ func testFloatConvertOverflow() {
   _blackHole(Float(1E39))
   _blackHole(Float(100000000000000000000000000000000000000000000000.0))
   _blackHole(Double(1E308))
-  _blackHole(Float(1E6000)) // expected-warning {{overflow: '1E6000' exceeds limit, represented as inf}}
-  _blackHole(Double(1E6000)) // expected-warning {{overflow: '1E6000' exceeds limit, represented as inf}}
+  _blackHole(Float(1E6000)) // expected-warning {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
+  _blackHole(Float(-1E6000)) // expected-warning {{'-1E6000' overflows to -inf because its magnitude exceeds the limits of a float literal}}
+  _blackHole(Double(1E6000)) // expected-warning {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
 }
 
 func testFloatConvertUnderflow() {
@@ -109,13 +110,13 @@ func testFloatConvertUnderflow() {
   _blackHole(f0)
   let f1: Float = 1E-37
   _blackHole(f1)
-  let f2: Float = 1E-39 // expected-warning {{precision loss due to tininess during conversion of '1E-39' to 'Float'}}
+  let f2: Float = 1E-39  // expected-warning {{'1E-39' underflows and loses precision during conversion to 'Float'}}
   _blackHole(f2)
-  let f3: Float = 1E-45 // expected-warning {{precision loss due to tininess during conversion of '1E-45' to 'Float'}}
+  let f3: Float = 1E-45 // expected-warning {{'1E-45' underflows and loses precision during conversion to 'Float'}}
   _blackHole(f3)
 
   // A number close to 2^-150 (smaller than least non-zero float: 2^-149)
-  let f6: Float = 7.0064923E-46  // expected-warning {{precision loss due to tininess during conversion of '7.0064923E-46' to 'Float'}}
+  let f6: Float = 7.0064923E-46  // expected-warning {{'7.0064923E-46' underflows and loses precision during conversion to 'Float'}}
   _blackHole(f6)
 
   // Some cases where tininess doesn't cause extra imprecision.
@@ -128,9 +129,9 @@ func testFloatConvertUnderflow() {
   let f5: Float = 1.4012984821624085566E-45
   _blackHole(f5)
 
-  let f7: Float = 1.1754943E-38 // expected-warning {{precision loss due to tininess during conversion of '1.1754943E-38' to 'Float'}}
+  let f7: Float = 1.1754943E-38 // expected-warning {{'1.1754943E-38' underflows and loses precision during conversion to 'Float'}}
   _blackHole(f7)
-  let f8: Float = 1.17549428E-38 // expected-warning {{precision loss due to tininess during conversion of '1.17549428E-38' to 'Float'}}
+  let f8: Float = 1.17549428E-38 // expected-warning {{'1.17549428E-38' underflows and loses precision during conversion to 'Float'}}
   _blackHole(f8)
 
   let d1: Double = 1E-307

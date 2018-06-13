@@ -1023,16 +1023,16 @@ bool isLossyUnderflow(int srcExponent, uint64_t srcSignificand,
   uint64_t truncSignificand = bitWidthDecrease > 0 ?
     (srcSignificand >> bitWidthDecrease) : srcSignificand;
 
-  // Compute the significand bits lost due to denormal form. Note that the
+  // Compute the significand bits lost due to subnormal form. Note that the
   // integer part: 1 will use up a significand bit in denormal form.
   unsigned additionalLoss = destSem.minExponent - srcExponent + 1;
 
-  // Check whether a set LSB is lost due to denormal representation.
+  // Check whether a set LSB is lost due to subnormal representation.
   unsigned lostLSBBitMask = (1 << additionalLoss) - 1;
   return (truncSignificand & lostLSBBitMask);
 }
 
-/// This function, given a IEEE floating-point value (srcVal), determines
+/// This function, given an IEEE floating-point value (srcVal), determines
 /// whether the conversion to a given destination semantics results
 /// in an underflow and whether the significand precision is reduced
 /// because of the underflow.
@@ -1123,14 +1123,14 @@ static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
   APFloat::opStatus opStatus = truncVal.convert(destType->getAPFloatSemantics(),
                                     APFloat::rmNearestTiesToEven, &losesInfo);
 
-  // Emit a warning if one of the following holds: (a) the source value
-  // overflows the destination type, or (b) the source value is tiny and
+  // Emit a warning if one of the following conditions hold: (a) the source
+  // value overflows the destination type, or (b) the source value is tiny and
   // the tininess results in additional loss of precision when converted to the
-  // destination type beyond what would result in the normal scenarios, or
+  // destination type beyond what would result in the normal scenario, or
   // (c) the source value is a hex-float literal that cannot be precisely
   // represented in the destination type.
-  // Suppress all warnings if disabled or if we could be called through an
-  // explicit constructor.
+  // Suppress all warnings if the conversion is made through an explicit
+  // constructor invocation.
   if (ResultsInError.hasValue() && !maybeExplicitFPCons(BI, Builtin)) {
     bool overflow = opStatus & APFloat::opStatus::opOverflow;
     bool tinynInexact = isLossyUnderflow(flitInst->getValue(), srcType, destType);

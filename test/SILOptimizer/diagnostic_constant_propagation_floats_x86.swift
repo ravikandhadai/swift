@@ -31,8 +31,8 @@ func testFPToIntConversion() {
 }
 
 func testFloatConvertOverflow() {
-  let f1: Float = 1E309 // expected-warning {{overflow: '1E309' becomes inf during conversion to 'Float'}}
-  let f2: Float32 = -1.0E999 // expected-warning {{overflow: '-1.0E999' becomes -inf during conversion to 'Float32' (aka 'Float')}}
+  let f1: Float = 1E309 // expected-warning {{'1E309' overflows to inf during conversion to 'Float'}}
+  let f2: Float32 = -1.0E999 // expected-warning {{'-1.0E999' overflows to -inf during conversion to 'Float32' (aka 'Float')}}
   _blackHole(f1)
   _blackHole(f2)
 
@@ -45,9 +45,9 @@ func testFloatConvertOverflow() {
   _blackHole(d6)
   _blackHole(d8)
 
-  let e1: Float80 = 1E6000 // expected-warning {{overflow: '1E6000' exceeds limit, represented as inf}}
-  let e2: Float80 = 1.18973149535723176515E4932 // expected-warning {{overflow: '1.18973149535723176515E4932' exceeds limit, represented as inf}}
-  let e3: Float80 = -1.18973149535723176515E4932 // expected-warning {{overflow: '-1.18973149535723176515E4932' exceeds limit, represented as -inf}}
+  let e1: Float80 = 1E6000 // expected-warning {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
+  let e2: Float80 = 1.18973149535723176515E4932 // expected-warning {{'1.18973149535723176515E4932' overflows to inf because its magnitude exceeds the limits of a float literal}}
+  let e3: Float80 = -1.18973149535723176515E4932 // expected-warning {{'-1.18973149535723176515E4932' overflows to -inf because its magnitude exceeds the limits of a float literal}}
   _blackHole(e1)
   _blackHole(e2)
   _blackHole(e3)
@@ -56,11 +56,11 @@ func testFloatConvertOverflow() {
   // input literal overflows the largest available FP type.
   _blackHole(Float(1E309))
   _blackHole(Double(1E309))
-  _blackHole(Float80(1E6000)) // expected-warning {{overflow: '1E6000' exceeds limit, represented as inf}}
+  _blackHole(Float80(1E6000)) // expected-warning {{'1E6000' overflows to inf because its magnitude exceeds the limits of a float literal}}
 }
 
 func testFloatConvertUnderflow() {
-  let f1: Float = 1E-400 // expected-warning {{precision loss due to tininess during conversion of '1E-400' to 'Float'}}
+  let f1: Float = 1E-400 // expected-warning {{'1E-400' underflows and loses precision during conversion to 'Float'}}
   _blackHole(f1)
 
   // FIXME: False Negative: warnings are not produced during Double assignments.
