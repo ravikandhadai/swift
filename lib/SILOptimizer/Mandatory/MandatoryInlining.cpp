@@ -645,7 +645,7 @@ class MandatoryInlining : public SILModuleTransform {
 
     if (!ShouldCleanup)
       return;
-
+    
     // Now that we've inlined some functions, clean up.  If there are any
     // transparent functions that are deserialized from another module that are
     // now unused, just remove them from the module.

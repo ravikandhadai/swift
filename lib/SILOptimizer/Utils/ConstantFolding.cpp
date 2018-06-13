@@ -1059,16 +1059,6 @@ bool isLossyUnderflow(APFloat srcVal, BuiltinFloatType* srcType,
   return isLossyUnderflow(ilogb(srcVal), significand, srcSem, destSem);
 }
 
-/// This function checks whether 'subLoc' is a location within 'superLoc'
-/// in the source file
-//bool isLocContainedWithin(SILLocation &subLoc, SILLocation &superLoc,
-//                          SourceManager &sm) {
-//  return (sm.getLineNumber(subLoc.getStartSourceLoc()) >=
-//            sm.getLineNumber(superLoc.getStartSourceLoc())) &&
-//          (sm.getLineNumber(subLoc.getEndSourceLoc()) <=
-//            sm.getLineNumber(superLoc.getEndSourceLoc()));
-//}
-
 /// This function determines whether the float literal in the given
 /// SIL instruction is specified using hex-float notation in the Swift source.
 bool isHexLiteralInSource(FloatLiteralInst *flitInst) {
@@ -1108,36 +1098,12 @@ bool maybeExplicitFPCons(BuiltinInst *BI, const BuiltinInfo &Builtin) {
   // Here, the 'callExpr' is an implicit FP construction. However, if it is
   // constructing a Double it could be a part of an explicit construction of
   // another FP type, which uses an implicit conversion to Double as an
-  // intermediate step. Return true if this is the case and false otherwise.
+  // intermediate step. So we conservatively assume that an implicit
+  // construction of Double could be a part of an explicit conversion
+  // and suppress the warning.
   auto &astCtx = BI->getModule().getASTContext();
   auto *typeDecl = callExpr->getType()->getCanonicalType().getAnyNominal();
-  if (!typeDecl || typeDecl != astCtx.getDoubleDecl())
-    return false;  // only Double constructors can be an intermediate step.
-
-  // Check if a call to Float constructor follows 'BI'.
-  Expr *enclosingASTExpr = nullptr;
-  if (auto *use = BI->getSingleUse())
-    if (auto *user = cast<SingleValueInstruction>(use->getUser()))  // first use should be `struct Double`
-      if (auto *nextUse = user->getSingleUse())
-        if (auto *nextUser = nextUse->getUser())
-          enclosingASTExpr = nextUser->getLoc().getAsASTNode<Expr>();
-
-  if (!enclosingASTExpr)
-    return false; // 'BI' cannot be enclosed by a call to Float constructor.
-
-  if (auto *callExpr = dyn_cast<CallExpr>(enclosingASTExpr))
-    if (callExpr && dyn_cast<ConstructorRefCallExpr>(callExpr->getFn())) {
-      auto *typeDecl = callExpr->getType()->getCanonicalType().getAnyNominal();
-      if (callExpr->isImplicit() || !typeDecl)
-        return false;
-
-      // Return true if this is a FP construction and false otherwise.
-      return (typeDecl == astCtx.getFloatDecl() ||
-                typeDecl == astCtx.getDoubleDecl() ||
-                  (astCtx.getFloat80Decl() &&
-                   typeDecl == astCtx.getFloat80Decl()));
-    }
-    return false;
+  return (typeDecl && typeDecl == astCtx.getDoubleDecl());
 }
 
 static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
@@ -1148,10 +1114,8 @@ static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
   auto *flitInst = dyn_cast<FloatLiteralInst>(BI->getArguments()[0]);
   if (!flitInst)
     return nullptr; // We can fold only compile-time constant arguments.
-  SILLocation Loc = BI->getLoc();
-  SILModule &M = BI->getModule();
-  SILLocation litLoc = flitInst->getLoc();
 
+  SILLocation Loc = BI->getLoc();
   auto *srcType = Builtin.Types[0]->castTo<BuiltinFloatType>();
   auto *destType = Builtin.Types[1]->castTo<BuiltinFloatType>();
   bool losesInfo;
@@ -1165,46 +1129,40 @@ static SILValue foldFPTrunc(BuiltinInst *BI, const BuiltinInfo &Builtin,
   // destination type beyond what would result in the normal scenarios, or
   // (c) the source value is a hex-float literal that cannot be precisely
   // represented in the destination type.
-  bool overflow = opStatus & APFloat::opStatus::opOverflow;
-  bool tinynInexact = isLossyUnderflow(flitInst->getValue(), srcType, destType);
-  bool hexnInexact = (opStatus != APFloat::opStatus::opOK) &&
-                        isHexLiteralInSource(flitInst) &&
-                        !maybeExplicitFPCons(BI, Builtin);
-                     //isLocContainedWithin(litLoc, Loc, M.getSourceManager());
+  // Suppress all warnings if disabled or if we could be called through an
+  // explicit constructor.
+  if (ResultsInError.hasValue() && !maybeExplicitFPCons(BI, Builtin)) {
+    bool overflow = opStatus & APFloat::opStatus::opOverflow;
+    bool tinynInexact = isLossyUnderflow(flitInst->getValue(), srcType, destType);
+    bool hexnInexact = (opStatus != APFloat::opStatus::opOK) &&
+                          isHexLiteralInSource(flitInst);
 
-  if (overflow || tinynInexact || hexnInexact) {
-    const ApplyExpr *CE = Loc.getAsASTNode<ApplyExpr>();
+    if (overflow || tinynInexact || hexnInexact) {
+      SILModule &M = BI->getModule();
+      const ApplyExpr *CE = Loc.getAsASTNode<ApplyExpr>();
 
-    SmallString<10> fplitStr;
-    tryExtractLiteralText(flitInst, fplitStr);
+      SmallString<10> fplitStr;
+      tryExtractLiteralText(flitInst, fplitStr);
 
-    auto userType = CE ? CE->getType() : destType;
-    // A flag that checks whether the warning occurs in an implicit conversion
-    // to Double, which may be a intermediate step in a user-level operation.
-    bool reportImplicit = CE ? (CE->isImplicit() ?
-                                !userType.getString().compare("Double") : false)
-                                : false;
+      auto userType = CE ? CE->getType() : destType;
+      auto diagId = overflow ? diag::warning_float_trunc_overflow :
+                      (hexnInexact ? diag::warning_float_trunc_hex_inexact :
+                                      diag::warning_float_trunc_underflow);
+      diagnose(M.getASTContext(), Loc.getSourceLoc(), diagId, fplitStr,
+               userType, truncVal.isNegative());
 
-    auto diagId = overflow ? diag::warning_float_trunc_overflow :
-                  (hexnInexact ? diag::warning_float_trunc_hex_inexact :
-                                diag::warning_float_trunc_underflow);
-
-    diagnose(M.getASTContext(), Loc.getSourceLoc(), diagId, fplitStr, userType,
-             reportImplicit, truncVal.isNegative());
-
-    ResultsInError = Optional<bool>(true);
+      ResultsInError = Optional<bool>(true);
+    }
   }
-  // Abort folding if we have denormality, NaN or opInvalid status.
-  // Note that denormal forms could be architecture dependent.
-  // Allow folding if there is no loss, overflow or normal imprecision.
+  // Abort folding if we have subnormality, NaN or opInvalid status.
   if ((opStatus & APFloat::opStatus::opInvalidOp)
         || (opStatus & APFloat::opStatus::opDivByZero)
         || (opStatus & APFloat::opStatus::opUnderflow)
         || truncVal.isDenormal()) {
     return nullptr;
   }
-  // Here, we have either opOverflow, opOk, or opInexact.
-  // The call to the builtin should be replaced with the constant value.
+  // Allow folding if there is no loss, overflow or normal imprecision
+  // (i.e., opOverflow, opOk, or opInexact).
   SILBuilderWithScope B(BI);
   return B.createFloatLiteral(Loc, BI->getType(), truncVal);
 }

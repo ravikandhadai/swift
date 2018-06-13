@@ -86,18 +86,20 @@ func testFloatConvertOverflow() {
   let f5: Float32 = -3.4028236E+38 // expected-warning {{overflow: '-3.4028236E+38' becomes -inf during conversion to 'Float32' (aka 'Float')}}
   _blackHole(f5)
 
-  _blackHole(Float(1E38))
-  _blackHole(Float(1E39)) // expected-warning {{overflow: '1E39' becomes inf during conversion to 'Float'}}
-  _blackHole(Float(100000000000000000000000000000000000000000000000.0)) // expected-warning {{overflow: '100000000000000000000000000000000000000000000000.0' becomes inf during conversion to 'Float'}}
-
   // Note overflow diagnositcs in Double truncations have architecture dependent
   // messages. See _nonx86 and _x86 test files.
   let d1: Double = 1E308
   _blackHole(d1)
   let d2: Double = 1234567891012345678912345671234561234512.0
   _blackHole(d2)
-  _blackHole(Double(1E308))
 
+  // All warnings are disabled during explicit conversions.
+  // Except when the number is so large that it wouldn't even fit into largest
+  // FP type available.
+  _blackHole(Float(1E38))
+  _blackHole(Float(1E39))
+  _blackHole(Float(100000000000000000000000000000000000000000000000.0))
+  _blackHole(Double(1E308))
   _blackHole(Float(1E6000)) // expected-warning {{overflow: '1E6000' exceeds limit, represented as inf}}
   _blackHole(Double(1E6000)) // expected-warning {{overflow: '1E6000' exceeds limit, represented as inf}}
 }
@@ -131,14 +133,14 @@ func testFloatConvertUnderflow() {
   let f8: Float = 1.17549428E-38 // expected-warning {{precision loss due to tininess during conversion of '1.17549428E-38' to 'Float'}}
   _blackHole(f8)
 
-  _blackHole(Float(1E-37))
-  _blackHole(Float(1E-39)) // expected-warning {{precision loss due to tininess during conversion of '1E-39' to 'Float'}}
-  _blackHole(Float(1E-45)) // expected-warning {{precision loss due to tininess during conversion of '1E-45' to 'Float'}}
-
   let d1: Double = 1E-307
   _blackHole(d1)
+
+   // All warnings are disabled during explict conversions.
+  _blackHole(Float(1E-37))
+  _blackHole(Float(1E-39))
+  _blackHole(Float(1E-45))
   _blackHole(Double(1E-307))
-  // Note that the underflow warnings for Double are architecture specific.
 }
 
 func testHexFloatImprecision() {
@@ -154,12 +156,8 @@ func testHexFloatImprecision() {
   let f5: Float = 0x1.0000002p-126 // expected-warning {{'0x1.0000002p-126' loses precision during conversion to 'Float'}}
   _blackHole(f5)
 
-  // The following cases have explicit casts and no errors should be produced.
-  _blackHole(Float(0x1.000002p-126))
-  _blackHole(Float(0x1.0000002p-126))
-  _blackHole(Float(0x1.000002p-127)) // expected-warning {{precision loss due to tininess during conversion of '0x1.000002p-127' to 'Float'}}
-  _blackHole(Float(0x1.000001p-127))
-
+  // In the following cases, the literal is truncated to a Float through a
+  // (lossless) conversion to Double. There should be no warnings here.
   let t1: Double = 0x1.0000002p-126
   _blackHole(Float(t1))
   let t2: Double = 0x1.000001p-126
@@ -167,13 +165,18 @@ func testHexFloatImprecision() {
   let t3 = 0x1.000000fp25
   _blackHole(Float(t3))
 
-  _blackHole(Float(Double(0x1.000000fp25)))
-
   let d1: Double = 0x0.8p-1022
   _blackHole(d1)
-  // Smallest Double subnormal number.
+  // Smallest non-zero number representable in Double.
   let d2: Double = 0x0.0000000000001p-1022
   _blackHole(d2)
+
+  // All warnings are disabled during explict conversions.
+  _blackHole(Float(0x1.000002p-126))
+  _blackHole(Float(0x1.0000002p-126))
+  _blackHole(Float(0x1.000002p-127))
+  _blackHole(Float(0x1.000001p-127))
+  _blackHole(Float(Double(0x1.000000fp25)))
   _blackHole(Double(0x1p-1074))
 }
 

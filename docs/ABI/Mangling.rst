@@ -743,7 +743,7 @@ Numbers and Indexes
 ``<INDEX>`` is a production for encoding numbers in contexts that can't
 end in a digit; it's optimized for encoding smaller numbers.
 
-Function Specializations
+Functionss
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 ::

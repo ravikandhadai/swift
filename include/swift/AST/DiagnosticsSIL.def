@@ -322,16 +322,16 @@ ERROR(negative_fp_literal_overflow_unsigned, none,
 
 // Overflow and underflow warnings for floating-point truncation
 WARNING(warning_float_trunc_overflow, none,
-  "overflow: '%0' becomes %select{|-}3inf during%select{| implicit}2 "
-  "conversion to %1", (StringRef, Type, bool, bool))
+  "overflow: '%0' becomes %select{|-}2inf during conversion to %1",
+  (StringRef, Type, bool))
 
 WARNING(warning_float_trunc_underflow, none,
-  "precision loss due to tininess during%select{| implicit}2 "
-  "conversion of '%0' to %1", (StringRef, Type, bool, bool))
+  "precision loss due to tininess during conversion of '%0' to %1",
+  (StringRef, Type, bool))
 
 WARNING(warning_float_trunc_hex_inexact, none,
-"'%0' loses precision during%select{| implicit}2 conversion to %1",
-  (StringRef, Type, bool, bool))
+  "'%0' loses precision during conversion to %1",
+  (StringRef, Type, bool))
 
 WARNING(warning_float_overflows_maxbuiltin, none,
   "overflow: '%0' exceeds limit, represented as %select{|-}1inf",
