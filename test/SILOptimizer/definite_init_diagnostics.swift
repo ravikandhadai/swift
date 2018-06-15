@@ -1355,3 +1355,100 @@ class ClassWithUnownedProperties {
     c2 = tmp
   }
 }
+
+// Tests for DI when optionals are defined using unchecked_take_enum_data_addr
+// <rdar://38624845>
+
+func testOptionalDoubleWrite() -> String? {
+  let sConst: String? // expected-note {{change 'let' to 'var' to make it mutable}}
+  sConst = ""
+  sConst? = "v2" // expected-error {{immutable value 'sConst' may only be initialized once}}
+  return sConst
+}
+
+func testOptionalDoubleWrite2() -> Int? {
+  let x: Int? // expected-note {{change 'let' to 'var' to make it mutable}}
+  x = 0
+  x? = 0 // expected-error {{immutable value 'x' may only be initialized once}}
+  return x
+}
+
+protocol DIOptionalTestProtocol {
+  var f: Int { get set }
+}
+
+func testOptionalDoubleWrite3(p1: DIOptionalTestProtocol) -> DIOptionalTestProtocol? {
+  let x: DIOptionalTestProtocol? // expected-note {{change 'let' to 'var' to make it mutable}}
+  x = p1
+  x? = p1 // expected-error {{immutable value 'x' may only be initialized once}}
+  return x
+}
+
+func testOptionalWrite() {
+  let x: Int? // expected-note {{constant defined here}}
+              // expected-warning@-1 {{immutable value 'x' was never used; consider removing it}}
+  x? = 0 // expected-error {{constant 'x' used before being initialized}}
+}
+
+func testOptionalWriteGenerics<T>(p: T) -> T? {
+  let x: T? // expected-note {{constant defined here}}
+            // expected-note@-1 {{change 'let' to 'var' to make it mutable}}
+  x? = p  // expected-error {{constant 'x' used before being initialized}}
+  x = p   // expected-error {{immutable value 'x' may only be initialized once}}
+  return x
+}
+
+// Tests for optional chaining
+
+class DIOptionalTestClass {
+  var r: DIOptionalTestClass? = nil
+  var f: Int = 0;
+  let g: Int = 0;
+}
+
+func testOptionalChianing(p: DIOptionalTestClass?) {
+  p?.f = 2
+}
+
+func testOptionalChianing2(p: DIOptionalTestClass?) -> DIOptionalTestClass? {
+  let x: DIOptionalTestClass?
+  x = p
+  x?.f = 1
+  p?.r?.f = 2
+  return x
+}
+
+struct DIOptionalTestStruct {
+  var f: Int
+}
+
+func testOptionalChianing3() -> DIOptionalTestStruct? {
+  let x: DIOptionalTestStruct?  // expected-note {{change 'let' to 'var' to make it mutable}}
+  x = DIOptionalTestStruct(f: 0)
+  x?.f = 2  // expected-error {{immutable value 'x' may only be initialized once}}
+  return x
+}
+
+extension DIOptionalTestStruct {
+  public init?() {
+    self.f = 0
+  }
+}
+
+func testOptionalChianing4() -> DIOptionalTestStruct? {
+  let x: DIOptionalTestStruct?  // expected-note {{change 'let' to 'var' to make it mutable}}
+  x = DIOptionalTestStruct()
+  x?.f = 2  // expected-error {{immutable value 'x' may only be initialized once}}
+  return x
+}
+
+struct DIOptionalTestStructPair {
+  var pair: (Int, Int)
+}
+
+func test6() -> DIOptionalTestStructPair? {
+  let x: DIOptionalTestStructPair?  // expected-note {{change 'let' to 'var' to make it mutable}}
+  x = DIOptionalTestStructPair(pair: (0, 0))
+  x?.pair.0 = 1 // expected-error {{immutable value 'x' may only be initialized once}}
+  return x
+}
