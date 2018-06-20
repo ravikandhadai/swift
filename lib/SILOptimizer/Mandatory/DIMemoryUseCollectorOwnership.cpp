@@ -957,6 +957,7 @@ void ElementUseCollector::collectUses(SILValue Pointer, unsigned BaseEltNo) {
     // immutability and is not for checking initialization before use.
     if (auto *enumDataAddr = dyn_cast<UncheckedTakeEnumDataAddrInst>(User)) {
       collectUses(enumDataAddr, BaseEltNo);
+      continue;
     }
 
     // We model destroy_addr as a release of the entire value.
