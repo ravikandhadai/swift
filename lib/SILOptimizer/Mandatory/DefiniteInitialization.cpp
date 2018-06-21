@@ -1239,29 +1239,15 @@ void LifetimeChecker::handleEscapeUse(const DIMemoryUse &Use) {
     noteUninitializedMembers(Use);
     return;
   }
- 
 
   Diag<StringRef, bool> DiagMessage;
-  if (Inst->getLoc().isASTNode<AbstractClosureExpr>())
+  if (Inst->getLoc().isASTNode<AbstractClosureExpr>()) {
     DiagMessage = diag::variable_closure_use_uninit;
-  else if (isa<MarkFunctionEscapeInst>(Inst))
+  } else if (isa<MarkFunctionEscapeInst>(Inst)) {
     DiagMessage = diag::variable_function_use_uninit;
-  else
-     DiagMessage = diag::variable_used_before_initialized;
-
-//  if (isa<MarkFunctionEscapeInst>(Inst)) {
-//    if (Inst->getLoc().isASTNode<AbstractClosureExpr>())
-//      DiagMessage = diag::variable_closure_use_uninit;
-//    else
-//      DiagMessage = diag::variable_function_use_uninit;
-//  } else if (isa<UncheckedTakeEnumDataAddrInst>(Inst)) {
-//    DiagMessage = diag::variable_used_before_initialized;
-//  } else {
-//    if (Inst->getLoc().isASTNode<AbstractClosureExpr>())
-//      DiagMessage = diag::variable_closure_use_uninit;
-//    else
-//      DiagMessage = diag::variable_used_before_initialized;
-//  }
+  } else {
+    DiagMessage = diag::variable_used_before_initialized;
+  }
 
   diagnoseInitError(Use, DiagMessage);
 }
