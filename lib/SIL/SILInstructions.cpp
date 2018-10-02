@@ -312,8 +312,8 @@ VarDecl *DebugValueAddrInst::getDecl() const {
   return getLoc().getAsASTNode<VarDecl>();
 }
 
-static void declareWitnessTable(SILModule &Mod,
-                                ProtocolConformanceRef conformanceRef) {
+void swift::declareWitnessTable(SILModule &Mod,
+                         ProtocolConformanceRef conformanceRef) {
   if (conformanceRef.isAbstract()) return;
   auto C = conformanceRef.getConcrete();
   if (!Mod.lookUpWitnessTable(C, false))

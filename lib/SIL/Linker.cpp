@@ -198,28 +198,17 @@ static bool mustDeserializeProtocolConformance(SILModule &M,
                                        ->getModuleScopeContext());
 }
 
-void SILLinkerVisitor::visitProtocolConformance(
-    ProtocolConformanceRef ref, const Optional<SILDeclRef> &Member) {
-  // If an abstract protocol conformance was passed in, just return false.
-  if (ref.isAbstract())
-    return;
-  
-  bool mustDeserialize = mustDeserializeProtocolConformance(Mod, ref);
-
-  // Otherwise try and lookup a witness table for C.
-  auto C = ref.getConcrete();
-  
-  if (!VisitedConformances.insert(C).second)
-    return;
-  
+SILWitnessTable *lookupOrLinkWitnessTable(ProtocolConformance *C,
+                                          bool mustDeserialize,
+                                          SILModule &Mod) {
   SILWitnessTable *WT = Mod.lookUpWitnessTable(C, true);
 
-  // If we don't find any witness table for the conformance, bail and return
-  // false.
+  // If we don't find any witness table for the conformance,
+  // try to create a witness table by deserializing.
   if (!WT) {
-    Mod.createWitnessTableDeclaration(
-        C, getLinkageForProtocolConformance(
-               C->getRootNormalConformance(), NotForDefinition));
+    Mod.createWitnessTableDeclaration(C,
+        getLinkageForProtocolConformance(
+                          C->getRootNormalConformance(), NotForDefinition));
 
     // Adding the declaration may allow us to now deserialize the body.
     // Force the body if we must deserialize this witness table.
@@ -228,9 +217,47 @@ void SILLinkerVisitor::visitProtocolConformance(
       assert(WT && WT->isDefinition()
              && "unable to deserialize witness table when we must?!");
     } else {
-      return;
+      return WT;
     }
   }
+  return WT;
+}
+
+void SILLinkerVisitor::visitProtocolConformance(
+    ProtocolConformanceRef ref, const Optional<SILDeclRef> &Member) {
+  // If an abstract protocol conformance was passed in, just return false.
+  if (ref.isAbstract())
+    return;
+  
+  bool mustDeserialize = mustDeserializeProtocolConformance(Mod, ref);
+
+//  // Otherwise try and lookup a witness table for C.
+  SILWitnessTable *WT = lookupOrLinkWitnessTable(ref.getConcrete(),
+                                                 mustDeserialize, Mod);
+//  auto C = ref.getConcrete();
+//
+//  if (!VisitedConformances.insert(C).second)
+//    return;
+//
+//  SILWitnessTable *WT = Mod.lookUpWitnessTable(C, true);
+//
+//  // If we don't find any witness table for the conformance, bail and return
+//  // false.
+//  if (!WT) {
+//    Mod.createWitnessTableDeclaration(
+//        C, getLinkageForProtocolConformance(
+//               C->getRootNormalConformance(), NotForDefinition));
+//
+//    // Adding the declaration may allow us to now deserialize the body.
+//    // Force the body if we must deserialize this witness table.
+//    if (mustDeserialize) {
+//      WT = Mod.lookUpWitnessTable(C, true);
+//      assert(WT && WT->isDefinition()
+//             && "unable to deserialize witness table when we must?!");
+//    } else {
+//      return;
+//    }
+//  }
 
   // If the looked up witness table is a declaration, there is nothing we can
   // do here. Just bail and return false.

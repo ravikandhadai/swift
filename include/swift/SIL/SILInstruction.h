@@ -7747,6 +7747,9 @@ inline void SILSuccessor::pred_iterator::cacheBasicBlock() {
   }
 }
 
+void declareWitnessTable(SILModule &Mod,
+                         ProtocolConformanceRef conformanceRef);
+
 } // end swift namespace
 
 //===----------------------------------------------------------------------===//
