@@ -358,6 +358,21 @@ WARNING(warning_int_to_fp_inexact, none,
   "'%1' is not exactly representable as %0; it becomes '%2'",
   (Type, StringRef, StringRef))
 
+
+// Yield usage errors
+ERROR(return_before_yield, none, "accessor doesn't yield before returning",())
+
+ERROR(multiple_yields, none, "encountered multiple yields along "
+  "a single path in yield_once accessor", ())
+
+NOTE(previous_yield, none, "previous yield was here", ())
+
+ERROR(possible_return_before_yield, none, "cannot guarantee that the accessor "
+  "yields a value before returning", ())
+
+NOTE(conflicting_join, none,
+    "some paths reaching here have a yield and some don't", ())
+
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)
 #  undef DIAG
