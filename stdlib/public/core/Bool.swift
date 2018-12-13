@@ -62,8 +62,8 @@
 /// have a consistent type interface.
 @_fixed_layout
 public struct Bool {
-  @usableFromInline
-  internal var _value: Builtin.Int1
+  //@usableFromInline
+  public var _value: Builtin.Int1
 
   /// Creates an instance initialized to `false`.
   ///
