@@ -99,7 +99,7 @@ The interpolated values can also be user-defined types and can also accept user-
 options much like the natively defined types, provided the logging API has been
 appropriately extended to handle the user-defined type.
 
-**Formatting options are required to be static i.e, compile-time known values**
+**Formatting options are required to be static i.e., compile-time known values**
 
 An important requirement of the API is that the formatting options must be compile-time constants.
 If the enum cases accept parameters (e.g. like `.decimal(2)`), those parameters should also be
@@ -141,7 +141,7 @@ The complete implementation of `PackedLogMsg` and `osLog` can be found here:
 <!--- The prototype implementation is also [compile-time interpretable](https://forums.swift.org/t/compile-time-constant-expressions-for-swift/12879),
 which enables interpreting the code at compile-time to infer the compile-time constants such as format string.) -->
 
-<detail><summary>A sketch of the implementation of `osLog` and `PackedOSLogMsg`</summary>
+<details><summary>A sketch of the implementation of osLog and PackedLogMsg</summary>
 
  
 ```swift
@@ -176,7 +176,7 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
     var encodeOps: EncodeOperations
 
     public mutating func appendLiteral(_ literal: String) {
-      formatString += literal  // Escaping of black-slashes is elided for brevity.
+      formatString += literal  // Escaping of percent characters is elided for brevity.
     }
 
     public mutating func appendInterpolation(@autoclosure private number: () -> Int64, _ format: IntLogFormat) {
@@ -203,7 +203,7 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
   }
 }
 ```
-</detail>
+</details>
 
 ### Enabling User-defined Types to be Logged
 
@@ -219,7 +219,7 @@ by `osLog("Developer \(dev) made a commit")`.
 Note that the extensions reuse the string interpolation methods on types already
 supported by `PackedLogMsg`.
 
-<detail><summary>Extending PackedOSLogMsg to log a user-defined struct `Developer` and an enum `Language`</summary>
+<details><summary>Extending PackedLogMsg to log a user-defined struct Developer and an enum Language</summary>
 
 ```swift
 struct Developer {
@@ -252,7 +252,7 @@ extension PackedLogMsg.StringInterpolation {
   }
 }
 ```
-</detail>
+</details>
 
 ## Optimization
 
@@ -282,7 +282,7 @@ which is now unused as its uses have been folded, and also to eliminate the stri
    based on the fact that it is deallocated at the end of the function.
 
 If any of the above steps is not possible, we propose to present an error or warning to the user depending on whether
-it results in a violation of the contract of the logging system or a performance degradation. E.g. if the format string cannot be inferred
+it results in a violation of the contract of the logging system or a performance degradation. E.g., if the format string cannot be inferred
 as a compile-time constant, it's a contract violation and is therefore an error.
 However, if step 6 is not possible, it is a loss of performance but is not an error.
 

@@ -94,9 +94,9 @@ They are also less performant compared to their C counterparts because Swift doe
 
 ## Syntax
 
-Currently, the logging APIs in Swift are global functions and have a C-like syntax, i.e, they
+Currently, the logging APIs in Swift are global functions and have a C-like syntax, i.e., they
 are written in snake_case, and take a format string and varargs.
-We propose to use camelCase for the function names (i.e, `osLog` and `osSignpost`),
+We propose to use camelCase for the function names (i.e., `osLog` and `osSignpost`),
 and change their signature to accept a string interpolation in place of the format string
 and varargs.
 We assume that every other parameter to these functions is same as what it is currently
@@ -148,7 +148,7 @@ appropriately extended to handle the user-defined types
 (see section "Implementing Logging for User Defined Types").
 This feature does not have an equivalent in the existing `os_log` APIs.
 
-**Formatting options are required to be static i.e, compile-time known values**
+**Formatting options are required to be static i.e., compile-time known values**
 
 A important restriction on the API is that the formatting options are required to be compile-time constants.
 If the enum cases accept parameters (e.g. like `.decimal(2)`), those parameters should also be
@@ -156,6 +156,19 @@ compile-time constants. This is necessary as the logging system requires the for
 in the compiled binary.
 (This is essential for performance as well as for enforcing the privacy policy.)
 We propose to generate a compile-time error if this restriction is violated.
+
+**Escape Characters**
+
+The string interpolations passed to logging APIs can use escape characters such as `\n` that are 
+allowed in Swift. However, there are a few escape characters, such as `\b`, `\a`, that are supported by C `printf`s
+(and `os_log`) but are not supported by Swift. These escape characters cannot be used in the new logging APIs
+and also are not very useful for logging. Nonetheless, it is possible to define new formatting enums
+if any such escape characters are found to useful eventually.
+
+**Multiline Strings and Raw Strings**
+
+The new logging APIs can accept multiline string literals/interpolations and [raw string literals/interpolations](https://github.com/apple/swift-evolution/blob/master/proposals/0200-raw-string-escaping.md).
+These are desugared by the lexers and parsers into normal Swift strings before they are passed to the logging APIs.
 
 ## Logging API Implementation Model
 
@@ -236,7 +249,7 @@ which is an important restriction that ensures correctness and also deep optimiz
 For example, a simplified implementation of the type `PackedLogMsg` that allows only
 64-bit `Int`s to be interpolated is shown below.
 
-<summary>
+
 
 ```swift
 public struct PackedLogMsg : ExpressibleByStringInterpolation {
@@ -257,7 +270,7 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
     }
 
     public mutating func appendLiteral(_ literal: String) {
-      formatString += literal  // Escaping of black-slashes is elided for brevity.
+      formatString += literal  // Escaping of percent characters is elided for brevity.
     }
 
     public mutating func appendInterpolation(@autoclosure private number: () -> Int64, _ format: IntLogFormat) {
@@ -284,7 +297,6 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
   }
 }
 ```
-</summary>
 
 The complete implementation of the the `PackedLogMsg` can be found here: [PackedLogMsg prototype](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/OSLogPrototype.swift).
 Note that the above implementation separately tracks the header bytes: `preamble` and
@@ -314,7 +326,7 @@ instantiated by string interpolation, and performs the following tasks:
      This is performed by the function `packedMsg.encode` whose implementation is elided for brevity.
   3. It invokes the C ABIs with the format string tracked by `packedMsg` and the byte buffer.
 
-<summary>
+
 
 ```swift
 public func osLog(_ packedMsg: PackedLogMsg) {
@@ -337,7 +349,7 @@ public func osLog(_ packedMsg: PackedLogMsg) {
   byteEnc.destroy()
 }
 ```
-</summary>
+
 
 <!---
 It may be a little surprising that the `ByteEncoder` type accepts the byte buffer
@@ -525,9 +537,9 @@ Any extensions to the string interpolation methods such as the one described abo
 In this section, we clarify what this means and explain how this is achieved in the implementations shown above.
 
 An important requirement of the logging system is that the format string passed to the C ABIs
-should be a static string i.e, a literal in the compiled binary. (This is primarily a privacy requirement,
+should be a literal in the compiled binary. (This is primarily a privacy requirement,
 as static strings cannot be constructed out of potential sensitive, dynamic values.
-However, this also improves efficiency as static strings can be extracted from the binary and need not be copied/stored.)
+However, this also improves efficiency as static strings can be extracted from the binary and need not be copied.)
 Another requirement is that the size of the byte buffer should be within a predefined limit.
 
 These restrictions imply that the format string and the buffer size must be inferred at compile time.
@@ -575,7 +587,7 @@ The definition of `EncodeOperations` is shown below for `Int` types.
 The complete implementations of `EncodeOperations` and `ByteEncoder` are available
 [here](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/ByteEncoder.swift).
 
-<summary>
+
 
 ```swift
 public struct EncodeOperations {
@@ -595,7 +607,7 @@ public struct EncodeOperations {
   }
 }
 ```
-</summary>
+
 
 In essence, `EncodeOperations` does not perform the copy but only creates closures
 that will perform the copy later.

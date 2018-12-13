@@ -27,6 +27,10 @@ public enum FloatLogFormat {
   case decimal(Int)
 }
 
+public func escapePercents(_ str: String) -> String {
+  return str.replacingOccurrences(of: "%", with: "%%")
+}
+
 public struct PackedLogMsg : ExpressibleByStringInterpolation,
 ExpressibleByStringLiteral {
 
@@ -46,7 +50,7 @@ ExpressibleByStringLiteral {
     }
 
     public mutating func appendLiteral(_ literal: String) {
-      formatString += literal
+      formatString += escapePercents(literal)
     }
 
     public mutating func appendInterpolation(_ number: @autoclosure @escaping () -> Int,
