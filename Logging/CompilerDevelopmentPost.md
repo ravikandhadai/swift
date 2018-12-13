@@ -13,22 +13,21 @@ which is a compiler technology that is in the process of getting upstreamed.
 We are very excited to discuss our proposal and welcome your feedback on this.
 A more detailed version of this proposal is available [here](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/ImprovingOSLogForSwift.md).
 
-While this proposal focuses only on Apple's logging APIs, the ideas presented here could be applicable more generally.
+While this proposal focuses only on Apple's logging APIs, the ideas presented here are applicable more generally.
 In particular, we think the following aspects of the proposal are generalizable:
 
-  * We show how the new string interpolation features can be used to expose all
+  * We show how the new string interpolation features can be used to surface all
 functionalities provided by printf-style format string and varargs.
-  * We present a way to write Swift code to deconstruct a string interpolation into a format string and an argument sequence
+  * We present a Swift implementation that deconstructs a string interpolation into a format string and an argument sequence
 using custom string interpolation.
-  * We present a compiler optimization based on compile-time interpretation that can recover compile-time
-constants from complex Swift code.
+  * We present a compiler optimization based on compile-time interpretation that can infer the format string and other compile-time constants from the implementation that deconstructs the string interpolation.
 
 We therefore see this proposal as being relevant to the following _potential future directions_:
 
 * Development of a general-purpose, platform-agnostic logging API for Swift.
 * Development of custom logging libraries for interfacing with other logging systems.
-* Migrating other C-style Swift APIs such as localization APIs to string interpolation.
-* Development of the compile-time interpretation technology and applying it to optimizations.
+* Migration of other C-style Swift APIs such as localization APIs to string interpolation.
+* Development of the compile-time interpretation technology and making it available to Swift users.
 
 ## Highlights of this Proposal
 
@@ -37,14 +36,14 @@ We therefore see this proposal as being relevant to the following _potential fut
 
 * **Presents a standard library implementation of the osLog API based on [custom string interpolation](https://github.com/apple/swift-evolution/blob/master/proposals/0228-fix-expressiblebystringinterpolation.md).**
     The implementation will interface with the native C ABIs provided by the logging system,
-    which expects a  `printf`-style format string and a contiguous sequence of bytes
+    which expect a `printf`-style format string and a contiguous sequence of bytes
     containing the varargs.
-    The implementation constructs the required inputs to the C ABIs from the    string interpolation that is passed in, thereby relieving the users of `osLog` from these low-level considerations.    All of this construction logic will be implemented in Swift in the standard library.
+    The implementation constructs the required inputs to the C ABIs from the string interpolation that is passed in, thereby relieving the users of `osLog` from these low-level considerations. All of this construction logic will be implemented in Swift in the standard library.
 
 * **Enables Swift users to extend the osLog API to log their custom types.**
      Swift users can define extensions to the new logging API. The extensions may accept
      values of user-defined types and may define how to render the type
-     and define which fields are private etc.
+     and which fields are private etc.
      Instances of a user-defined type can be interpolated in the log calls like any other value: `osLog("User-defined type: \(instance)")`.
 
 * **Makes osLog invocations _fast_ and aims to match the performance of os_log calls in C
@@ -52,7 +51,7 @@ We therefore see this proposal as being relevant to the following _potential fut
     This is achieved by an optimization pass that uses [compile-time interpretation](https://forums.swift.org/t/compile-time-constant-expressions-for-swift/12879).
     Using such a general-purpose framework reduces the need for hardcoded knowledge
     within in the optimization passes.
-    This makes it easier for the implementation to evolve more freely,
+    This makes it easier for the implementation to evolve,
     and allows the extensions to the logging API to benefit from the optimizations.
     However, the use of the interpreter means that implementing the logging API requires
     more sophistication. It requires separating out the implementation into
@@ -102,7 +101,7 @@ appropriately extended to handle the user-defined type.
 
 **Formatting options are required to be static i.e, compile-time known values**
 
-An important restriction on the API is that the formatting options are required to be compile-time constants.
+An important requirement of the API is that the formatting options must be compile-time constants.
 If the enum cases accept parameters (e.g. like `.decimal(2)`), those parameters should also be
 compile-time constants. This is necessary as the logging system requires the format string to be a static string
 in the compiled binary.
@@ -123,7 +122,7 @@ We define `osLog` as a function that accepts a custom string interpolation type:
 When a string interpolation is passed to the `osLog` function,
 the compiler would generate code to create an instance of `PackedLogMsg`
 and invoke a sequence of methods on it passing the literal and interpolated
-parts of the string interpolation, in the same order as they appear in the source.
+parts of the string interpolation.
 For example, the sequence of calls generated by the compiler for the call
 `osLog("Login time: \(private: currentTime, .time)")` is similar to the code shown below:
 
@@ -137,13 +136,14 @@ For example, the sequence of calls generated by the compiler for the call
 The construction of the format string and byte buffer happens in the string interpolation protocol
 methods of `PackedLogMsg`. The following code snippet sketches the implementation of these functions.
 (Note that the code snippet has some missing pieces which are elided for brevity.
-A complete implementation of `PackedLogMsg` and `osLog` can be found here:
+The complete implementation of `PackedLogMsg` and `osLog` can be found here:
 [PackedLogMsg prototype](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/OSLogPrototype.swift.)
 <!--- The prototype implementation is also [compile-time interpretable](https://forums.swift.org/t/compile-time-constant-expressions-for-swift/12879),
 which enables interpreting the code at compile-time to infer the compile-time constants such as format string.) -->
 
-<summary>
+<detail><summary>A sketch of the implementation of `osLog` and `PackedOSLogMsg`</summary>
 
+ 
 ```swift
 
 public func osLog(_ packedMsg: PackedLogMsg) {
@@ -203,7 +203,7 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
   }
 }
 ```
-</summary>
+</detail>
 
 ### Enabling User-defined Types to be Logged
 
@@ -219,6 +219,7 @@ by `osLog("Developer \(dev) made a commit")`.
 Note that the extensions reuse the string interpolation methods on types already
 supported by `PackedLogMsg`.
 
+<detail><summary>Extending PackedOSLogMsg to log a user-defined struct `Developer` and an enum `Language`</summary>
 
 ```swift
 struct Developer {
@@ -251,6 +252,8 @@ extension PackedLogMsg.StringInterpolation {
   }
 }
 ```
+</detail>
+
 ## Optimization
 
 The overall optimization workflow is summarized below.
