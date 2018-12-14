@@ -29,7 +29,7 @@ public enum Language {
 }
 
 extension PackedLogMsg.StringInterpolation {
-  // TODO: the parameter should be an autoclosure to enable compile-time interpretation.
+  // Ideally, the parameters should be made autoclosures to enable compile-time interpretation.
   public mutating func appendInterpolation(_ dev: Developer) {
     let msg: PackedLogMsg = "Id: \(private: dev.id) Name: \(private: dev.name) Preferred Language: \(dev.preferredLanguage)"
     appendInterpolation(msg) // Combines self with msg.stringInterpol.

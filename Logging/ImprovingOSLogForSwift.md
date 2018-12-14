@@ -6,12 +6,12 @@ We propose to change the Swift APIs for the Apple's unified logging system (name
 to accept string interpolations instead of the printf-style format string and varargs combination that they currently accept.
 This means Swift users can pass in string interpolations to the logging functions e.g. like `osLog("Fatal Error \(errno)")`.
 (We use camelCase in this proposal for the logging functions.)
-We propose an implementation of the APIs, based on [custom string interpolation](https://github.com/apple/swift-evolution/blob/master/proposals/0228-fix-expressiblebystringinterpolation.md),
-that is meant to be a part of the Swift standard library.
+We propose a Swift implementation of the APIs, based on [custom string interpolation](https://github.com/apple/swift-evolution/blob/master/proposals/0228-fix-expressiblebystringinterpolation.md).
 The implementation is designed to be customizable so that library authors and application developers can extend these
 APIs to provide succinct interfaces to log their custom types.
 We propose to implement an optimization pass for the new logging APIs in the Swift compiler
-using [compile-time interpretation for Swift](https://forums.swift.org/t/compile-time-constant-expressions-for-swift/12879).
+using [compile-time interpretation for Swift](https://forums.swift.org/t/compile-time-constant-expressions-for-swift/12879),
+which is a compiler technology that is being upstreamed as an _experimental_ feature.
 The proposed optimizations can completely eliminate the overheads due to string interpolation abstractions
 and can achieve a performance that is comparable to the C logging APIs.
 
@@ -63,12 +63,13 @@ They are also less performant compared to their C counterparts because Swift doe
     supported by the logging system such as tagging data as _private_, specifying the
     precision of floating-point number etc., through the extended string interpolation syntax.
 
-2. *Presents a standard library implementation of the logging APIs based on custom string interpolation.*
+2. *Presents an implementation of the logging APIs based on custom string interpolation.*
     The implementation will interface with the native C ABIs provided by the logging system,
-    which expects a  `printf`-style format string and a contiguous sequence of bytes
+    which expect a  `printf`-style format string and a contiguous sequence of bytes
     containing the varargs.
     The implementation constructs the required inputs to the C ABIs from the    string interpolation that is passed in, thereby relieving the users of the loggin APIs
-    from these low-level considerations.    All of this construction logic will be implemented in Swift in the standard library.
+    from these low-level considerations. All of this construction logic will be implemented in Swift.
+    Some general, reusable components of the implementation could be made available in the standard library for use by other similar use cases.
 
 
 3. *Enables Swift users to extend the logging APIs to log their custom user-defined types.*
@@ -82,8 +83,8 @@ They are also less performant compared to their C counterparts because Swift doe
     programs compiled with Clang.*
     This is achieved by an optimization pass that uses [compile-time interpretation](https://forums.swift.org/t/compile-time-constant-expressions-for-swift/12879).
     Using such a general-purpose framework reduces the need for hardcoded knowledge
-    within in the optimization passes.
-    This makes it easier for the implementation to evolve more freely,
+    within the optimization passes.
+    This makes it easier for the implementation to evolve,
     and allows the extensions to the logging APIs to benefit from the optimizations.
     However, the use of the interpreter means that implementing the logging APIs requires
     more sophistication. It requires separating out the implementation into
@@ -100,7 +101,7 @@ We propose to use camelCase for the function names (i.e., `osLog` and `osSignpos
 and change their signature to accept a string interpolation in place of the format string
 and varargs.
 We assume that every other parameter to these functions is same as what it is currently
-([current implementation](https://github.com/apple/swift/blob/master/stdlib/public/SDK/os/)).
+([current implementation](https://github.com/apple/swift/tree/master/stdlib/public/Darwin/os)).
 The proposal requires the logging APIs to accept string interpolations,
 but is oblivious to other parameters of the logging APIs.
 For the optimizations proposed here to be fully effective, the log calls should be direct
@@ -112,7 +113,7 @@ if it is needed in the future.
 The following table shows some examples of `osLog` calls
 with formatting options in the proposed syntax.
 An equivalent call in the existing `os_log` syntax is also shown for comparison.
-The new [custom string interpolation](https://github.com/apple/swift-evolution/blob/master/proposals/0228-fix-expressiblebystringinterpolation.md)feature allows interpolated terms to be sequences of labeled expressions (similar to parameters of functions).
+The new [custom string interpolation](https://github.com/apple/swift-evolution/blob/master/proposals/0228-fix-expressiblebystringinterpolation.md) feature allows interpolated terms to be sequences of labeled expressions (similar to parameters of functions).
 We propose to use these features to specify formatting options with the
 interpolated expressions.
 
@@ -124,7 +125,7 @@ interpolated expressions.
 |  `osLog("Login time: \(private: currentTime, .time) ms")`  |  `os_log("Login time: %{private, time_t}d ms", currentTime)` |
 |  `osLog("My user-defined type: \(myinstance, .myoption(myparam))")`  |  - |
 
-The formatting options are cases of `enum`s. For standard types the enums could be defined in the standard library.(For user-defined types, it can be defined by the user creating the logging extension for the type.)
+The formatting options are cases of `enum`s. For standard types the enums could be defined along with the implementation of the logging APIs.(For user-defined types, it can be defined by the user creating the logging extension for the type.)
 E.g., the enum sketched below lists (some of) the formatting options for an `Int` type supported by `osLog`.
 
 ```swift
@@ -145,7 +146,7 @@ We propose to specify the `private` tags as a label, since it is a binary value.
 The interpolated values can also be user-defined types and can also accept user-defined
 options much like the natively defined types, provided the logging APIs have been
 appropriately extended to handle the user-defined types
-(see section "Implementing Logging for User Defined Types").
+(see section [Enabling User Defined Types to be Logged](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/ImprovingOSLogForSwift.md#enabling-user-defined-types-to-be-logged)).
 This feature does not have an equivalent in the existing `os_log` APIs.
 
 **Formatting options are required to be static i.e., compile-time known values**
@@ -157,23 +158,15 @@ in the compiled binary.
 (This is essential for performance as well as for enforcing the privacy policy.)
 We propose to generate a compile-time error if this restriction is violated.
 
-**Escape Characters**
-
-The string interpolations passed to logging APIs can use escape characters such as `\n` that are 
-allowed in Swift. However, there are a few escape characters, such as `\b`, `\a`, that are supported by C `printf`s
-(and `os_log`) but are not supported by Swift. These escape characters cannot be used in the new logging APIs
-and also are not very useful for logging. Nonetheless, it is possible to define new formatting enums
-if any such escape characters are found to useful eventually.
-
-**Multiline Strings and Raw Strings**
+**Support for Multiline Strings and Raw Strings**
 
 The new logging APIs can accept multiline string literals/interpolations and [raw string literals/interpolations](https://github.com/apple/swift-evolution/blob/master/proposals/0200-raw-string-escaping.md).
-These are desugared by the lexers and parsers into normal Swift strings before they are passed to the logging APIs.
+These are desugared by lexers and parsers into normal Swift strings, by adding necessary escape characters, before they are passed to the logging APIs.
 
 ## Logging API Implementation Model
 
 This section describes the programming model for the implementers of the logging APIs.
-The logging APIs `osLog` and `osSignpost` will be implemented in the standard library.
+The logging APIs `osLog` and `osSignpost` will be implemented in Swift.
 However, the implementation can be extended by Swift users
 (particularly,  authors of Swift libraries) to enable logging of user-defined types,
 and to enable interfacing with their custom logging backends.
@@ -181,7 +174,7 @@ This section is aimed at readers interested in implementing such extensions.
 
 There is also an important restriction on the implementation model, which is required for satisfying
 the requirements of the unified logging system and also for enabling deep optimizations.
-The following section "Designing String Interpolation Methods to be Compile-time Interpretable"
+The following section [Designing String Interpolation Methods to be Compile-time Interpretable](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/ImprovingOSLogForSwift.md#designing-string-interpolation-methods-to-be-compile-time-interpretable)
 discusses this restriction along with some guidelines/examples for conforming to this restriction.
 Understanding this restriction is important for readers interested in extending the logging APIs.
 
@@ -198,14 +191,12 @@ The following are the main steps involved in the implementation of the logging A
  2. Constructing a byte buffer from the string interpolation.
     The byte buffer must consist of the bytes of the interpolated expressions
 
- 2. Invokes the C ABI `_os_log_impl`  with those values.
+ 2. Invoking the C ABIs like `_os_log_impl`  with those values.
 
 For instance, given a call of the form `osLog("Login time: \(private: currentTime, .time) ms")`
-the implementation will construct a format string of the form: `"Login time: %{private,time_t}d ms"`
+the implementation will construct a format string of the form: `"Login time: %{private,time_t}ld ms"`
 and a buffer consisting of the bytes of the interpolated expression: `currentTime`.
 
-To accomplish step 1 and parts of step 2, we use custom string interpolation of Swift.
-The remaining tasks are implemented as part of the `osLog` function implementation.
 We define `osLog` as a function that accepts a custom string interpolation type:
 `PackedLogMsg`, which conforms to the new custom string interpolation protocol: [`ExpressibleByStringInterpolation` protocol](https://github.com/apple/swift-evolution/blob/master/proposals/0228-fix-expressiblebystringinterpolation.md).
 
@@ -217,7 +208,7 @@ We define `osLog` as a function that accepts a custom string interpolation type:
 
 ### Constructing Format String and Argument Buffer with Custom String Interpolation
 
-The protocol `ExpressibleByStringInterpolation` requires defining an associate type
+The protocol `ExpressibleByStringInterpolation` requires defining an associated type
 `StringInterpolation`  that has an initializer, a method
 `appendLiteral(_:String)`  and one or more overloaded methods with the name: `appendInteroplation`.
 On encountering a string interpolation whose type is required to be `PackedLogMsg`,
@@ -243,12 +234,12 @@ For example, the sequence of calls generated by the compiler for the call
 We propose to implement the construction of the format string and the byte buffer
 in the `appendLiteral` and `appendInterpolation`  functions of
 `PackedLogMsg.StringInterpolation`.
-Furthermore, the implementation shown below ensures that it is compile-time interpretable,
-which is an important restriction that ensures correctness and also deep optimizations.
+Furthermore, the implementation shown below is compile-time interpretable,
+which is an important restriction that ensures correctness and enables deep optimizations.
+(More on this [here](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/ImprovingOSLogForSwift.md#designing-string-interpolation-methods-to-be-compile-time-interpretable))
 
 For example, a simplified implementation of the type `PackedLogMsg` that allows only
 64-bit `Int`s to be interpolated is shown below.
-
 
 
 ```swift
@@ -258,7 +249,7 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
 
   public struct StringInterpolation : StringInterpolationProtocol {
     var preamble: UInt8 // The first byte of the header.
-    var argCount: UInt8 // No. of arguments in the buffer.
+    var argCount: UInt8 // Number of arguments in the buffer.
     var formatString: String
     var encodeOps: EncodeOperations
 
@@ -273,15 +264,16 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
       formatString += literal  // Escaping of percent characters is elided for brevity.
     }
 
-    public mutating func appendInterpolation(@autoclosure private number: () -> Int64, _ format: IntLogFormat) {
-      preamble |= 1 // set the private argument bit in the preamble
+    public mutating func appendInterpolation(private number: @autoclosure () -> Int64, _ format: IntLogFormat) {
+      preamble |= 1 // Set the private argument bit in the preamble.
       argCount += 1
-      formatString += "%ld"
+      formatString += "%{private"
       switch format {
       case .time:
         formatString += ",time_t"
-      case .darwinErrno:
-        formatString += ",darwin.errno"
+      case .ipAddress:
+        formatString += ",network:in_addr"
+      ...
       default:
         break
       }
@@ -298,10 +290,11 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
 }
 ```
 
-The complete implementation of the the `PackedLogMsg` can be found here: [PackedLogMsg prototype](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/OSLogPrototype.swift).
+The complete implementation of the `PackedLogMsg` can be found here: [PackedLogMsg prototype](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/OSLogPrototype.swift).
 Note that the above implementation separately tracks the header bytes: `preamble` and
 `argCount`, and constructs the format string on the fly as the interpolated terms
 are seen.
+
 
 However, the construction of the byte buffer uses a different strategy.
 The type `EncodeOperations`  abstracts the construction of the byte buffer.
@@ -312,7 +305,8 @@ In our current implementation, the  buffer construction happens within the `osLo
 function (described shortly) and happens only if logging is enabled.
 This deferring of buffer construction is crucial for making the string interpolation functions
 compile-time interpretable, which ensures correctness as well as performance of the logging APIs.
-This aspect is described in more detail in the next section.
+Similarly, the parameters are made `@autoclosure`s to make the implementation easier to interpret. 
+This aspect is described in more detail in the next [section](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/ImprovingOSLogForSwift.md#designing-string-interpolation-methods-to-be-compile-time-interpretable).
 
 ### Implementation of osLog
 
@@ -336,20 +330,19 @@ public func osLog(_ packedMsg: PackedLogMsg) {
   // Allocate a byte buffer and a byte encoder.
   let byteCount = packedMsg.totalArgByteCount
   var bufferPtr = UnsafeMutablePointer<UInt8>.allocate(capacity: byteCount)
-  var byteEnc = ByteEncoder(bufferPtr)
+  var byteEncoder = ByteEncoder(bufferPtr)
 
   // Dispatch the encode operations tracked by packedMsg.
-  packedMsg.encode(&byteEnc)
+  packedMsg.encode(&byteEncoder)
 
   // Invoke the C logging ABIs
   _os_log_impl_wrapper(packedMsg.formatString, bufferPtr, byteCount, ...)
 
   // clean up all state
   bufferPtr.deallocate()
-  byteEnc.destroy()
+  byteEncoder.destroy()
 }
 ```
-
 
 <!---
 It may be a little surprising that the `ByteEncoder` type accepts the byte buffer
@@ -381,27 +374,29 @@ public struct PackedLogMsg : ExpressibleByStringInterpolation {
 ### Enabling User-defined Types to be Logged
 
 The  `PackedLogMsg.StringInterpolation` struct can be extended in order to log user-defined types
-by Swift users, especially developers of Swift libraries, outside of the standard library.
+by Swift users, especially developers of Swift libraries.
 To log a user-defined type it suffices to define an overload of `appendInterpolation`
 on `PackedLogMsg.StringInterpolation`  that accepts the user-defined type and
 interpolates the properties of the type as desired.
 The following code snippet illustrates this on a struct `Developer` that uses an enum
 `Language`.
+(See [here](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/OSLogExtensions.swift) for the full implementation.)
 
 ```swift
 struct Developer {
-  let Id: Int
-  var Name: String
+  let id: Int
+  var name: String
   var preferredLanguage: Language
 }
 
 enum Language {
   case swift
   case objectiveC
-  ...
+  case cpp
 }
 
 extension PackedLogMsg.StringInterpolation {
+  // Ideally, the parameters should be made autoclosures to enable compile-time interpretation.
   mutating func appendInterpolation(_ dev: Developer) {
     let msg: PackLogMsg = "Id: \(private: dev.id) Name: \(private: dev.name) Preferred Language: \(dev.preferredLanguage)"
     appendInterpolation(msg) // Combines self with msg.stringInterpol.
@@ -413,15 +408,20 @@ extension PackedLogMsg.StringInterpolation {
       appendInterpolation("swift")
     case .objectiveC:
       appendInterpolation("objectiveC")
-    ...
+    case .cpp:
+      appendInterpolation("C++")
     }
   }
 }
 ```
 With this implementation, one can directly log instances of `Developer` e.g.,
 `osLog("Developer \(dev) made a commit")`.
-The extensions reuse the string interpolation methods on types already
+Note that all that the extensions have to do is to invoke `appendInterpolation` methods on types already
 supported by `PackedLogMsg`.
+In fact, as illustrated by `appendInterpolation(_ dev: Developer)`, this can be accomplished
+by recursively using the string interpolation syntax itself, once we have defined a `appendInterpolation`
+overload on `PackedLogMsg` that can accept instances of itself, as decribed below.
+
 We predefine an  `appendInterpolation` overload on
 `PackLogMsg.StringInterpolation`  that takes an instance of `PackedMsg`
 and concatenates the internal state of `self`
@@ -435,11 +435,11 @@ The implementation of this overload is straightforward and is available [here](h
 In fact, the logging APIs are extensible enough to support any new types
 that are natively added to the logging system.
 Say the logging system introduces a new format specifier and an encoding format for a new aggregate type.
-To extend the APIs to this new type, it suffices to overload `appendInterpolation` to the new type.
+To extend the APIs to this new type, it suffices to overload `appendInterpolation` to accept the new type.
 The overload will use the format specifier for the new type and will append the
 argument to the `encodeOps`.
 The types `EncodeOperations` (described shortly) and `ByteEncoder` would have to
-be extended with the logic for marshalling the custom type.
+be extended with the logic for marshalling the aggregate type.
 For brevity, we elide further details of creating such extensions,
 and refer interested readers to an example available [here](https://github.com/ravikandhadai/swift/blob/logging-writeup/Logging/OSLogSpecifierExt.swift).
 
@@ -455,7 +455,8 @@ The goal of the optimization is to match the performance of the code generated b
    `packedMsg` by their constant values. This involves replacing accesses to
   `formatString` property with the inferred string literal, replacing `totalArgsByteCount`
   with the inferred buffer size, and replacing all indirect invocation of the closures tracked by
-  `packedMsg.encodeOps` with their inferred targets.
+  `packedMsg.encodeOps` with their inferred targets. (The function `packedMsg.encode(&byteEncoder)` 
+  invokes the closures tracked by `packedMsg.encodeOps` on `byteEncoder`.)
 
 3. All invocations of autoclosures that were created from the arguments to the string
   interpolation methods are converted to direct calls based on the targets inferred by the
@@ -558,7 +559,7 @@ not compile-time interpretable, especially the `appendInterpolation` methods tha
 
 To enable using the interpreter, the implementation of the string interpolation adheres to certain _design principles_,
 which are described below.
-These principles could serve as guidelines for extensions to the interpolation functions as well.
+These principles could serve as guidelines for the extenders of the logging APIs as well.
 
 ### Hiding Buffer Construction logic from String Interpolation Methods using Closures
 
@@ -600,8 +601,8 @@ public struct EncodeOperations {
     totalByteCount = 0
   }
 
-  public mutating func append(_ x: Int) {
-    let encodeOp = { (enc: inout ByteEncoder) in enc.encode(x) }
+  public mutating func append(_ x: @escaping () -> Int) {
+    let encodeOp = { (enc: inout ByteEncoder) in enc.encode(x()) }
     ops.append(encodeOp)
     totalByteCount += 8 // # of bytes for encoding `Int`
   }
@@ -636,14 +637,14 @@ by a check that passes only if logging is enabled.
 
 This proposal does not deprecate or remove any existing ABI. Therefore, it does not affect compatibility
 with source code or binaries written using existing `os_log/os_signpost` functions.
-However, when the existing applications are compiled with a newer Swift compiler (and newer standard library),
-certain optimizations described here could be reused. This is outside the scope of this proposal.
+<!-- However, when the existing applications are compiled with a newer Swift compiler,
+certain optimizations described here could be reused. This is outside the scope of this proposal. -->
 
 ### Interoperability with Older ABI Stable Swift
 
 To enable backward deploying binaries that are compiled with the new logging APIs to an older, ABI-stable Swift, the ABI of the code compiled with the proposed logging APIs should not rely on any function or type that is not supported in Swift 5. This means that in the above implementation the types `PackedLogMsg`, `EncodeOperations` and `ByteEncoder` (and their properties and methods) should not be a part of the compiled code. The optimizations proposed in the document eliminate these types by a combination of targeted compile-time interpretation, constant folding and inlining, which is performed by a dedicated optimization pass.
 
-In order to guarantee this property at compile time, we propose to annotate these types as `@_compileTime` which informs the compiler to generate an error if such annotated types are present in the compiled code. This provides a way to achieve backward deployment even when these structures are used by users in their custom extensions. Furthermore, programmers can also opt out of this restriction by opting out of backward deployment.
+In order to guarantee this property at compile time, we propose to annotate these types e.g. as `@_compileTime` to instruct the compiler to generate an error if such annotated types are present in the compiled code. This provides a way to achieve backward deployment even when these structures are used by users in their custom extensions. Furthermore, programmers can also opt out of this restriction by opting out of backward deployment.
 
 <!--- ### Resilience: Evolving Logging APIs without breaking Backward Compatibility
 
