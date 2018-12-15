@@ -15,6 +15,7 @@
 #include "swift/SIL/BasicBlockUtils.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "llvm/ADT/DenseSet.h"
+#include "swift/AST/Stmt.h"
 
 using namespace swift;
 
@@ -110,11 +111,40 @@ class YieldOnceCheck : public SILFunctionTransform {
         if (state.yieldState == YieldState::Conflict) {
           diagnose(astCtx, term->getLoc().getSourceLoc(),
                    diag::possible_return_before_yield);
-          // Add a note to the instruction where the conflict first appeared.
-          diagnose(astCtx,
-                   state.getConflictInstruction()->getLoc().getSourceLoc(),
-                   diag::conflicting_join);
-          return;
+
+          // Try extract the AST of the conflicting instruction to see if the
+          // conflict is because of a for/while loop, or a if-else, or a guard,
+          // or a switch statement. If AST is not a known control-flow
+          // construct, emit a default message.
+          auto *conflictInst = state.getConflictInstruction();
+          Stmt *stmt = conflictInst->getLoc().getAsASTNode<Stmt>();
+          if (!stmt) {
+            diagnose(astCtx, conflictInst->getLoc().getSourceLoc(),
+                     diag::conflicting_join);
+            return;
+          }
+
+          switch (stmt->getKind()) {
+//            case StmtKind::If:
+//              auto *ifstmt = dyn_cast<IfStmt>(stmt);
+            case StmtKind::While:
+            case StmtKind::ForEach:
+            case StmtKind::RepeatWhile:
+
+              llvm::errs() << "Found while construct. \n";
+              // Note that in all these cases the only possibility is that
+              // the body has a yield but the fall through case does not.
+              // Otherwise, the error will be detected by other cases.
+              diagnose(astCtx, conflictInst->getLoc().getSourceLoc(),
+                       diag::loop_conflict);
+              return;
+            case StmtKind::Brace:
+              llvm::errs() << "Found brace statement \n";
+            default:
+              diagnose(astCtx, conflictInst->getLoc().getSourceLoc(),
+                       diag::conflicting_join);
+              return;
+          }
         }
         // If the state is BeforeYield, it is an error. But, defer emitting
         // diagnostics until we see a Conflict state or have visited all nodes
@@ -181,13 +211,12 @@ class YieldOnceCheck : public SILFunctionTransform {
           // We have found that the successor can appear before and
           // also after a yield. Therefore, set the state as a conflict and
           // propagate it to its successors to emit diagnostics.
-          // (Note that the successor must be a join node in the control graph
-          // for this scenario to happen.)
+          // (Note that the successor must be a join node in the control-flow
+          // graph for this scenario to happen.)
           auto *yieldInst = (state.yieldState == YieldState::AfterYield)
                                 ? state.getYieldInstruction()
                                 : succState.getYieldInstruction();
-          insertResult.first->second.updateToConflict(yieldInst,
-                                                      &*(succBB->begin()));
+          insertResult.first->second.updateToConflict(yieldInst, term);
           worklist.insert(worklist.begin(), succBB);
 
           continue;

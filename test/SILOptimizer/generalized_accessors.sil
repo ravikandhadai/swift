@@ -14,7 +14,7 @@ import Swift
 sil @testNoYield : $@yield_once @convention(thin) () -> @yields Int {
 bb0:
 %2 = tuple ()
-return %2 : $() // expected-error {{accessor doesn't yield before returning}}
+return %2 : $() // expected-error {{accessor must yield before returning}}
 }
 
 struct TestYield {
@@ -39,7 +39,7 @@ br bb4
 
 bb4:
 %9 = struct_extract %0 : $TestYield, #TestYield.stored
-yield %9 : $Int, resume bb5, unwind bb7 // expected-error {{encountered multiple yields along a single path in yield_once accessor}}
+yield %9 : $Int, resume bb5, unwind bb7 // expected-error {{accessor must not yield more than once}}
 
 bb5:
 %11 = tuple ()
@@ -72,7 +72,7 @@ br bb4
 
 bb4:
 %21 = tuple ()   // expected-note {{some paths reaching here have a yield and some don't}}
-return %21 : $() // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+return %21 : $() // expected-error {{accessor must yield on all paths before returning}}
 
 bb5:
 unwind
@@ -100,7 +100,7 @@ br bb4
 
 bb4:
 %13 = tuple ()   // expected-note {{some paths reaching here have a yield and some don't}}
-return %13 : $() // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+return %13 : $() // expected-error {{accessor must yield on all paths before returning}}
 
 bb5:
 unwind

@@ -360,18 +360,19 @@ WARNING(warning_int_to_fp_inexact, none,
 
 
 // Yield usage errors
-ERROR(return_before_yield, none, "accessor doesn't yield before returning",())
+ERROR(return_before_yield, none, "accessor must yield before returning",())
 
-ERROR(multiple_yields, none, "encountered multiple yields along "
-  "a single path in yield_once accessor", ())
+ERROR(multiple_yields, none, "accessor must not yield more than once", ())
 
 NOTE(previous_yield, none, "previous yield was here", ())
 
-ERROR(possible_return_before_yield, none, "cannot guarantee that the accessor "
-  "yields a value before returning", ())
+ERROR(possible_return_before_yield, none,
+      "accessor must yield on all paths before returning", ())
 
 NOTE(conflicting_join, none,
     "some paths reaching here have a yield and some don't", ())
+
+ERROR(loop_conflict, none, "accessor doesn't yield when the loop is skipped",())
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)

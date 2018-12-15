@@ -5,10 +5,10 @@
 struct TestNoYield {
   var computed: Int {
     _read {
-    } // expected-error {{accessor doesn't yield before returning}}
+    } // expected-error {{accessor must yield before returning}}
 
     _modify {
-    } // expected-error {{accessor doesn't yield before returning}}
+    } // expected-error {{accessor must yield before returning}}
   }
 }
 
@@ -22,7 +22,7 @@ struct TestReturnPathWithoutYield {
         yield stored
       }
       flag = true // expected-note {{some paths reaching here have a yield and some don't}}
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
 
     _modify {
       // The diagnostics should attach the note to the earliest conflicting branch.
@@ -33,7 +33,7 @@ struct TestReturnPathWithoutYield {
       if !flag { // expected-note {{some paths reaching here have a yield and some don't}}
         flag = true
       }
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
   }
 }
 
@@ -45,13 +45,13 @@ struct TestMultipleYields {
       if flag {
         yield stored // expected-note {{previous yield was here}}
       }
-      yield stored // expected-error {{encountered multiple yields along a single path in yield_once accessor}}
+      yield stored // expected-error {{accessor must not yield more than once}}
     }
 
     _modify {
       yield &stored // expected-note {{previous yield was here}}
       if flag {
-        yield &stored // expected-error {{encountered multiple yields along a single path in yield_once accessor}}
+        yield &stored // expected-error {{accessor must not yield more than once}}
       }
     }
   }
@@ -92,7 +92,7 @@ struct TestConvolutedPaths {
         yield stored // expected-note {{previous yield was here}}
       }
       if !flag {
-        yield stored // expected-error {{encountered multiple yields along a single path in yield_once accessor}}
+        yield stored // expected-error {{accessor must not yield more than once}}
       }
     }
 
@@ -101,7 +101,7 @@ struct TestConvolutedPaths {
         yield &stored // // expected-note {{previous yield was here}}
       }
       if !flag {
-        yield &stored // expected-error {{encountered multiple yields along a single path in yield_once accessor}}
+        yield &stored // expected-error {{accessor must not yield more than once}}
       }
     }
   }
@@ -113,7 +113,7 @@ struct TestYieldInLoops {
   var computed: Int {
     _read {
       for _ in 0..<count {
-        yield stored // expected-error {{encountered multiple yields along a single path in yield_once accessor}}
+        yield stored // expected-error {{accessor must not yield more than once}}
                      // expected-note@-1 {{previous yield was here}}
       }
     }
@@ -121,7 +121,7 @@ struct TestYieldInLoops {
     _modify {
       yield &stored // expected-note {{previous yield was here}}
       for _ in 0..<count {
-        yield &stored // expected-error {{encountered multiple yields along a single path in yield_once accessor}}
+        yield &stored // expected-error {{accessor must not yield more than once}}
       }
     }
   }
@@ -157,7 +157,7 @@ struct TestYieldInDoCatch2 {
         yield stored
       } catch {
       }
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
       // expected-note@-1 {{some paths reaching here have a yield and some don't}}
 
     _modify {
@@ -167,7 +167,7 @@ struct TestYieldInDoCatch2 {
       catch {
         yield &stored
       }
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
       // expected-note@-1 {{some paths reaching here have a yield and some don't}}
   }
 }
@@ -197,7 +197,7 @@ struct TestYieldInSwitch {
         stored = 12
       }
       cp = .north // expected-note {{some paths reaching here have a yield and some don't}}
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
   }
 }
 
@@ -216,7 +216,7 @@ struct TestExplicitReturn {
         yield stored
       }
       flag = true
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
     // expected-note@-1 {{some paths reaching here have a yield and some don't}}
 
     _modify {
@@ -232,8 +232,21 @@ struct TestExplicitReturn {
         return
       }
       flag = true
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
     // expected-note@-1 {{some paths reaching here have a yield and some don't}}
+  }
+
+  var anotherProp: Int {
+    mutating _read {
+      if flag {
+        stored = 2
+      }
+      return // expected-error {{accessor must yield before returning}}
+
+      if !flag { // expected-warning {{code after 'return' will never be executed}}
+        stored = 3
+      }
+    }
   }
 }
 
@@ -262,7 +275,7 @@ struct TestYieldsInGuards2 {
         return
       }
       yield stored
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
     // expected-note@-1 {{some paths reaching here have a yield and some don't}}
 
     _modify {
@@ -271,7 +284,7 @@ struct TestYieldsInGuards2 {
         return
       }
       storedOpt = stored + 1
-    } // expected-error {{cannot guarantee that the accessor yields a value before returning}}
+    } // expected-error {{accessor must yield on all paths before returning}}
     // expected-note@-1 {{some paths reaching here have a yield and some don't}}
   }
 }
