@@ -36,45 +36,150 @@ class YieldOnceCheck : public SILFunctionTransform {
 
   struct BBState {
     YieldState yieldState = BeforeYield;
+    // Track the latest branch statement seen during the propagation of the
+    // state. A branch AST node is a control-flow construct such as if-else
+    // statement that results in branches at SIL. This information is used to
+    // produce better diagnostics.
+    Stmt *branchStmt = nullptr;
 
   private:
     // For AfterYield and Conflict states, track the yield instruction.
-    llvm::Optional<SILInstruction *> yieldInst = None;
-    // For Conflict state, track the first instruction that is found to be in
-    // conflict state. This should be the first instruction of a join node in
-    // the CFG.
-    llvm::Optional<SILInstruction *> conflictInst = None;
+    SILInstruction *yieldInst = nullptr;
+
+    // For Conflict state, track the branch statement that results in a
+    // conflict, if any. Note that a conflict can happen if one branch yields
+    // while the other doesn't. Since branches at SIL level does not have a
+    // one-to-one correspondence with the control-flow language constructs
+    // (e.g. branches could be introduced in SIL to merge multiple return
+    // paths), this information is not guaranteed to be always available when
+    // there is a conflict. Therefore, as a fallback we also record the
+    // SIL location of the where the conflict happened.
+    Stmt *conflictStmt = nullptr;
+    llvm::Optional<SILLocation> conflictLoc = None;
 
   public:
-    void updateToAfterYield(SILInstruction *yldInst) {
+    void updateToAfterYield(SILInstruction *yieldInstParam) {
       assert(yieldState == BeforeYield);
-      assert(yldInst != nullptr);
+      assert(yieldInstParam != nullptr);
 
       yieldState = AfterYield;
-      yieldInst = yldInst;
+      yieldInst = yieldInstParam;
     }
 
-    void updateToConflict(SILInstruction *yldInst, SILInstruction *confInst) {
+    void updateToConflict(SILInstruction *yieldInstParam,
+                          SILLocation loc,
+                          Stmt *conflictStmtParam) {
       assert(yieldState != Conflict);
-      assert(yldInst != nullptr && confInst != nullptr);
+      assert(yieldInstParam != nullptr);
 
       yieldState = Conflict;
-      yieldInst = yldInst;
-      conflictInst = confInst;
+      yieldInst = yieldInstParam;
+      conflictLoc = loc;
+      conflictStmt = conflictStmtParam;
     }
 
     SILInstruction *getYieldInstruction() const {
       assert(yieldState == AfterYield || yieldState == Conflict);
 
-      return yieldInst.getValue();
+      return yieldInst;
     }
 
-    SILInstruction *getConflictInstruction() const {
+    Stmt *getConflictStmt() const {
       assert(yieldState == Conflict);
 
-      return conflictInst.getValue();
+      return conflictStmt;
+    }
+
+    SILLocation getConflictLoc() const {
+      assert(yieldState == Conflict);
+
+      return conflictLoc.getValue();
     }
   };
+
+  /// Return true if the given 'stmt' is a control-flow construct of the source
+  /// language.
+  bool isControlFlowStmt(Stmt *stmt) {
+    switch (stmt->getKind()) {
+      case StmtKind::If:
+      case StmtKind::While:
+      case StmtKind::ForEach:
+      case StmtKind::RepeatWhile:
+      case StmtKind::Switch:
+      case StmtKind::Guard:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /// This function computes the state after a terminal SIL instruction 'term',
+  /// given the current state 'state'. This is like a single instruction
+  /// transfer function.
+  BBState propagate(BBState state, SILInstruction *term) {
+    auto newState = state;
+    // If we follow a 'yield', set the yield state to AfterYield.
+    if (isa<YieldInst>(term)) {
+      newState.updateToAfterYield(term);
+    }
+
+    // If the source statement of term is a control-flow statement,
+    // set the control-flow info of the new state.
+    auto *branchAST = term->getLoc().getAsASTNode<Stmt>();
+    if (branchAST && isControlFlowStmt(branchAST)) {
+      llvm::errs() << "Found the control-flow statment of the branch inst: " << *term << "\n";
+      branchAST->dump();
+      llvm::errs() << "\n";
+      newState.branchStmt = branchAST;
+    }
+  }
+
+  /// Merge two states and return the merged state if it is different from
+  /// the old state. This implements the join operation of the lattice.
+  llvm::Optional<BBState> merge(BBState oldState, BBState newState,
+                                SILLocation mergeLoc) {
+    if (oldState.yieldState == Conflict) {
+      // The oldState is already top of the lattice (which is an error state).
+      // So the merged state is same as the old state.
+      return None;
+    }
+
+    // If the old state is not a conflict but the new state is,
+    // merged state should be the new state.
+    if (newState.yieldState == Conflict) {
+      return newState;
+    }
+
+    if (newState.yieldState == oldState.yieldState)
+      return None;
+
+    // Here, the new and old state are not equal and therefore we have
+    // widen them to top i.e., conflict, and set the auxiliary
+    // info needed for the conflict state.
+    // (a) Compute the yield instruction.
+    auto *yieldInst = (newState.yieldState == YieldState::AfterYield)
+                        ? newState.getYieldInstruction()
+                        : oldState.getYieldInstruction();
+
+    // (b) Compute the control-flow instruction that results in the
+    // conflict, if possible.
+    Stmt *conflictStmt = oldState.branchStmt;
+    if (conflictStmt) {
+      if (newState.branchStmt) {
+        // TODO: Choose the branch statement that subsumes the other.
+        llvm::errs() << "Found branch statements along both branches!!\n";
+        assert(false);
+      }
+    }
+
+    if (!conflictStmt) {
+      conflictStmt = newState.branchStmt;
+    }
+
+    BBState mergedState;
+    mergedState.updateToConflict(yieldInst, mergeLoc, conflictStmt);
+    return mergedState;
+  }
 
   /// Checks whether there is exactly one yield before a return in every path
   /// in the control-flow graph.
@@ -112,36 +217,37 @@ class YieldOnceCheck : public SILFunctionTransform {
           diagnose(astCtx, term->getLoc().getSourceLoc(),
                    diag::possible_return_before_yield);
 
-          // Try extract the AST of the conflicting instruction to see if the
-          // conflict is because of a for/while loop, or a if-else, or a guard,
-          // or a switch statement. If AST is not a known control-flow
-          // construct, emit a default message.
-          auto *conflictInst = state.getConflictInstruction();
-          Stmt *stmt = conflictInst->getLoc().getAsASTNode<Stmt>();
-          if (!stmt) {
-            diagnose(astCtx, conflictInst->getLoc().getSourceLoc(),
+          // If a branch statement that results in a conflict is available
+          // present that information. Otherwise, emit a default message.
+          auto *conflictStmt = state.getConflictStmt();
+          if (!conflictStmt) {
+            llvm::errs() << "Didn't find any conflict inst. \n";
+            diagnose(astCtx, state.getConflictLoc().getSourceLoc(),
                      diag::conflicting_join);
             return;
           }
 
-          switch (stmt->getKind()) {
-//            case StmtKind::If:
-//              auto *ifstmt = dyn_cast<IfStmt>(stmt);
+          switch (conflictStmt->getKind()) {
+            case StmtKind::If:
+              llvm::errs() << "Found If construct. \n";
+              diagnose(astCtx, state.getConflictLoc().getSourceLoc(),
+                       diag::if_conflict);
+              return;
+
             case StmtKind::While:
             case StmtKind::ForEach:
             case StmtKind::RepeatWhile:
-
               llvm::errs() << "Found while construct. \n";
               // Note that in all these cases the only possibility is that
               // the body has a yield but the fall through case does not.
               // Otherwise, the error will be detected by other cases.
-              diagnose(astCtx, conflictInst->getLoc().getSourceLoc(),
+              diagnose(astCtx, state.getConflictLoc().getSourceLoc(),
                        diag::loop_conflict);
               return;
             case StmtKind::Brace:
               llvm::errs() << "Found brace statement \n";
             default:
-              diagnose(astCtx, conflictInst->getLoc().getSourceLoc(),
+              diagnose(astCtx, state.getConflictLoc().getSourceLoc(),
                        diag::conflicting_join);
               return;
           }
@@ -170,61 +276,34 @@ class YieldOnceCheck : public SILFunctionTransform {
       for (auto &succ : term->getSuccessors()) {
         SILBasicBlock *succBB = succ.getBB();
 
-        // Optimistically try to set our current state as the state
-        // of the successor.
-        auto insertResult = visitedBBs.try_emplace(succBB, state);
+        auto nextState = propagate(state, term);
+        // Optimistically try to set the state of the successor as next state.
+        auto insertResult = visitedBBs.try_emplace(succBB, nextState);
 
         // If the insertion was successful, it means we are seeing the successor
         // for the first time. Propogate the state and add the successor to the
         // worklist.
         if (insertResult.second) {
           worklist.insert(worklist.begin(), succBB);
-
-          // When the successor follows a 'yield', update the successor state.
-          if (isa<YieldInst>(term)) {
-            insertResult.first->second.updateToAfterYield(term);
-          }
           continue;
         }
 
+        // Here, the successor already has a state. Therefore, we have
+        // to merge them and, if necessary, have to propagate the merged state.
         const auto &succState = insertResult.first->second;
-        if (succState.yieldState == Conflict) {
-          // The successor is already in the error state, so we need
-          // not propagate anything. Diagnostics will be reported, where
-          // appropriate, when the successor is removed from the worklist.
+        auto newStateOpt = merge(succState, nextState,
+                                (*(succBB->begin())).getLoc());
+
+        if (!newStateOpt.hasValue())
           continue;
-        }
 
-        // If the successor state is not a conflict but the current state is,
-        // propagate the conflict down to the successor.
-        // (This is needed to identify the conflicting yields and
-        // present good diagnostics.)
-        if (state.yieldState == Conflict) {
-          worklist.insert(worklist.begin(), succBB);
-          insertResult.first->second = state;
-          continue;
-        }
-
-        // Here, neither 'state' nor 'succState' is equal to 'Conflict'.
-
-        if (state.yieldState != succState.yieldState) {
-          // We have found that the successor can appear before and
-          // also after a yield. Therefore, set the state as a conflict and
-          // propagate it to its successors to emit diagnostics.
-          // (Note that the successor must be a join node in the control-flow
-          // graph for this scenario to happen.)
-          auto *yieldInst = (state.yieldState == YieldState::AfterYield)
-                                ? state.getYieldInstruction()
-                                : succState.getYieldInstruction();
-          insertResult.first->second.updateToConflict(yieldInst, term);
-          worklist.insert(worklist.begin(), succBB);
-
-          continue;
+        insertResult.first->second = newStateOpt.getValue();
+        worklist.insert(worklist.begin(), succBB);
           // Even though at this point we know there has to be an error as
-          // there is an inconsistent state, we cannot stop here as we do not
+          // there is an inconsistency between states coming along two
+          // different paths, we cannot stop here as we do not
           // know for sure whether the error will result in multiple yields
           // or a return before a yield.
-        }
       }
     }
 

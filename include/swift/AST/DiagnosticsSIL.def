@@ -374,6 +374,8 @@ NOTE(conflicting_join, none,
 
 ERROR(loop_conflict, none, "accessor doesn't yield when the loop is skipped",())
 
+ERROR(if_conflict, none, "accessor doesn't yield when the 'if' branch is not taken", ())
+
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)
 #  undef DIAG
