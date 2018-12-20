@@ -19,6 +19,7 @@
 #include "swift/SIL/ApplySite.h"
 #include "swift/SIL/FormalLinkage.h"
 #include "swift/SIL/SILBuilder.h"
+#include "swift/SILOptimizer/Utils/Devirtualize.h"
 #include "swift/SIL/SILConstants.h"
 #include "swift/Serialization/SerializedSILLoader.h"
 #include "llvm/ADT/PointerEmbeddedInt.h"
@@ -573,9 +574,9 @@ ConstExprFunctionState::computeOpaqueCallResult(ApplyInst *apply,
 }
 
 // TODO: Refactor this to someplace common, this is defined in Devirtualize.cpp.
-SubstitutionMap getWitnessMethodSubstitutions(SILModule &Module, ApplySite AI,
-                                              SILFunction *F,
-                                              ProtocolConformanceRef CRef);
+//SubstitutionMap getWitnessMethodSubstitutions(SILModule &Module, ApplySite AI,
+//                                              SILFunction *F,
+//                                              ProtocolConformanceRef CRef);
 
 /// Given a call to a function, determine whether it is a call to a constexpr
 /// function.  If so, collect its arguments as constants, fold it and return
