@@ -129,10 +129,6 @@ Type ConstExprFunctionState::substituteGenericParamsAndSimpify(Type ty) {
   return substitutionMap.empty() ? ty : ty.subst(substitutionMap);
 }
 
-SILWitnessTable * lookupOrLinkWitnessTable(ProtocolConformance *C,
-                                           bool mustDeserialize,
-                                           SILModule &Mod);
-
 // TODO: refactor this out somewhere sharable between autodiff and this code.
 //static void lookupOrLinkWitnessTable(ProtocolConformanceRef confRef,
 //                                     SILModule &module) {
@@ -274,6 +270,10 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
 
   // Try to resolve a witness method against our known conformances.
   if (auto *wmi = dyn_cast<WitnessMethodInst>(value)) {
+    llvm::errs() << "Processing witness method instruction: ";
+    wmi->dump();
+    llvm::errs() << "\n";
+
     auto confResult = substitutionMap.lookupConformance(
         wmi->getLookupType(), wmi->getConformance().getRequirement());
     if (!confResult)
@@ -281,18 +281,23 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
     auto conf = confResult.getValue();
     auto &module = wmi->getModule();
 
+    // dump the conformance for debugging.
+    llvm::errs() << "Conformance extracted from the witness inst: \n";
+    conf.dump();
+    llvm::errs() << "\n";
+
     // Look up the conformance's witness table and the member out of it.
     SILFunction *fn =
         module.lookUpFunctionInWitnessTable(conf, wmi->getMember()).first;
-    if (!fn && conf.isConcrete()) {
-      //lookupOrLinkWitnessTable(conf, wmi->getModule());
-      //getOrLinkWitnessTable(conf, wmi->getModule());
-//      lookupOrLinkWitnessTable(conf.getConcrete(),
-//                                 true, // Deserialize if necessary.
-//                                 module);
-      declareWitnessTable(wmi->getModule(), conf);
-      fn = module.lookUpFunctionInWitnessTable(conf, wmi->getMember()).first;
-    }
+//    if (!fn && conf.isConcrete()) {
+//      //lookupOrLinkWitnessTable(conf, wmi->getModule());
+//      //getOrLinkWitnessTable(conf, wmi->getModule());
+////      lookupOrLinkWitnessTable(conf.getConcrete(),
+////                                 true, // Deserialize if necessary.
+////                                 module);
+//      declareWitnessTable(wmi->getModule(), conf);
+//      fn = module.lookUpFunctionInWitnessTable(conf, wmi->getMember()).first;
+//    }
 
     // If we were able to resolve it, then we can proceed.
     if (fn)
@@ -594,6 +599,8 @@ ConstExprFunctionState::computeCallResult(ApplyInst *apply) {
 
   SILFunction *callee = calleeFn.getFunctionValue();
 
+  llvm::errs() << "Processing callee: " << callee->getName() << "\n";
+
   // Verify that we can fold all of the arguments to the call.
   SmallVector<SymbolicValue, 4> paramConstants;
   for (unsigned i = 0, e = apply->getNumOperands() - 1; i != e; ++i) {
@@ -621,26 +628,45 @@ ConstExprFunctionState::computeCallResult(ApplyInst *apply) {
 
   auto calleeFnType = callee->getLoweredFunctionType();
   if (calleeFnType->getGenericSignature()) {
+    llvm::errs() << "Callee has a generic signature! \n";
     // Get the substitution map of the call.  This maps from the callee's space
     // into the caller's world. Witness methods have special magic that is
     // required to resolve them.
     SubstitutionMap callSubMap;
+
     if (calleeFnType->getRepresentation() ==
         SILFunctionType::Representation::WitnessMethod) {
       // Get the conformance out of the SILFunctionType and map it into our
       // current type space.
       auto requirement =
                 calleeFnType->getWitnessMethodConformance().getRequirement();
-      auto conf = substitutionMap.lookupConformance(
+
+      // dump the requirement obtained from the callee function
+      llvm::errs() << "Requirement extracted from the callee function: \n";
+      requirement->dump();
+      llvm::errs() << "\n";
+      llvm::errs() << "Self type of requirement: " <<
+            requirement->getSelfInterfaceType() << "\n";
+      llvm::errs() << "\n";
+
+      auto conf = apply->getSubstitutionMap().subst(substitutionMap).lookupConformance(
           requirement->getSelfInterfaceType()->getCanonicalType(), requirement);
       if (!conf.hasValue())
         return evaluator.getUnknown((SILInstruction *)apply,
                                     UnknownReason::Default);
 
+      llvm::errs() << "Conformance extracted from the witness method requirement: \n";
+      conf->dump();
+      llvm::errs() << "\n";
+
       callSubMap = getWitnessMethodSubstitutions(apply->getModule(),
                                                  ApplySite(apply), callee,
                                                  conf.getValue());
     } else {
+      /// Remark: If we ever start to care about evaluating classes,
+      /// getSubstitutionsForCallee() is the analogous mapping function we should
+      /// use to get correct mapping from caller to callee namespace.
+      /// Ideally, the function must be renamed as getClassMethodSubstitutions().
       //auto requirementSig = AI.getOrigCalleeType()->getGenericSignature();
       callSubMap = apply->getSubstitutionMap();
           //SubstitutionMap::get(requirementSig, apply->getSubstitutionMap());
@@ -1070,6 +1096,8 @@ ConstExprFunctionState::computeFSStore(SymbolicValue storedCst, SILValue dest) {
 /// information about an error on failure.
 llvm::Optional<SymbolicValue>
 ConstExprFunctionState::evaluateFlowSensitive(SILInstruction *inst) {
+    llvm::errs() << "Processing instruction: " << *inst << "\n";
+
   // These are just markers.
   if (isa<DebugValueInst>(inst) || isa<DebugValueAddrInst>(inst) ||
       isa<EndAccessInst>(inst) ||

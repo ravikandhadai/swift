@@ -289,6 +289,48 @@ func testProto() {
 }
 
 //===----------------------------------------------------------------------===//
-// Functions that cannot be deserialized.
+// Structs with generics
 //===----------------------------------------------------------------------===//
 
+struct S<X, Y> {
+  func method<Z>(_ z: Z) -> Int {
+    return 0
+  }
+}
+
+func callerOfSMethod<W>(_ s: S<X, Y>, _ w: W) -> Int {
+  return s.method(w)
+}
+
+func toplevel() {
+  let s = S<Int, Float>()
+  #assert(callerOfSMethod(s, -1) == 0)
+}
+
+//===----------------------------------------------------------------------===//
+// Calling Protocol methods.
+//===----------------------------------------------------------------------===//
+
+protocol Proto {
+  func amethod() -> Int
+}
+
+struct S : Proto {
+  func amethod() -> Int {
+    return 0
+  }
+}
+
+func callMethod<T: Proto>(_ a: T) -> T {
+  return a.amethod()
+}
+
+func testProtocolMethod() {
+  #assert(callMethod(S()) == 0)
+}
+
+//===----------------------------------------------------------------------===//
+// Structs with generics and protocol methods that are not static methods
+// are not supported yet.
+// This requires handling init_existential_addr instruction.
+//===----------------------------------------------------------------------===//
