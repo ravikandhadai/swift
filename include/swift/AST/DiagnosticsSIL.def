@@ -312,6 +312,8 @@ NOTE(constexpr_too_many_instructions,none,
 NOTE(constexpr_loop,none, "control flow loop found", ())
 NOTE(constexpr_overflow,none, "integer overflow detected", ())
 NOTE(constexpr_trap,none, "trap detected", ())
+NOTE(constexpr_unsupported_op,none,
+     "operation not permitted in constant evaluation", ())
 NOTE(constexpr_called_from,none, "when called from here", ())
 NOTE(constexpr_not_evaluable,none,
      "expression not evaluable as constant here", ())

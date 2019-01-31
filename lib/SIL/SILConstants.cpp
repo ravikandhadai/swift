@@ -606,6 +606,10 @@ static bool emitNoteDiagnostic(SILInstruction *badInst, UnknownReason reason,
     diagnose(ctx, sourceLoc, diag::constexpr_trap)
         .highlight(loc.getSourceRange());
     break;
+  case UnknownReason::UnsupportedOperation:
+    diagnose(ctx, sourceLoc, diag::constexpr_unsupported_op)
+      .highlight(loc.getSourceRange());
+    break;
   }
   return true;
 }

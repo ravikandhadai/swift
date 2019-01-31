@@ -824,6 +824,7 @@ extension String {
   /// Creates an instance from the description of a given
   /// `LosslessStringConvertible` instance.
   @inlinable @inline(__always)
+  @_semantics("string.init_lossless_string_convertible")
   public init<T : LosslessStringConvertible>(_ value: T) {
     self = value.description
   }

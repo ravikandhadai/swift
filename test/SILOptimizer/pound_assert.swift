@@ -586,6 +586,31 @@ func testAppendOfStructProperty() {
   #assert(appendOfStructProperty().str == "broken arrow")
 }
 
+// Test string initialization from integers and other strings.
+
+func stringInitFromIntegers() {
+  let one = String(1)
+  #assert(one == "1")
+
+  let one32 = String(Int32(1))
+  #assert(one32 == "1")
+
+  let int8Min = String(Int8(-128))
+  #assert(int8Min == "-128")
+
+  let int8Max = String(Int8(128)) // expected-error {{integer literal '128' overflows when stored into 'Int8'}}
+  #assert(int8Max == "128") // expected-error {{assert condition not constant}}
+                            // expected-note@-1 {{could not fold operation}}
+
+  let int64Min = String((-9223372036854775808 as Int64))
+  #assert(int64Min == "-9223372036854775808")
+}
+
+func stringInitFromStrings() {
+  let other = String("hello world")
+  #assert(other == "hello world")
+}
+
 //===----------------------------------------------------------------------===//
 // Enums and optionals.
 //===----------------------------------------------------------------------===//
@@ -673,3 +698,17 @@ func evaluate<T>(addressOnlyEnum: AddressOnlyEnum<T>) -> Int {
 
 #assert(evaluate(addressOnlyEnum: .double(IntContainer(value: 1))) == 2)
 #assert(evaluate(addressOnlyEnum: .triple(IntContainer(value: 1))) == 3)
+
+//===----------------------------------------------------------------------===//
+// MemoryLayout operations
+//===----------------------------------------------------------------------===//
+
+func testMemoryLayoutSize() {
+  let memLayout = MemoryLayout<Int>.size
+
+#if arch(i386) || arch(arm)
+  #assert(memLayout == 32)
+#else
+  #assert(memLayout == 64)
+#endif
+}

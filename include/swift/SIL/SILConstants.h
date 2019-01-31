@@ -58,6 +58,10 @@ enum class UnknownReason {
 
   /// Unspecified trap detected.
   Trap,
+
+  /// An operation namely, SIL instruction, or built-in or a well-known function
+  /// application that is currently not supported.
+  UnsupportedOperation
 };
 
 /// This is the symbolic value tracked for each SILValue in a scope.  We

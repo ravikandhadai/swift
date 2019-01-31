@@ -25,6 +25,8 @@
 #include "swift/Serialization/SerializedSILLoader.h"
 #include "llvm/ADT/PointerEmbeddedInt.h"
 #include "llvm/Support/TrailingObjects.h"
+#include "swift/ClangImporter/ClangImporter.h"
+#include "clang/Basic/TargetInfo.h"
 
 using namespace swift;
 
@@ -43,6 +45,8 @@ enum class WellKnownFunction {
   StringInitEmpty,
   // String.init(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)
   StringMakeUTF8,
+  // String.init<T: LosslessStringConvertible>(_: T)
+  StringFromLosslessStringConvertible,
   // static String.+= infix(_: inout String, _: String)
   StringAppend,
   // static String.== infix(_: String)
@@ -57,6 +61,8 @@ static llvm::Optional<WellKnownFunction> classifyFunction(SILFunction *fn) {
   // the interpreter. One of those functions is probably redundant and not used.
   if (fn->hasSemanticsAttr("string.makeUTF8"))
     return WellKnownFunction::StringMakeUTF8;
+  if (fn->hasSemanticsAttr("string.init_lossless_string_convertible"))
+    return WellKnownFunction::StringFromLosslessStringConvertible;
   if (fn->hasSemanticsAttr("string.append"))
     return WellKnownFunction::StringAppend;
   if (fn->hasSemanticsAttr("string.equals"))
@@ -455,6 +461,28 @@ ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
       }
       return SymbolicValue::getInteger(result, evaluator.getASTContext());
     }
+    case BuiltinValueKind::Sizeof: {
+      if (operand.getKind() != SymbolicValue::Metatype)
+        return unknownResult();
+
+      CanType canType = operand.getMetatypeValue();
+      auto *nominalDecl = canType->getNominalOrBoundGenericNominal();
+      if (!nominalDecl)
+        return unknownResult();
+
+      auto &astContext = evaluator.getASTContext();
+      if (nominalDecl != astContext.getIntDecl() &&
+          nominalDecl != astContext.getUIntDecl()) {
+        return unknownResult();
+      }
+
+      auto *fldDecl = *(astContext.getIntDecl()->getStoredProperties().begin());
+      auto *builtinIntType = fldDecl->getType()->getAs<BuiltinIntegerType>();
+      auto wordWidth = builtinIntType->getGreatestWidth();
+
+      // The returned integer also has the word length of the target platform.
+      return SymbolicValue::getInteger(wordWidth, wordWidth);
+    }
     }
   }
 
@@ -640,6 +668,40 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
                                   UnknownReason::Default);
     }
     setValue(apply, literal);
+    return None;
+  }
+  case WellKnownFunction::StringFromLosslessStringConvertible: {
+    assert(conventions.getNumDirectSILResults() == 1 &&
+           conventions.getNumIndirectSILResults() == 0 &&
+           conventions.getNumParameters() == 2 &&
+           "unexpected String.init(_: LosslessStringConvertible) signature");
+    auto argumentSymVal = getConstAddrAndLoadResult(apply->getOperand(1));
+    if (!argumentSymVal.isConstant()) {
+      return evaluator.getUnknown((SILInstruction *)apply,
+                                  UnknownReason::Default);
+    }
+
+    // Look into Ints and other Standard types to extract the underlying value.
+    auto primitiveVal = argumentSymVal.lookThroughSingleElementAggregates();
+
+    SmallString<10> result;
+    switch (primitiveVal.getKind()) {
+    case SymbolicValue::Integer: {
+      primitiveVal.getIntegerValue().toStringSigned(result);
+      break;
+    }
+    case SymbolicValue::String: {
+      result.append(primitiveVal.getStringValue());
+      break;
+    }
+    default: {
+      return evaluator.getUnknown((SILInstruction *)apply,
+                                  UnknownReason::UnsupportedOperation);
+    }
+    }
+    auto resultSymVal = SymbolicValue::getString(result,
+                                                 evaluator.getASTContext());
+    setValue(apply, resultSymVal);
     return None;
   }
   case WellKnownFunction::StringAppend: {
