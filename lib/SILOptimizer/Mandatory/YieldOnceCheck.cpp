@@ -31,14 +31,13 @@ class YieldOnceCheck : public SILFunctionTransform {
 
   /// A state that is associated with basic blocks to indicate whether a basic
   /// block is encountered before seeing a yield (BeforeYield) or after
-  /// seeing a yield (AfterYield), or in both state, which is denoted by
-  /// 'Conflict'. This is a semi-lattice that is used by the dataflow analysis
-  /// that checks for yields. Merging BeforeYield and AfterYield states
-  /// results in Conflict.
+  /// seeing a yield (AfterYield), or in both states, which is denoted by
+  /// Conflict. This enum is a semi-lattice where Conflict is the top and
+  /// the merge of BeforeYield and AfterYield states results in Conflict.
   enum YieldState { BeforeYield, AfterYield, Conflict };
 
   struct BBState {
-    const YieldState yieldState;
+    YieldState yieldState;
 
   private:
     // The following are auxiliary information that is tracked for specific
@@ -50,18 +49,18 @@ class YieldOnceCheck : public SILFunctionTransform {
     SILInstruction *yieldInst = nullptr;
 
     // For Conflict state, this field tracks the merge point where the conflict
-    // is detected. Note that a conflict can happen if, at a point where two
-    // branches meet, one branch yields while the other doesn't.
-    SILInstruction *conflictInst = nullptr;
+    // is detected. Note that a conflict can happen if, at a block where two
+    // branches meet, one branch yields and the other doesn't.
+    SILBasicBlock *conflictBB = nullptr;
 
-    // For Conflict State, this field tracks the basic block that reaches
-    // the merge point without a yield. No that the other basic block can be
-    // obtained from the `yieldInst` field.
-    SILBasicBlock *noYieldBB = nullptr;
-
-  public:
+    // For Conflict State, this field tracks the basic block that precedes
+    // the merge point that resulted in propagating a Beforeyield state to
+    // the merge point.
+    //SILBasicBlock *noYieldBB = nullptr;
 
     BBState(YieldState state): yieldState(state) { }
+
+  public:
 
     /// Creates an AfterYield state with the provided auxiliary information.
     static BBState getAfterYieldState(SILInstruction *yieldInstParam) {
@@ -73,17 +72,14 @@ class YieldOnceCheck : public SILFunctionTransform {
     }
 
     static BBState getConflictState(SILInstruction *yieldInstParam,
-                                    SILInstruction *conflictInstParam,
-                                    SILBasicBlock *noYieldBBParam) {
-      //assert(yieldState != Conflict);
+                                    SILBasicBlock *conflictBBParam) {
       assert(yieldInstParam != nullptr);
-      assert(conflictInstParam != nullptr);
-      assert(noYieldBBParam != nullptr);
+      assert(conflictBBParam != nullptr);
 
       BBState conflictState(YieldState::Conflict);
       conflictState.yieldInst = yieldInstParam;
-      conflictState.conflictStmt = conflictInstParam;
-      conflictState.noYieldBB = noYieldBBParam;
+      conflictState.conflictBB = conflictBBParam;
+      //conflictState.noYieldBB = noYieldBBParam;
 
       return conflictState;
     }
@@ -93,60 +89,96 @@ class YieldOnceCheck : public SILFunctionTransform {
       return yieldInst;
     }
 
-    SILInstruction *getConflictInst() const {
+    SILBasicBlock *getConflictBB() const {
       assert(yieldState == Conflict);
-      return conflictInst;
+      return conflictBB;
     }
+  };
 
-    SILBasicBlock *getNoYieldBasicBlock() const {
-      assert(yieldState == Conflict);
-      return noYieldBB;
+  /// A structure that captures enough information about an error so that
+  /// diagnositcs can be emitted for it later. This stores the kind of error,
+  /// the terminal instruction where the error should be diagnosed and
+  /// the input BB state at the point where the error should be diagnosed.
+  struct DiagnosticsInfo {
+    enum ErrorKind {
+      MultipleYield,
+      ReturnBeforeYield,
+      ReturnOnConflict
+    } const errKind;
+    const BBState inState;
+    const SILInstruction * const termInst;
+
+    DiagnosticsInfo(BBState stateParam, ErrorKind kindParam,
+                    SILInstruction *termInstParam) :
+        errKind(kindParam), inState(stateParam), termInst(termInstParam) {
+      assert(termInstParam != nullptr);
+
+      // The following are some sanity checks that ensure that the parameters
+      // do represent error scenarios.
+      assert(kindParam != MultipleYield ||
+             (isa<YieldInst>(termInstParam) &&
+              stateParam.yieldState != BeforeYield));
+
+      assert(kindParam != ReturnBeforeYield ||
+             (isa<ReturnInst>(termInst) && inState.yieldState == BeforeYield));
+
+      assert(kindParam != ReturnOnConflict ||
+             (isa<ReturnInst>(termInstParam) &&
+              stateParam.yieldState == Conflict));
     }
   };
 
   /// Given a basic block and an input state, compute the state after the
-  /// basic block. If the next state cannot be computed as an error has been
-  /// detected, generates a closure that can emit diagnostics.
-  llvm::Optional<BBState> propagate(BBState inState, SILBasicBlock *bb) {
+  /// basic block. If the next state cannot be computed, return None and
+  /// set the diagnostics information.
+  llvm::Optional<BBState> propagate(BBState inState, SILBasicBlock *bb,
+                                    llvm::Optional<DiagnosticsInfo> &diagInfo) {
     auto *term = bb->getTerminator();
 
     if (isa<ReturnInst>(term)) {
-      // If the input state is not AfterYield it implies that there is a path to
-      // return before seeing a yield. This is an error.
-      if (inState.yieldState != YieldState::AfterYield) {
+      // If the input state is not AfterYield it implies that there is a path
+      // to the return instruction before a yield. This is an error.
+      if (inState.yieldState == YieldState::BeforeYield) {
+        diagInfo = DiagnosticsInfo(inState, DiagnosticsInfo::ReturnBeforeYield,
+                                   term);
         return None;
       }
-      return inState; // Output state is same as input state otherwise.
+
+      if (inState.yieldState == YieldState::Conflict) {
+        diagInfo = DiagnosticsInfo(inState, DiagnosticsInfo::ReturnOnConflict,
+                                   term);
+        return None;
+      }
+      return inState;
     }
 
     if (isa<YieldInst>(term)) {
-      // If the input state is not before yield, it implies that there are
-      // multiple yield along this path, which is an error.
+      // If the input state is not BeforeYield, it implies that there are
+      // multiple yields along this path, which is an error.
       if (inState.yieldState != YieldState::BeforeYield) {
+        diagInfo = DiagnosticsInfo(inState, DiagnosticsInfo::MultipleYield,
+                                   term);
         return None;
       }
-      // If the current state is BeforeYield and if the basic block has a yield
-      // the new state is AfterYield.
+      // If the current state is BeforeYield and if the basic block ends in a
+      // yield the new state is AfterYield.
       return BBState::getAfterYieldState(term);
     }
-    // In all other cases, the outout state is same as input state.
     return inState;
   }
 
-  /// Merge two states and return the merged state. This performs the dataflow
-  /// merge.
-  llvm::Optional<BBState> merge(BBState oldState, BBState newState,
-                                SILBasicBlock *currentBlock,
-                                SILBasicBlock *mergePoint) {
+  /// Merge oldState with newState. This performs the dataflow merge operation.
+  /// This may have to create a new Conflict state, in which case it uses
+  /// the mergeBlock which is the merge point where conflict is detected.
+  BBState merge(BBState oldState, BBState newState, SILBasicBlock *mergeBlock) {
     if (oldState.yieldState == newState.yieldState)
       return oldState;
 
+    // If the newState or oldState is already top of the lattice, return it.
     if (oldState.yieldState == Conflict) {
-      // The oldState is already top of the lattice (which is an error state).
       return oldState;
     }
 
-    // If the newState is the top of the lattice, return the new state.
     if (newState.yieldState == Conflict) {
       return newState;
     }
@@ -154,22 +186,11 @@ class YieldOnceCheck : public SILFunctionTransform {
     // Here, one state is AfterYield and the other one is BeforeYield.
     // Therefore, create a new conflict state with the necessary auxiliary
     // information.
+    SILInstruction *yieldInst = (newState.yieldState == YieldState::AfterYield)
+                                  ? newState.getYieldInstruction()
+                                  : oldState.getYieldInstruction();
 
-    // Find the sibling of the currentBlock.
-    //SILBasicBlock *otherBB =
-
-    SILInstruction *yieldInst;
-    SILBasicBlock *noYieldBB;
-
-    if (newState.yieldState == YieldState::AfterYield) {
-      yieldInst = newState.getYieldInstruction();
-      noYieldBB = nullptr; // make this not yield bb
-    } else {
-      yieldInst = oldState.getYieldInstruction();
-      noYieldBB = nullptr; // make this no yield bb
-    }
-
-    return BBState::getConflictState(yieldInst, *(succBB->begin()), noYieldBB);
+    return BBState::getConflictState(yieldInst, mergeBlock);
   }
 
   /// Return true if the given 'stmt' is a control-flow construct of the source
@@ -188,66 +209,90 @@ class YieldOnceCheck : public SILFunctionTransform {
   //    }
   //  }
 
+  void emitDiagnostics(DiagnosticsInfo &diagInfo,
+                       llvm::DenseMap<SILBasicBlock *, BBState> &bbStateMap,
+                       SILFunction &fun) {
+    ASTContext &astCtx = fun.getModule().getASTContext();
+
+    switch (diagInfo.errKind) {
+    case DiagnosticsInfo::ReturnBeforeYield:
+      // We haven't seen a yield along any path that leads to the return.
+      // Here, diagInfo.termInst is the return instruction.
+      diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
+               diag::return_before_yield);
+      return;
+
+    case DiagnosticsInfo::MultipleYield:
+      // Here diagInfo.inState is AfterYield or Conflict and diagInfo.termInst
+      // is a yield instruction.
+      diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
+               diag::multiple_yields);
+      // Add a note that points to the previous yield.
+      diagnose(astCtx,
+               diagInfo.inState.getYieldInstruction()->getLoc().getSourceLoc(),
+               diag::previous_yield);
+      return;
+
+    case DiagnosticsInfo::ReturnOnConflict:
+      // Here diagInfo.inState is Conflict and diagInfo.termInst is a return
+      // instruction. Here, we have a possible yield-before-return.
+      // In the diagnostics, point out where the yield is missing by doing
+      // AST analysis.
+      diagnose(astCtx, term->getLoc().getSourceLoc(),
+               diag::possible_return_before_yield);
+      return;
+    }
+  }
+
   /// Checks whether there is exactly one yield before a return in every path
   /// in the control-flow graph.
   /// Diagnostics are not reported for nodes unreachable from the entry, and
   /// also for nodes that may not reach the exit of the control-flow graph.
   void diagnoseYieldOnceUsage(SILFunction &fun) {
-    // Do a traversal of the basic blocks starting from the entry node
-    // in a breadth-first fashion. The traversal order is not important for
-    // correctness, but it could change the errors diagnosed when there are
-    // multiple errors. Breadth-first search could diagnose errors along
-    // shorter paths.
-    llvm::DenseMap<SILBasicBlock *, BBState> visitedBBs;
+    llvm::DenseMap<SILBasicBlock *, BBState> bbStateMap;
     SmallVector<SILBasicBlock *, 16> worklist;
 
     auto *entryBB = &(*fun.begin());
-    visitedBBs.try_emplace(entryBB);
+    bbStateMap.try_emplace(entryBB);
     worklist.push_back(entryBB);
 
-    // Track the return instruction of the function, if it is reached
-    // before a yield instruction. This is needed for emitting diagnostics
-    // when there is no yield instruction along any path reaching a
-    // return instruction.
-    llvm::Optional<SILInstruction *> returnInst = None;
-    ASTContext &astCtx = fun.getModule().getASTContext();
+    // Track return-before-yield error.
+    // They happen only when there is no yield in along any path in the
+    // function. This information can only be obtained with certainty once
+    // the analysis completes. Therefore, this error is diagnosed only after
+    // the analysis completes. There are other errors which could be emitted
+    // on the fly as they are discovered.
+    llvm::Optional<DiagnosticsInfo> returnBeforeYieldError = None;
 
+    // The algorithm uses a worklist to propagate the state through basic
+    // blocks until a fix point. Since the state lattice has height one, each
+    // basic block will be visited at most twice, and at most once if there are
+    // no Conflicts (which are errors). The basic blocks are added to the
+    // worklist  in a breadth-first fashion. The order of visiting basic blocks
+    // is not important for correctness, but it could change the errors
+    // diagnosed when there are multiple errors.
+    // Breadth-first search diagnoses errors along shorter paths.
     while (!worklist.empty()) {
       SILBasicBlock *bb = worklist.pop_back_val();
-      BBState state = visitedBBs[bb];
+      BBState state = bbStateMap[bb];
 
-      auto nextStateOpt = propagate(state, bb);
+      llvm::Optional<DiagnosticsInfo> diagInfoOpt = None;
+      auto nextStateOpt = propagate(state, bb, diagInfoOpt);
 
+      // Diagnose errors if any.
       if (!nextStateOpt.hasValue()) {
-        // We found an error and therefore return after presenting diagnostics.
-      // Handle diagnostics
-      // If the current state is conflict it implies that there is a path to
-      // return before seeing a yield. Diagnose this error.
-      // TODO: should we defer this and prioritize other errors.
-//      if (state.yieldState == YieldState::Conflict) {
-//        // diagnoseConflicts here.
-//        diagnose(astCtx, term->getLoc().getSourceLoc(),
-//                 diag::possible_return_before_yield);
-//      }
-//
-//      // If the state is BeforeYield, it is an error. But, defer emitting
-//      // diagnostics until we see a Conflict state or have visited all nodes
-//      // in order to gather more information.
-//      if (state.yieldState != YieldState::AfterYield) {
-//        returnInst = term;
-//      }
-//      if (isa<YieldInst>(term)) {
-//        // If the input state is not before yield, it implies that there are
-//        // multiple yield along this path, which is an error.
-//        if (inState.yieldState != YieldState::BeforeYield) {
-//          diagnose(astCtx, term->getLoc().getSourceLoc(),
-//                   diag::multiple_yields);
-//          // Add a note that points to the previous yield.
-//          diagnose(astCtx, state.getYieldInstruction()->getLoc().getSourceLoc(),
-//                   diag::previous_yield);
-//          return;
-//        }
-//      }
+        auto diagInfo = diagInfoOpt.getValue();
+
+        // Return-before-yield errors will not be reported until the analysis
+        // completes. So record it and continue.
+        if (diagInfo.errKind == DiagnosticsInfo::ReturnBeforeYield) {
+          if (!returnBeforeYieldError.hasValue()) {
+            returnBeforeYieldError = diagInfo;
+          }
+          continue;
+        }
+
+        emitDiagnostics(diagInfo, bbStateMap, fun);
         return;
       }
 
@@ -256,7 +301,7 @@ class YieldOnceCheck : public SILFunctionTransform {
       for (auto &succ : bb->getSuccessors()) {
         SILBasicBlock *succBB = succ.getBB();
         // Optimistically try to set the state of the successor as next state.
-        auto insertResult = visitedBBs.try_emplace(succBB, nextState);
+        auto insertResult = bbStateMap.try_emplace(succBB, nextState);
 
         // If the insertion was successful, it means we are seeing the successor
         // for the first time. Add the successor to the worklist.
@@ -266,12 +311,12 @@ class YieldOnceCheck : public SILFunctionTransform {
         }
 
         // Here, the successor already has a state. Therefore, we have
-        // to merge them and if we see new state after merging, we have to
-        // propagate the merged state.
+        // to merge the states. if we see a different state after merging,
+        // we have to propagate the merged state.
         const auto &succState = insertResult.first->second;
         auto mergedState = merge(succState, nextState, succBB);
 
-        if (mergedState == succState)
+        if (mergedState.yieldState == succState.yieldState)
           continue;
 
         insertResult.first->second = mergedState;
@@ -284,13 +329,8 @@ class YieldOnceCheck : public SILFunctionTransform {
       }
     }
 
-    if (returnInst.hasValue()) {
-      // Here, we haven't seen a yield along any path that leads to this return.
-      // Otherwise, the analysis must have propagated a conflict state to this
-      // return instruction, which must have been diagnosed earlier.
-      diagnose(astCtx, returnInst.getValue()->getLoc().getSourceLoc(),
-               diag::return_before_yield);
-      return;
+    if (returnBeforeYieldError.hasValue()) {
+      emitDiagnostics(returnBeforeYieldError.getValue(), bbStateMap, fun);
     }
   }
 
