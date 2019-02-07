@@ -12,6 +12,7 @@
 
 #define DEBUG_TYPE "yield-once-check"
 #include "swift/AST/DiagnosticsSIL.h"
+#include "swift/AST/ASTWalker.h"
 #include "swift/SIL/BasicBlockUtils.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "llvm/ADT/DenseSet.h"
@@ -36,8 +37,9 @@ class YieldOnceCheck : public SILFunctionTransform {
   /// the merge of BeforeYield and AfterYield states results in Conflict.
   enum YieldState { BeforeYield, AfterYield, Conflict };
 
+  // TODO: try to make this const and use move instead of copy
   struct BBState {
-    YieldState yieldState;
+    YieldState yieldState = BeforeYield;
 
   private:
     // The following are auxiliary information that is tracked for specific
@@ -61,6 +63,8 @@ class YieldOnceCheck : public SILFunctionTransform {
     BBState(YieldState state): yieldState(state) { }
 
   public:
+
+    BBState() { }
 
     /// Creates an AfterYield state with the provided auxiliary information.
     static BBState getAfterYieldState(SILInstruction *yieldInstParam) {
@@ -104,9 +108,9 @@ class YieldOnceCheck : public SILFunctionTransform {
       MultipleYield,
       ReturnBeforeYield,
       ReturnOnConflict
-    } const errKind;
-    const BBState inState;
-    const SILInstruction * const termInst;
+    } errKind;
+    BBState inState;
+    SILInstruction * termInst;
 
     DiagnosticsInfo(BBState stateParam, ErrorKind kindParam,
                     SILInstruction *termInstParam) :
@@ -130,7 +134,8 @@ class YieldOnceCheck : public SILFunctionTransform {
 
   /// Given a basic block and an input state, compute the state after the
   /// basic block. If the next state cannot be computed, return None and
-  /// set the diagnostics information.
+  /// set the diagnostics information. This implements the single-step transfer
+  /// function of the dataflow analysis.
   llvm::Optional<BBState> propagate(BBState inState, SILBasicBlock *bb,
                                     llvm::Optional<DiagnosticsInfo> &diagInfo) {
     auto *term = bb->getTerminator();
@@ -193,21 +198,86 @@ class YieldOnceCheck : public SILFunctionTransform {
     return BBState::getConflictState(yieldInst, mergeBlock);
   }
 
-  /// Return true if the given 'stmt' is a control-flow construct of the source
+  /// Return true if the given 'stmt' is a conditional statement of the source
   /// language.
-  //  bool isControlFlowStmt(Stmt *stmt) {
-  //    switch (stmt->getKind()) {
-  //      case StmtKind::If:
-  //      case StmtKind::While:
-  //      case StmtKind::ForEach:
-  //      case StmtKind::RepeatWhile:
-  //      case StmtKind::Switch:
-  //      case StmtKind::Guard:
-  //        return true;
-  //      default:
-  //        return false;
-  //    }
-  //  }
+  static bool isCondStmt(Stmt *stmt) {
+    switch (stmt->getKind()) {
+    case StmtKind::If:
+    case StmtKind::While:
+    case StmtKind::ForEach:
+    case StmtKind::RepeatWhile:
+    case StmtKind::Switch:
+    case StmtKind::Guard:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  bool containsStmt(Stmt *rootStmt, Stmt *keyStmt) {
+    class SearchTraversal : public ASTWalker {
+      const Stmt *searchKey;
+      bool result = false;
+
+    public:
+      SearchTraversal(Stmt *key): searchKey(key) { }
+
+      std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
+        if (s == searchKey) {
+          result = true;
+          return { false, s};
+        }
+        return { true, s };
+      }
+
+      bool walkToDeclPre(Decl *d) override { return !result; }
+
+      std::pair<bool, Expr *> walkToExprPre(Expr *e) override {
+        return { !result, e };
+      }
+
+      bool getResult() const { return result; }
+    };
+
+    SearchTraversal traversal(keyStmt);
+    rootStmt->walk(traversal);
+    return traversal.getResult();
+  }
+
+  Stmt *getContainingCondStmt(Decl *funDecl, Stmt *stmt) {
+    class ClosestCondStmtTraversal : public ASTWalker {
+      const Stmt *searchKey;
+      Stmt *innermostCondStmt = nullptr;
+      Stmt *result = nullptr;
+
+    public:
+      ClosestCondStmtTraversal(Stmt *key): searchKey(key) { }
+
+      std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
+        if (s == searchKey) {
+          result = innermostCondStmt;
+          return { false, s};
+        }
+
+        if (isCondStmt(s)) {
+          innermostCondStmt = s;
+        }
+        return { true, s };
+      }
+
+      bool walkToDeclPre(Decl *d) override { return !result; }
+
+      std::pair<bool, Expr *> walkToExprPre(Expr *e) override {
+        return { !result, e };
+      }
+
+      Stmt *getResult() const { return result; }
+    };
+
+    ClosestCondStmtTraversal traversal(stmt);
+    funDecl->walk(traversal);
+    return traversal.getResult();
+  }
 
   void emitDiagnostics(DiagnosticsInfo &diagInfo,
                        llvm::DenseMap<SILBasicBlock *, BBState> &bbStateMap,
@@ -215,14 +285,14 @@ class YieldOnceCheck : public SILFunctionTransform {
     ASTContext &astCtx = fun.getModule().getASTContext();
 
     switch (diagInfo.errKind) {
-    case DiagnosticsInfo::ReturnBeforeYield:
+      case DiagnosticsInfo::ReturnBeforeYield: {
       // We haven't seen a yield along any path that leads to the return.
       // Here, diagInfo.termInst is the return instruction.
       diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
                diag::return_before_yield);
       return;
-
-    case DiagnosticsInfo::MultipleYield:
+    }
+    case DiagnosticsInfo::MultipleYield: {
       // Here diagInfo.inState is AfterYield or Conflict and diagInfo.termInst
       // is a yield instruction.
       diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
@@ -232,15 +302,78 @@ class YieldOnceCheck : public SILFunctionTransform {
                diagInfo.inState.getYieldInstruction()->getLoc().getSourceLoc(),
                diag::previous_yield);
       return;
-
-    case DiagnosticsInfo::ReturnOnConflict:
+    }
+    case DiagnosticsInfo::ReturnOnConflict: {
       // Here diagInfo.inState is Conflict and diagInfo.termInst is a return
-      // instruction. Here, we have a possible yield-before-return.
-      // In the diagnostics, point out where the yield is missing by doing
-      // AST analysis.
-      diagnose(astCtx, term->getLoc().getSourceLoc(),
-               diag::possible_return_before_yield);
-      return;
+      // instruction. We have a possible yield-before-return and have
+      // to figure out the source-level branch construct (such as if-then-else)
+      // that is responsible for this Conflict state and explain the error.
+      // We analyze the AST here (if it is available) to present better
+      // diagnostics.
+
+      auto *conflictBB = diagInfo.inState.getConflictBB();
+      auto *yieldInst = diagInfo.inState.getYieldInstruction();
+
+      // Diagnostics that must be emitted in case precise AST information
+      // cannot be recovered.
+      auto fallBackDiagnostics = [&] {
+        diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
+                 diag::possible_return_before_yield);
+        // Add notes pointing to the conflicting source location and the yield
+        // statement.
+        diagnose(astCtx, conflictBB->begin()->getLoc().getSourceLoc(),
+                 diag::conflicting_merge);
+        diagnose(astCtx, yieldInst->getLoc().getSourceLoc(), diag::one_yield);
+      };
+
+      auto *yieldStmt = yieldInst->getLoc().getAsASTNode<Stmt>();
+      Decl *funDecl = fun.getLocation().getAsASTNode<Decl>();
+
+      if (!yieldStmt || !funDecl) {
+        fallBackDiagnostics();
+        return;
+      }
+
+      Stmt *condStmt = getContainingCondStmt(funDecl, yieldStmt);
+      if (!condStmt) {
+        fallBackDiagnostics();
+        return;
+      }
+
+      switch (condStmt->getKind()) {
+      case StmtKind::If: {
+        auto *ifstmt = dyn_cast<IfStmt>(condStmt);
+        // Does the yield appear in the then branch?
+        auto thenHasYield = containsStmt(ifstmt->getThenStmt(), yieldStmt);
+
+        if (ifstmt->getElseStmt()) {
+          auto diag = thenHasYield
+                        ? diag::no_yield_in_else : diag::no_yield_in_then;
+          diagnose(astCtx, ifstmt->getIfLoc(), diag);
+          diagnose(astCtx, yieldStmt->getStartLoc(), diag::one_yield);
+          return;
+        }
+
+        auto diag = thenHasYield
+                      ? diag::no_yield_in_fallthrough : diag::no_yield_in_then;
+
+        diagnose(astCtx, ifstmt->getIfLoc(), diag);
+        diagnose(astCtx, yieldStmt->getStartLoc(), diag::one_yield);
+        diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
+                 diag::possible_return_before_yield);
+        return;
+      }
+      case StmtKind::While:
+      case StmtKind::ForEach:
+      case StmtKind::RepeatWhile:
+      case StmtKind::Switch:
+      case StmtKind::Guard:
+        fallBackDiagnostics();
+        return;
+      default:
+        llvm_unreachable("Unsupported conditional statement.");
+      }
+    }
     }
   }
 

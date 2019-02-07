@@ -369,12 +369,18 @@ NOTE(previous_yield, none, "previous yield was here", ())
 ERROR(possible_return_before_yield, none,
       "accessor must yield on all paths before returning", ())
 
-NOTE(conflicting_join, none,
+NOTE(conflicting_merge, none,
     "some paths reaching here have a yield and some don't", ())
 
-ERROR(loop_conflict, none, "accessor doesn't yield when the loop is skipped",())
+NOTE(one_yield, none, "found yield along one path", ())
 
-ERROR(if_conflict, none, "accessor doesn't yield when the 'if' branch is not taken", ())
+NOTE(no_yield_in_then, none, "'if' must yield along the then branch", ())
+
+NOTE(no_yield_in_else, none, "'if' must yield along the else branch", ())
+
+NOTE(no_yield_in_fallthrough, none, "must yield when 'if' falls through", ())
+
+ERROR(loop_conflict, none, "accessor doesn't yield when the loop is skipped",())
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)
