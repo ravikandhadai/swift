@@ -18,17 +18,17 @@ struct TestReturnPathWithoutYield {
 
   var computed: Int {
     mutating _read {
-      if flag {       // expected-note {{must yield when 'if' falls through}}
+      if flag {
         yield stored  // expected-note {{found yield along one path}}
-      }
+      }               // expected-note {{must yield when 'if' falls through}}
       flag = true
     } // expected-error {{accessor must yield on all paths before returning}}
 
     _modify {
       // The diagnostics should attach the note to the earliest conflicting branch.
-      if flag {         // expected-note {{must yield when 'if' falls through}}
+      if flag {
         yield &stored   // expected-note {{found yield along one path}}
-      }
+      }                 // expected-note {{must yield when 'if' falls through}}
 
       if !flag {
         flag = true
@@ -235,25 +235,24 @@ struct TestExplicitReturn {
 
   var computed: Int {
     mutating _read {
-      if stored > 0 {
+      if stored > 0 { // expected-note {{'if' must yield along the then branch}}
         return
       }
       if flag {
-        yield stored
+        yield stored // expected-note {{found yield along one path}}
       } else {
         yield stored
       }
       flag = true
     } // expected-error {{accessor must yield on all paths before returning}}
-    // expected-note@-1 {{some paths reaching here have a yield and some don't}}
 
     _modify {
-      if stored > 0 {
+      if stored > 0 { // expected-note {{'if' must yield along the then branch}}
         return
       }
       if stored == 0 {
         if flag {
-          yield &stored
+          yield &stored  // expected-note {{found yield along one path}}
         } else {
           yield &stored
         }
@@ -261,7 +260,6 @@ struct TestExplicitReturn {
       }
       flag = true
     } // expected-error {{accessor must yield on all paths before returning}}
-    // expected-note@-1 {{some paths reaching here have a yield and some don't}}
   }
 
   var anotherProp: Int {
@@ -299,20 +297,18 @@ struct TestYieldsInGuards2 {
 
   var computed: Int {
     _read {
-      guard let stored = storedOpt else {
+      guard let stored = storedOpt else { // expected-note {{'guard' must yield along the else branch}}
         return
       }
       yield stored // expected-note {{found yield along one path}}
     } // expected-error {{accessor must yield on all paths before returning}}
-    // expected-note@-1 {{some paths reaching here have a yield and some don't}}
 
     _modify {
       guard let stored = storedOpt else {
         yield &defaultStorage  // expected-note {{found yield along one path}}
         return
-      }
+      }                        // expected-note {{must yield after 'guard'}}
       storedOpt = stored + 1
     } // expected-error {{accessor must yield on all paths before returning}}
-    // expected-note@-1 {{some paths reaching here have a yield and some don't}}
   }
 }

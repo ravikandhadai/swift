@@ -360,13 +360,20 @@ class YieldOnceCheck : public SILFunctionTransform {
         return;
       }
 
+      //      llvm::errs() << "Found conditional statement"  << "\n";
+      //      condStmt->dump();
+
       switch (condStmt->getKind()) {
       case StmtKind::If: {
         emitIfStmtDiagnosticNote(dyn_cast<IfStmt>(condStmt), yieldStmt, astCtx);
         return;
       }
+      case StmtKind::Guard: {
+        emitGuardStmtDiagnosticNote(dyn_cast<GuardStmt>(condStmt), yieldStmt,
+                                    astCtx);
+        return;
+      }
       case StmtKind::Switch:
-      case StmtKind::Guard:
         // Unsupported conditional statement.
         fallBackDiagnostics();
         return;
@@ -505,7 +512,8 @@ class YieldOnceCheck : public SILFunctionTransform {
     if (ifstmt->getElseStmt()) {
       auto diag = thenHasYield
                     ? diag::no_yield_in_else : diag::no_yield_in_then;
-      diagnose(astCtx, ifstmt->getIfLoc(), diag);
+      auto srcLoc = thenHasYield ? ifstmt->getElseLoc() : ifstmt->getIfLoc();
+      diagnose(astCtx, srcLoc, diag);
       diagnose(astCtx, yieldStmt->getStartLoc(), diag::one_yield);
       return;
     }
@@ -513,7 +521,20 @@ class YieldOnceCheck : public SILFunctionTransform {
     // If without else.
     auto diag = thenHasYield
                     ? diag::no_yield_in_fallthrough : diag::no_yield_in_then;
-    diagnose(astCtx, ifstmt->getIfLoc(), diag);
+    auto srcLoc = thenHasYield ? ifstmt->getEndLoc() : ifstmt->getIfLoc();
+    diagnose(astCtx, srcLoc, diag);
+  }
+
+  void emitGuardStmtDiagnosticNote(GuardStmt *guardStmt, Stmt *yieldStmt,
+                                   ASTContext &astCtx) {
+    // Does the yield appear in the else branch?
+    auto elseHasYield = isDescendantOf(guardStmt->getBody(), yieldStmt);
+
+    auto diag = elseHasYield ? diag::no_yield_in_guard_fallthrough
+                             : diag::no_yield_in_guard_else;
+    auto srcLoc =
+        elseHasYield ? guardStmt->getEndLoc() : guardStmt->getGuardLoc();
+    diagnose(astCtx, srcLoc, diag);
   }
 
   /// The entry point to the transformation.

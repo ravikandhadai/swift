@@ -380,7 +380,10 @@ NOTE(no_yield_in_else, none, "'if' must yield along the else branch", ())
 
 NOTE(no_yield_in_fallthrough, none, "must yield when 'if' falls through", ())
 
-ERROR(loop_conflict, none, "accessor doesn't yield when the loop is skipped",())
+NOTE(no_yield_in_guard_fallthrough, none, "must yield after 'guard'", ())
+
+NOTE(no_yield_in_guard_else, none,
+     "'guard' must yield along the else branch", ())
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)
