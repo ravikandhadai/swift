@@ -12,11 +12,13 @@
 
 #define DEBUG_TYPE "yield-once-check"
 #include "swift/AST/DiagnosticsSIL.h"
+#include "swift/SIL/Dominance.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/SIL/BasicBlockUtils.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "llvm/ADT/DenseSet.h"
 #include "swift/AST/Stmt.h"
+#include "swift/AST/Expr.h"
 
 using namespace swift;
 
@@ -300,9 +302,12 @@ class YieldOnceCheck : public SILFunctionTransform {
       return;
     }
     case DiagnosticsInfo::ReturnOnConflict: {
-      // Here we try to figure out the source-level branch construct
-      // (such as if-then-else) that is responsible for this Conflict state
-      // and explain the error, by analyzing the AST, if it is available.
+      // Here we try to figure out the branch construct that is responsible
+      // for this Conflict state and explain the error.
+      // If the source information is available extract the source-level
+      // branch statement (such as if-then-else) from the AST and present it
+      // in diagnostics, otherwise present a deafult and less precise
+      // diagnostics.
 
       auto *conflictBB = diagInfo.inState.getConflictBB();
       auto *yieldInst = diagInfo.inState.getYieldInstruction();
@@ -313,25 +318,44 @@ class YieldOnceCheck : public SILFunctionTransform {
                diag::possible_return_before_yield);
       diagnose(astCtx, yieldInst->getLoc().getSourceLoc(), diag::one_yield);
 
+      // Find the conditional branch whose targets meet at conflict BB.
+      // The conditional branch will be an immediate dominator of the
+      // conflict BB.
+      auto dominanceInfo = DominanceInfo(&fun);
+      auto *immediateDominator = dominanceInfo.getNode(conflictBB)->getIDom();
+
+      assert(immediateDominator);
+      assert(immediateDominator->getBlock());
+
+      auto *branchingInst = immediateDominator->getBlock()->getTerminator();
+      assert(branchingInst);
+
       auto fallBackDiagnostics = [&] {
-        // If there is no better option, point to the conflicting source loc.
-        diagnose(astCtx, conflictBB->begin()->getLoc().getSourceLoc(),
-                 diag::conflicting_merge);
+        // If there is no better option, point to the conflicting branch's
+        // source location.
+        diagnose(astCtx, branchingInst->getLoc().getSourceLoc(),
+                 diag::conflicting_branch);
       };
 
-      // Find the conditional branch whose targets meet at conflict BB
-
-      // Using the AST information, try point to the conditional statement
-      // that resulted in the conflict.
-      auto *yieldStmt = yieldInst->getLoc().getAsASTNode<Stmt>();
+      // Using the AST information, try to find the conditional statement
+      // that corresponds to the branchingInst.
       Decl *funDecl = fun.getLocation().getAsASTNode<Decl>();
-      if (!yieldStmt || !funDecl) {
+      auto *yieldStmt = yieldInst->getLoc().getAsASTNode<Stmt>();
+      auto branchLoc = branchingInst->getLoc();
+
+      if (!yieldStmt || !funDecl || !branchLoc.isASTNode()) {
+        // We do not have sufficient AST information here.
         fallBackDiagnostics();
         return;
       }
 
-      Stmt *condStmt = getContainingCondStmt(funDecl, yieldStmt);
+      auto branchingASTNode = branchLoc.isASTNode<Expr>()
+        ? ASTNode(branchLoc.getAsASTNode<Expr>())
+        : ASTNode(branchLoc.getAsASTNode<Stmt>());
+
+      Stmt *condStmt = getContainingConditionalStmt(funDecl, branchingASTNode);
       if (!condStmt) {
+        // Cannot extract a source-level conditional statement here.
         fallBackDiagnostics();
         return;
       }
@@ -343,6 +367,7 @@ class YieldOnceCheck : public SILFunctionTransform {
       }
       case StmtKind::Switch:
       case StmtKind::Guard:
+        // Unsupported conditional statement.
         fallBackDiagnostics();
         return;
       // Handle try-catch
@@ -353,29 +378,29 @@ class YieldOnceCheck : public SILFunctionTransform {
   }
   }
 
-  void emitIfStmtDiagnosticNote(IfStmt *ifstmt, Stmt *yieldStmt,
-                                 ASTContext &astCtx) {
-    // Does the yield appear in the then branch?
-    auto thenHasYield = containsStmt(ifstmt->getThenStmt(), yieldStmt);
-
-    // If-else statements?
-    if (ifstmt->getElseStmt()) {
-      auto diag = thenHasYield
-      ? diag::no_yield_in_else : diag::no_yield_in_then;
-      diagnose(astCtx, ifstmt->getIfLoc(), diag);
-      diagnose(astCtx, yieldStmt->getStartLoc(), diag::one_yield);
-      return;
+  /// Try to obtain the conditional statement within a function declaration
+  /// that contains the given ASTNode. Return nullptr if there is no such
+  /// conditional statement.
+  Stmt *getContainingConditionalStmt(Decl *funDecl, ASTNode node) {
+    // Check if the node itself is a conditional statement.
+    if (node.is<Stmt *>()) {
+      auto *stmt = node.get<Stmt *>();
+      if (isConditionalStmt(stmt)) {
+        return stmt;
+      }
     }
 
-    // If without else.
-    auto diag = thenHasYield
-    ? diag::no_yield_in_fallthrough : diag::no_yield_in_then;
-    diagnose(astCtx, ifstmt->getIfLoc(), diag);
+    if (node.is<Expr *>()) {
+      auto *expr = node.get<Expr *>();
+      return findConditionalStmtWithCondition(funDecl, expr);
+    }
+    return nullptr;
   }
 
   /// Return true if the given 'stmt' is a conditional statement of the source
-  /// language.
-  static bool isCondStmt(Stmt *stmt) {
+  /// language. That is, statement that potentially results in branches but
+  /// are not loops.
+  static bool isConditionalStmt(Stmt *stmt) {
     switch (stmt->getKind()) {
     case StmtKind::If:
     case StmtKind::Switch:
@@ -386,68 +411,32 @@ class YieldOnceCheck : public SILFunctionTransform {
     }
   }
 
-  /// Check if 'keyStmt' is contained in the AST rooted at 'rootStmt'
-  bool containsStmt(Stmt *rootStmt, Stmt *keyStmt) {
-    class SearchTraversal : public ASTWalker {
-      const Stmt *searchKey;
-      bool result = false;
-
-    public:
-      SearchTraversal(Stmt *key): searchKey(key) { }
-
-      std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
-        if (s == searchKey) {
-          result = true;
-          return { false, s};
-        }
-        return { true, s };
-      }
-
-      bool walkToDeclPre(Decl *d) override { return !result; }
-
-      std::pair<bool, Expr *> walkToExprPre(Expr *e) override {
-        return { !result, e };
-      }
-
-      bool getResult() const { return result; }
-    };
-
-    SearchTraversal traversal(keyStmt);
-    rootStmt->walk(traversal);
-    return traversal.getResult();
-  }
-
-  /// Obtain the closest conditional statement that contains the given
-  /// stmt. Return nullptr if there is no such conditional statement.
-  Stmt *getContainingCondStmt(Decl *funDecl, Stmt *stmt) {
-    class ClosestCondStmtTraversal : public ASTWalker {
-      const Stmt *searchKey;
-      // A stack of open conditional statements.
-      llvm::SmallVector<Stmt *, 4> condStmts;
+  /// Return true if the given 'expr' is the branch condition of a conditional
+  /// statement such as if-else or guard.
+  Stmt *findConditionalStmtWithCondition(Decl *funDecl, Expr *cond) {
+    class ContainingCondStmtTraversal : public ASTWalker {
+      Expr *searchKey;
       Stmt *result = nullptr;
 
     public:
-      ClosestCondStmtTraversal(Stmt *key): searchKey(key) { }
+      ContainingCondStmtTraversal(Expr *key): searchKey(key) { }
 
       std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
-        if (s == searchKey) {
-          if (!condStmts.empty()) {
-            result = condStmts.back();
-          }
+        if (result) {
           return { false, s};
         }
-
-        if (isCondStmt(s)) {
-          condStmts.push_back(s);
+        // If this is a conditinal statement, search the branch conditions.
+        auto *labeledCondStmt = dyn_cast<LabeledConditionalStmt>(s);
+        if (labeledCondStmt) {
+          for (auto condElem : labeledCondStmt->getCond()) {
+             if(isDescendantOf<StmtConditionElement>(&condElem,
+                                                     searchKey)){
+               result = labeledCondStmt;
+               break;
+             }
+          }
         }
-        return { true, s };
-      }
-
-      Stmt * walkToStmtPost(Stmt *s) override {
-        if (isCondStmt(s) && !condStmts.empty() && s == condStmts.back()) {
-          condStmts.pop_back();
-        }
-        return s;
+        return { !result, s };
       }
 
       bool walkToDeclPre(Decl *d) override { return !result; }
@@ -459,12 +448,73 @@ class YieldOnceCheck : public SILFunctionTransform {
       Stmt *getResult() const { return result; }
     };
 
-    ClosestCondStmtTraversal traversal(stmt);
+    ContainingCondStmtTraversal traversal(cond);
     funDecl->walk(traversal);
     return traversal.getResult();
   }
 
+  /// Return true iff 'key' is contained in the AST rooted at 'root'.
+  /// The 'root' must have a walk method.
+  template <typename T>
+  static bool isDescendantOf(T *root, ASTNode key) {
+    class SearchTraversal : public ASTWalker {
+      ASTNode searchKey;
+      bool result = false;
 
+    public:
+      SearchTraversal(ASTNode key): searchKey(key) { }
+
+      std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
+        if (searchKey.is<Stmt *>() && s == searchKey.get<Stmt *>()) {
+          result = true;
+          return { false, s};
+        }
+        return { true, s };
+      }
+
+      bool walkToDeclPre(Decl *d) override {
+        if (searchKey.is<Decl *>() && d == searchKey.get<Decl *>()) {
+          result = true;
+          return false;
+        }
+        return !result;
+      }
+
+      std::pair<bool, Expr *> walkToExprPre(Expr *e) override {
+        if (searchKey.is<Expr *>() && e == searchKey.get<Expr *>()) {
+          result = true;
+          return { false, e};
+        }
+        return { !result, e };
+      }
+
+      bool getResult() const { return result; }
+    };
+
+    SearchTraversal traversal(key);
+    root->walk(traversal);
+    return traversal.getResult();
+  }
+
+  void emitIfStmtDiagnosticNote(IfStmt *ifstmt, Stmt *yieldStmt,
+                                ASTContext &astCtx) {
+    // Does the yield appear in the then branch?
+    auto thenHasYield = isDescendantOf(ifstmt->getThenStmt(), yieldStmt);
+
+    // If-else statements?
+    if (ifstmt->getElseStmt()) {
+      auto diag = thenHasYield
+                    ? diag::no_yield_in_else : diag::no_yield_in_then;
+      diagnose(astCtx, ifstmt->getIfLoc(), diag);
+      diagnose(astCtx, yieldStmt->getStartLoc(), diag::one_yield);
+      return;
+    }
+
+    // If without else.
+    auto diag = thenHasYield
+                    ? diag::no_yield_in_fallthrough : diag::no_yield_in_then;
+    diagnose(astCtx, ifstmt->getIfLoc(), diag);
+  }
 
   /// The entry point to the transformation.
   void run() override {

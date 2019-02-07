@@ -19,7 +19,7 @@ struct TestReturnPathWithoutYield {
   var computed: Int {
     mutating _read {
       if flag {       // expected-note {{must yield when 'if' falls through}}
-        yield stored  // expected-note {{found yield along one branch}}
+        yield stored  // expected-note {{found yield along one path}}
       }
       flag = true
     } // expected-error {{accessor must yield on all paths before returning}}
@@ -27,7 +27,7 @@ struct TestReturnPathWithoutYield {
     _modify {
       // The diagnostics should attach the note to the earliest conflicting branch.
       if flag {         // expected-note {{must yield when 'if' falls through}}
-        yield &stored   // expected-note {{found yield along one branch}}
+        yield &stored   // expected-note {{found yield along one path}}
       }
 
       if !flag {
@@ -182,7 +182,7 @@ struct TestYieldInDoCatch2 {
     _read {
       do {
         try aThrowingFunction()
-        yield stored  // expected-note {{found yield along one branch}}
+        yield stored  // expected-note {{found yield along one path}}
       } catch {
       }
     } // expected-error {{accessor must yield on all paths before returning}}
@@ -193,7 +193,7 @@ struct TestYieldInDoCatch2 {
         try aThrowingFunction()
       }
       catch {
-        yield &stored  // expected-note {{found yield along one branch}}
+        yield &stored  // expected-note {{found yield along one path}}
       }
     } // expected-error {{accessor must yield on all paths before returning}}
       // expected-note@-1 {{some paths reaching here have a yield and some don't}}
@@ -216,7 +216,7 @@ struct TestYieldInSwitch {
     _modify {
       switch cp {
       case .north:
-        yield &stored  // expected-note {{found yield along one branch}}
+        yield &stored  // expected-note {{found yield along one path}}
       case .south:
         stored = 10
       case .east:
@@ -302,13 +302,13 @@ struct TestYieldsInGuards2 {
       guard let stored = storedOpt else {
         return
       }
-      yield stored // expected-note {{found yield along one branch}}
+      yield stored // expected-note {{found yield along one path}}
     } // expected-error {{accessor must yield on all paths before returning}}
     // expected-note@-1 {{some paths reaching here have a yield and some don't}}
 
     _modify {
       guard let stored = storedOpt else {
-        yield &defaultStorage  // expected-note {{found yield along one branch}}
+        yield &defaultStorage  // expected-note {{found yield along one path}}
         return
       }
       storedOpt = stored + 1

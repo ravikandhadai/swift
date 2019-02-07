@@ -369,10 +369,10 @@ NOTE(previous_yield, none, "previous yield was here", ())
 ERROR(possible_return_before_yield, none,
       "accessor must yield on all paths before returning", ())
 
-NOTE(conflicting_merge, none,
-    "some paths reaching here have a yield and some don't", ())
+NOTE(conflicting_branch, none,
+    "some targets of this branch yield and others don't", ())
 
-NOTE(one_yield, none, "found yield along one branch", ())
+NOTE(one_yield, none, "found yield along one path", ())
 
 NOTE(no_yield_in_then, none, "'if' must yield along the then branch", ())
 
