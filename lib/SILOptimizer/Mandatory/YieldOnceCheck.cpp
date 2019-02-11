@@ -38,6 +38,8 @@ class YieldOnceCheck : public SILFunctionTransform {
   /// Conflict. This enum is a semi-lattice where Conflict is the top and
   /// the merge of BeforeYield and AfterYield states results in Conflict.
   enum YieldState { BeforeYield, AfterYield, Conflict };
+  
+  typedef llvm::DenseMap<SILInstruction *, std::shared_ptr<SmallPtrSetImpl<SILBasicBlock *>>> BranchInfo;
 
   // TODO: try to make this const and use move instead of copy
   struct BBState {
@@ -52,31 +54,48 @@ class YieldOnceCheck : public SILFunctionTransform {
     // is detected. Note that a conflict can happen if, at a block where two
     // branches meet, one branch yields and the other doesn't.
     SILBasicBlock *conflictBB = nullptr;
+    
+    // These states are stored for the conflict case
+    SILInstruction *conflictBranch = nullptr;
+    SILBasicBlock *noYieldTarget = nullptr;
+    
+    // A mapping from SIL branch instruction to the set of targets seen.
+    // If the value equals the total number of targets of the branch,
+    // the key can be removed as all targets have been seen.
+    // This is map is populated only during non-conflict states. When
+    // a conflict is seen the map is frozen and the conflicting branch and
+    // the conflicting targets are recorded.
+    BranchInfo seenBranches;
 
-    BBState(YieldState state): yieldState(state) { }
+    //BBState(YieldState state): yieldState(state) { }
 
   public:
 
     BBState() { }
 
     /// Creates an AfterYield state with the provided auxiliary information.
-    static BBState getAfterYieldState(SILInstruction *yieldInstParam) {
+    BBState getAfterYieldState(SILInstruction *yieldInstParam) {
       assert(yieldInstParam != nullptr);
 
-      BBState afterYield(YieldState::AfterYield);
+      BBState afterYield = *this; // this will copy all diagnostic info.
+      afterYield.yieldState = YieldState::AfterYield;
       afterYield.yieldInst = yieldInstParam;
       return afterYield;
     }
 
     static BBState getConflictState(SILInstruction *yieldInstParam,
-                                    SILBasicBlock *conflictBBParam) {
+                             SILBasicBlock *conflictBBParam,
+                             BBState oldState, BBState newState) {
       assert(yieldInstParam != nullptr);
       assert(conflictBBParam != nullptr);
 
-      BBState conflictState(YieldState::Conflict);
+      BBState conflictState; // This will copy diagnostics info.
+      conflictState.yieldState = YieldState::Conflict;
       conflictState.yieldInst = yieldInstParam;
       conflictState.conflictBB = conflictBBParam;
-      //conflictState.noYieldBB = noYieldBBParam;
+      
+      // Populate the data needed for diagnostics.
+      conflictState.populateConflictData(oldState, newState);
 
       return conflictState;
     }
@@ -89,6 +108,126 @@ class YieldOnceCheck : public SILFunctionTransform {
     SILBasicBlock *getConflictBB() const {
       assert(yieldState == Conflict);
       return conflictBB;
+    }
+    
+    BBState withCondBranch(CondBranchInst *condbr, SILBasicBlock *destBB) {
+      assert (condbr != nullptr);
+      assert (yieldState != Conflict);
+      
+      if (seenBranches.count(condbr)) {
+        // We are seeing the branch again through a loop. So ignore this.
+        return *this;
+      }
+      
+      llvm::errs() << "Adding conditional branch: " << *condbr << "\n";
+      BBState outState = *this;
+      
+      auto *targetSet = new SmallPtrSet<SILBasicBlock *, 4>();
+      targetSet->insert(destBB);
+      
+      outState.seenBranches.try_emplace(condbr, targetSet);
+      return outState;
+    }
+    
+    void unionSeenBranches(BranchInfo &from) {
+      for (auto &kv: from) {
+        auto key = kv.first;
+        const auto value = kv.second;
+        
+        if (!seenBranches.count(key)) {
+          auto *targetSet = new SmallPtrSet<SILBasicBlock *, 4>();
+          seenBranches.try_emplace(key, targetSet);
+        }
+        
+        auto existingTargetSet = seenBranches.lookup(key);
+        existingTargetSet->insert(value->begin(), value->end());
+      }
+    }
+    
+    // This function is optional, we need not remove completed branches.
+    void removeCompletedBranches() {
+      SmallPtrSet<SILInstruction *, 4> compKeys;
+      for (auto &kv: seenBranches) {
+        const auto key = kv.first;
+        const auto value = kv.second;
+
+        if (value->size() == 2) {
+          // We are only handling conditional branches as of now.
+          compKeys.insert(key);
+        }
+      }
+      
+      for (auto k : compKeys) {
+        seenBranches.erase(k);
+      }
+    }
+    
+    void populateConflictData(BBState oldState, BBState newState) {
+      assert (oldState.yieldState != newState.yieldState);
+      assert (oldState.yieldState != Conflict &&
+              newState.yieldState != Conflict);
+      
+      auto oldSeenBranches = oldState.seenBranches;
+      auto newSeenBranches = newState.seenBranches;
+      
+      for (auto &kv: oldSeenBranches) {
+        auto key = kv.first;
+        const auto value = kv.second;
+        
+        if (!newSeenBranches.count(key)) {
+          // This cannot be the branch that is merged here, as it strictly
+          // belongs to one of the paths but not the other.
+          continue;
+        }
+        
+        const auto newValue = newSeenBranches.lookup(key);
+        for (auto elem : *value) {
+          if (!newValue->count(elem)) {
+            // We have seen a different target of this branch along the
+            // conflict and no conflict path.
+            // Therefore, this branch has been merged here and the targets
+            // have conflicting yield states.
+            conflictBranch = key;
+            noYieldTarget = (oldState.yieldState == BeforeYield)
+              ? (*value->begin()) : elem;
+            return;
+          }
+        }
+      }
+    }
+    
+    BBState mergeWith(BBState newState) {
+      assert (yieldState == newState.yieldState);
+      
+      // For each branch in the new and old states, union the targets.
+      // If at some point, all targets are seen, remove the target.
+      BBState mergedState;
+      mergedState.yieldState = yieldState;
+      
+      mergedState.unionSeenBranches(seenBranches);
+      mergedState.unionSeenBranches(newState.seenBranches);
+      //mergedState.removeCompletedBranches();
+      return mergedState;
+    }
+    
+    SILInstruction *getConflictBranch() const {
+      return conflictBranch;
+    }
+    
+    SILBasicBlock *getNoYieldTarget() const {
+      return noYieldTarget;
+    }
+    
+    void dump() {
+      llvm::errs() << "Yield state: " << yieldState << "\n";
+      llvm::errs() << "Conditional branches: \n";
+      for (auto &kv : seenBranches) {
+        llvm::errs() << " key: " << *kv.first << " value: [";
+        for (auto elem : *kv.second) {
+          llvm::errs() << "bb" << elem->getDebugID() << ";";
+        }
+        llvm::errs() << "]\n";
+      }
     }
   };
 
@@ -129,6 +268,7 @@ class YieldOnceCheck : public SILFunctionTransform {
   /// basic block. If the next state cannot be computed, return None and
   /// set the diagnostics information. This implements the single-step transfer
   /// function of the dataflow analysis.
+  /// TODO: handle throws.
   llvm::Optional<BBState> propagate(BBState inState, SILBasicBlock *bb,
                                     llvm::Optional<DiagnosticsInfo> &diagInfo) {
     auto *term = bb->getTerminator();
@@ -160,18 +300,28 @@ class YieldOnceCheck : public SILFunctionTransform {
       }
       // If the current state is BeforeYield and if the basic block ends in a
       // yield the new state is AfterYield.
-      return BBState::getAfterYieldState(term);
+      return inState.getAfterYieldState(term);
     }
     return inState;
+  }
+  
+  /// This will only change the diagnostics state.
+  BBState propagateAlongCFGEdge(BBState srcState, SILBasicBlock *srcBB,
+                                SILBasicBlock *destBB) {
+    if (srcState.yieldState == Conflict) // Conflicts remain the same.
+      return srcState;
+    
+    auto *term = srcBB->getTerminator();
+    if (auto condbr = dyn_cast<CondBranchInst>(term)) {
+      return srcState.withCondBranch(condbr, destBB);
+    }
+    return srcState;
   }
 
   /// Merge oldState with newState. This performs the dataflow merge operation.
   /// This may have to create a new Conflict state, in which case it uses
   /// the mergeBlock which is the merge point where conflict is detected.
   BBState merge(BBState oldState, BBState newState, SILBasicBlock *mergeBlock) {
-    if (oldState.yieldState == newState.yieldState)
-      return oldState;
-
     // If the newState or oldState is already top of the lattice, return it.
     if (oldState.yieldState == Conflict) {
       return oldState;
@@ -179,6 +329,12 @@ class YieldOnceCheck : public SILFunctionTransform {
 
     if (newState.yieldState == Conflict) {
       return newState;
+    }
+    
+    if (oldState.yieldState == newState.yieldState) {
+      // Here we have identical states. Merge the diagnostics state here,
+      // which will remove completed branches.
+      return oldState.mergeWith(newState);
     }
 
     // Here, one state is AfterYield and the other one is BeforeYield.
@@ -188,7 +344,8 @@ class YieldOnceCheck : public SILFunctionTransform {
                                   ? newState.getYieldInstruction()
                                   : oldState.getYieldInstruction();
 
-    return BBState::getConflictState(yieldInst, mergeBlock);
+    return BBState::getConflictState(yieldInst, mergeBlock,
+                                     oldState, newState);
   }
 
   /// Checks whether there is exactly one yield before a return in every path
@@ -224,10 +381,10 @@ class YieldOnceCheck : public SILFunctionTransform {
       BBState state = bbStateMap[bb];
 
       llvm::Optional<DiagnosticsInfo> diagInfoOpt = None;
-      auto nextStateOpt = propagate(state, bb, diagInfoOpt);
+      auto afterStateOpt = propagate(state, bb, diagInfoOpt);
 
       // Diagnose errors if any.
-      if (!nextStateOpt.hasValue()) {
+      if (!afterStateOpt.hasValue()) {
         auto diagInfo = diagInfoOpt.getValue();
 
         // Return-before-yield errors will not be reported until the analysis
@@ -243,10 +400,15 @@ class YieldOnceCheck : public SILFunctionTransform {
         return;
       }
 
-      auto nextState = nextStateOpt.getValue();
+      auto afterState = afterStateOpt.getValue();
 
       for (auto &succ : bb->getSuccessors()) {
         SILBasicBlock *succBB = succ.getBB();
+        
+        auto nextState = propagateAlongCFGEdge(afterState, bb, succBB);
+        llvm::errs() << "State for bb" << succBB->getDebugID() << "\n";
+        nextState.dump();
+        
         // Optimistically try to set the state of the successor as next state.
         auto insertResult = bbStateMap.try_emplace(succBB, nextState);
 
@@ -308,40 +470,45 @@ class YieldOnceCheck : public SILFunctionTransform {
       // branch statement (such as if-then-else) from the AST and present it
       // in diagnostics, otherwise present a deafult and less precise
       // diagnostics.
-
-      auto *conflictBB = diagInfo.inState.getConflictBB();
-      auto *yieldInst = diagInfo.inState.getYieldInstruction();
-
-      // Emit an error on the return statement and add a note pointing to one
-      // yield found by the analysis.
+      
+      // Emit an error on the return statement.
       diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
                diag::possible_return_before_yield);
-      diagnose(astCtx, yieldInst->getLoc().getSourceLoc(), diag::one_yield);
 
-      // Find the conditional branch whose targets meet at conflict BB.
-      // The conditional branch will be an immediate dominator of the
-      // conflict BB.
-      auto dominanceInfo = DominanceInfo(&fun);
-      auto *immediateDominator = dominanceInfo.getNode(conflictBB)->getIDom();
-
-      assert(immediateDominator);
-      assert(immediateDominator->getBlock());
-
-      auto *branchingInst = immediateDominator->getBlock()->getTerminator();
-      assert(branchingInst);
+      auto *yieldInst = diagInfo.inState.getYieldInstruction();
+      auto *conflictBranch = diagInfo.inState.getConflictBranch();
+      auto *noYieldTarget = diagInfo.inState.getNoYieldTarget();
+      
+      assert (yieldInst);
+      
+      if (!conflictBranch || !noYieldTarget) {
+        if (!conflictBranch)
+          llvm::errs() << "Conflict branch is null\n ";
+        
+        if (!noYieldTarget)
+          llvm::errs() << "no yield target is null\n ";
+        diagnose(astCtx, yieldInst->getLoc().getSourceLoc(), diag::one_yield);
+        return;
+      }
 
       auto fallBackDiagnostics = [&] {
         // If there is no better option, point to the conflicting branch's
         // source location.
-        diagnose(astCtx, branchingInst->getLoc().getSourceLoc(),
+        diagnose(astCtx, conflictBranch->getLoc().getSourceLoc(),
                  diag::conflicting_branch);
+        // Include noYieldTarget here instead of the yield instruction.
+        llvm::errs() << "No Yield target: BB" << noYieldTarget->getDebugID() << "\n";
+        diagnose(astCtx, yieldInst->getLoc().getSourceLoc(), diag::one_yield);
       };
+      
+      fallBackDiagnostics();
+      return;
 
       // Using the AST information, try to find the conditional statement
       // that corresponds to the branchingInst.
       Decl *funDecl = fun.getLocation().getAsASTNode<Decl>();
       auto *yieldStmt = yieldInst->getLoc().getAsASTNode<Stmt>();
-      auto branchLoc = branchingInst->getLoc();
+      auto branchLoc = conflictBranch->getLoc();
 
       if (!yieldStmt || !funDecl || !branchLoc.isASTNode()) {
         // We do not have sufficient AST information here.
@@ -554,3 +721,15 @@ class YieldOnceCheck : public SILFunctionTransform {
 SILTransform *swift::createYieldOnceCheck() {
   return new YieldOnceCheck();
 }
+
+//      // Find the conditional branch whose targets meet at conflict BB.
+//      // The conditional branch will be an immediate dominator of the
+//      // conflict BB.
+//      auto dominanceInfo = DominanceInfo(&fun);
+//      auto *immediateDominator = dominanceInfo.getNode(conflictBB)->getIDom();
+//
+//      assert(immediateDominator);
+//      assert(immediateDominator->getBlock());
+//
+//      auto *branchingInst = immediateDominator->getBlock()->getTerminator();
+//      assert(branchingInst);
