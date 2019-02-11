@@ -58,11 +58,11 @@ unwind
 sil @testPartialReturnWithoutYield : $@yield_once @convention(thin) (TestYield) -> @yields Int {
 bb0(%0 : $TestYield):
 %1 = struct_extract %0 : $TestYield, #TestYield.flag
-cond_br %1, bb1, bb3
+cond_br %1, bb1, bb3                      // expected-note {{branch must yield on all paths}}
 
 bb1:
 %5 = struct_extract %0 : $TestYield, #TestYield.stored
-yield %5 : $Int, resume bb2, unwind bb5
+yield %5 : $Int, resume bb2, unwind bb5   // expected-note {{found yield along one path}}
 
 bb2:
 br bb4
@@ -71,8 +71,8 @@ bb3:
 br bb4
 
 bb4:
-%21 = tuple ()   // expected-note {{some paths reaching here have a yield and some don't}}
-return %21 : $() // expected-error {{accessor must yield on all paths before returning}}
+%21 = tuple ()
+return %21 : $()                          // expected-error {{accessor must yield on all paths before returning}}
 
 bb5:
 unwind
@@ -86,21 +86,21 @@ bb0(%0 : $TestYield):
 %5 = builtin "cmp_slt_Int64"(%3 : $Builtin.Int64, %4 : $Builtin.Int64) : $Builtin.Int1
 %6 = struct $Bool (%5 : $Builtin.Int1)
 %7 = struct_extract %6 : $Bool, #Bool._value
-cond_br %7, bb1, bb2
+cond_br %7, bb1, bb2                        // expected-note {{branch must yield on all paths}}
 
 bb1:
 br bb4
 
 bb2:
 %10 = struct_extract %0 : $TestYield, #TestYield.stored
-yield %10 : $Int, resume bb3, unwind bb5
+yield %10 : $Int, resume bb3, unwind bb5    // expected-note {{found yield along one path}}
 
 bb3:
 br bb4
 
 bb4:
-%13 = tuple ()   // expected-note {{some paths reaching here have a yield and some don't}}
-return %13 : $() // expected-error {{accessor must yield on all paths before returning}}
+%13 = tuple ()
+return %13 : $()                            // expected-error {{accessor must yield on all paths before returning}}
 
 bb5:
 unwind

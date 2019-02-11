@@ -470,7 +470,7 @@ class YieldOnceCheck : public SILFunctionTransform {
       // branch statement (such as if-then-else) from the AST and present it
       // in diagnostics, otherwise present a deafult and less precise
       // diagnostics.
-      
+
       // Emit an error on the return statement.
       diagnose(astCtx, diagInfo.termInst->getLoc().getSourceLoc(),
                diag::possible_return_before_yield);
@@ -491,6 +491,8 @@ class YieldOnceCheck : public SILFunctionTransform {
         return;
       }
 
+      // If there is no better option, point to the conflicting branch's
+      // source location, and one yield that is found.
       auto fallBackDiagnostics = [&] {
         // If there is no better option, point to the conflicting branch's
         // source location.
@@ -506,75 +508,76 @@ class YieldOnceCheck : public SILFunctionTransform {
 
       // Using the AST information, try to find the conditional statement
       // that corresponds to the branchingInst.
+      auto branchLoc = conflictBranch->getLoc();
       Decl *funDecl = fun.getLocation().getAsASTNode<Decl>();
       auto *yieldStmt = yieldInst->getLoc().getAsASTNode<Stmt>();
-      auto branchLoc = conflictBranch->getLoc();
-
       if (!yieldStmt || !funDecl || !branchLoc.isASTNode()) {
         // We do not have sufficient AST information here.
         fallBackDiagnostics();
         return;
       }
 
-      auto branchingASTNode = branchLoc.isASTNode<Expr>()
-        ? ASTNode(branchLoc.getAsASTNode<Expr>())
-        : ASTNode(branchLoc.getAsASTNode<Stmt>());
-
-      Stmt *condStmt = getContainingConditionalStmt(funDecl, branchingASTNode);
-      if (!condStmt) {
-        // Cannot extract a source-level conditional statement here.
+      Stmt *branchingStmt = getBranchingSourceStmt(funDecl, conflictBranch);
+      if (!branchingStmt) {
+        // Cannot extract a source-level branching statement here.
         fallBackDiagnostics();
         return;
       }
 
-      //      llvm::errs() << "Found conditional statement"  << "\n";
-      //      condStmt->dump();
-
-      switch (condStmt->getKind()) {
+      switch (branchingStmt->getKind()) {
       case StmtKind::If: {
-        emitIfStmtDiagnosticNote(dyn_cast<IfStmt>(condStmt), yieldStmt, astCtx);
+        emitIfStmtDiagnosticNote(dyn_cast<IfStmt>(branchingStmt), yieldStmt,
+                                 astCtx);
         return;
       }
       case StmtKind::Guard: {
-        emitGuardStmtDiagnosticNote(dyn_cast<GuardStmt>(condStmt), yieldStmt,
-                                    astCtx);
+        emitGuardStmtDiagnosticNote(dyn_cast<GuardStmt>(branchingStmt),
+                                    yieldStmt, astCtx);
         return;
       }
-      case StmtKind::Switch:
-        // Unsupported conditional statement.
+      case StmtKind::Switch: {
+        emitSwitchStmtDiagnosticNote(dyn_cast<SwitchStmt>(branchingStmt),
+                                     astCtx);
+        return;
+      }
+      default:
+        // Unsupported  branching statement.
         fallBackDiagnostics();
         return;
-      // Handle try-catch
-      default:
-        llvm_unreachable("Unsupported conditional statement.");
     }
     }
   }
   }
 
-  /// Try to obtain the conditional statement within a function declaration
+  /// Try to obtain the branching statement within a function declaration
   /// that contains the given ASTNode. Return nullptr if there is no such
-  /// conditional statement.
-  Stmt *getContainingConditionalStmt(Decl *funDecl, ASTNode node) {
-    // Check if the node itself is a conditional statement.
-    if (node.is<Stmt *>()) {
-      auto *stmt = node.get<Stmt *>();
-      if (isConditionalStmt(stmt)) {
+  /// branching statement.
+  Stmt *getBranchingSourceStmt(Decl *funDecl, SILInstruction *branchingInst) {
+    auto branchLoc = branchingInst->getLoc();
+    auto branchingASTNode = branchLoc.isASTNode<Expr>()
+                              ? ASTNode(branchLoc.getAsASTNode<Expr>())
+                              : ASTNode(branchLoc.getAsASTNode<Stmt>());
+
+    // Check if the branchingASTNode corresponds to a branching statement.
+    if (branchingASTNode.is<Stmt *>()) {
+      auto *stmt = branchingASTNode.get<Stmt *>();
+      if (isBranchingStmt(stmt)) {
         return stmt;
       }
     }
 
-    if (node.is<Expr *>()) {
-      auto *expr = node.get<Expr *>();
+    // Otherwise, the branchingASTNode could be the condition of a conditional
+    // statement like if-else or guard.
+    if (branchingASTNode.is<Expr *>()) {
+      auto *expr = branchingASTNode.get<Expr *>();
       return findConditionalStmtWithCondition(funDecl, expr);
     }
     return nullptr;
   }
 
-  /// Return true if the given 'stmt' is a conditional statement of the source
-  /// language. That is, statement that potentially results in branches but
-  /// are not loops.
-  static bool isConditionalStmt(Stmt *stmt) {
+  /// Return true if the given 'stmt' may branch to multiple targets but
+  /// is not a loop. This includes, if, guard, switch, try-catch statements.
+  static bool isBranchingStmt(Stmt *stmt) {
     switch (stmt->getKind()) {
     case StmtKind::If:
     case StmtKind::Switch:
@@ -588,92 +591,34 @@ class YieldOnceCheck : public SILFunctionTransform {
   /// Return true if the given 'expr' is the branch condition of a conditional
   /// statement such as if-else or guard.
   Stmt *findConditionalStmtWithCondition(Decl *funDecl, Expr *cond) {
-    class ContainingCondStmtTraversal : public ASTWalker {
-      Expr *searchKey;
-      Stmt *result = nullptr;
+    Stmt *result = nullptr;
+    hasASTNodeSatisfyingPredicate(funDecl,
+            [&](ASTNode node){
+              // If node is a conditional statement, check if its branch
+              // condition matched 'cond'.
+              if (!node.is<Stmt *>())
+                return false;
 
-    public:
-      ContainingCondStmtTraversal(Expr *key): searchKey(key) { }
+              auto *labeledCondStmt =
+                    dyn_cast<LabeledConditionalStmt>(node.get<Stmt *>());
+              if (!labeledCondStmt)
+                return false;
 
-      std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
-        if (result) {
-          return { false, s};
-        }
-        // If this is a conditinal statement, search the branch conditions.
-        auto *labeledCondStmt = dyn_cast<LabeledConditionalStmt>(s);
-        if (labeledCondStmt) {
-          for (auto condElem : labeledCondStmt->getCond()) {
-             if(isDescendantOf<StmtConditionElement>(&condElem,
-                                                     searchKey)){
-               result = labeledCondStmt;
-               break;
-             }
-          }
-        }
-        return { !result, s };
-      }
-
-      bool walkToDeclPre(Decl *d) override { return !result; }
-
-      std::pair<bool, Expr *> walkToExprPre(Expr *e) override {
-        return { !result, e };
-      }
-
-      Stmt *getResult() const { return result; }
-    };
-
-    ContainingCondStmtTraversal traversal(cond);
-    funDecl->walk(traversal);
-    return traversal.getResult();
-  }
-
-  /// Return true iff 'key' is contained in the AST rooted at 'root'.
-  /// The 'root' must have a walk method.
-  template <typename T>
-  static bool isDescendantOf(T *root, ASTNode key) {
-    class SearchTraversal : public ASTWalker {
-      ASTNode searchKey;
-      bool result = false;
-
-    public:
-      SearchTraversal(ASTNode key): searchKey(key) { }
-
-      std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
-        if (searchKey.is<Stmt *>() && s == searchKey.get<Stmt *>()) {
-          result = true;
-          return { false, s};
-        }
-        return { true, s };
-      }
-
-      bool walkToDeclPre(Decl *d) override {
-        if (searchKey.is<Decl *>() && d == searchKey.get<Decl *>()) {
-          result = true;
-          return false;
-        }
-        return !result;
-      }
-
-      std::pair<bool, Expr *> walkToExprPre(Expr *e) override {
-        if (searchKey.is<Expr *>() && e == searchKey.get<Expr *>()) {
-          result = true;
-          return { false, e};
-        }
-        return { !result, e };
-      }
-
-      bool getResult() const { return result; }
-    };
-
-    SearchTraversal traversal(key);
-    root->walk(traversal);
-    return traversal.getResult();
+              for (auto condElem : labeledCondStmt->getCond()) {
+                if (hasExpr(&condElem, cond)) {
+                  result = labeledCondStmt;
+                  return true;
+                }
+              }
+              return false;
+            });
+    return result;
   }
 
   void emitIfStmtDiagnosticNote(IfStmt *ifstmt, Stmt *yieldStmt,
                                 ASTContext &astCtx) {
     // Does the yield appear in the then branch?
-    auto thenHasYield = isDescendantOf(ifstmt->getThenStmt(), yieldStmt);
+    auto thenHasYield = hasStmt(ifstmt->getThenStmt(), yieldStmt);
 
     // If-else statements?
     if (ifstmt->getElseStmt()) {
@@ -681,7 +626,6 @@ class YieldOnceCheck : public SILFunctionTransform {
                     ? diag::no_yield_in_else : diag::no_yield_in_then;
       auto srcLoc = thenHasYield ? ifstmt->getElseLoc() : ifstmt->getIfLoc();
       diagnose(astCtx, srcLoc, diag);
-      diagnose(astCtx, yieldStmt->getStartLoc(), diag::one_yield);
       return;
     }
 
@@ -695,13 +639,105 @@ class YieldOnceCheck : public SILFunctionTransform {
   void emitGuardStmtDiagnosticNote(GuardStmt *guardStmt, Stmt *yieldStmt,
                                    ASTContext &astCtx) {
     // Does the yield appear in the else branch?
-    auto elseHasYield = isDescendantOf(guardStmt->getBody(), yieldStmt);
+    auto elseHasYield = hasStmt(guardStmt->getBody(), yieldStmt);
 
     auto diag = elseHasYield ? diag::no_yield_in_guard_fallthrough
                              : diag::no_yield_in_guard_else;
     auto srcLoc =
         elseHasYield ? guardStmt->getEndLoc() : guardStmt->getGuardLoc();
     diagnose(astCtx, srcLoc, diag);
+  }
+
+  void emitSwitchStmtDiagnosticNote(SwitchStmt *switchStmt,
+                                    ASTContext &astCtx) {
+    // Find a case without any yield statements.
+    CaseStmt *noYieldCase = nullptr;
+    for (auto switchCase : switchStmt->getCases()) {
+      if (noYieldCase)
+        break;
+      bool hasYield =
+          hasASTNodeSatisfyingPredicate(switchCase,
+                                    [&] (ASTNode node) {
+                                      return (node.is<Stmt *>() &&
+                                         isa<YieldStmt>(node.get<Stmt *>()));
+                                    });
+      if (!hasYield) {
+        noYieldCase = switchCase;
+      }
+    }
+    if (!noYieldCase) {
+      // Here, the control-flow is possibly obscure due to throws, jumps etc.
+      diagnose(astCtx, switchStmt->getLoc(), diag::conflicting_switch);
+      return;
+    }
+    diagnose(astCtx, noYieldCase->getLoc(), diag::switch_case_without_yield);
+  }
+
+  // The following are some utility functions for traversing ASTs.
+
+  /// A utility function that returns true iff the AST rooted at 'root'
+  /// has the expression as a descendant
+  template <typename T>
+  static bool hasExpr(T *root, Expr *key) {
+    return hasASTNodeSatisfyingPredicate(root,
+                                     [&] (ASTNode node) {
+                                        return (node.is<Expr *>() &&
+                                                node.get<Expr *>() == key);
+                                     });
+  }
+
+  template <typename T>
+  static bool hasStmt(T *root, Stmt *key) {
+    return hasASTNodeSatisfyingPredicate(root,
+                                         [&] (ASTNode node) {
+                                           return (node.is<Stmt *>() &&
+                                                   node.get<Stmt *>() == key);
+                                         });
+  }
+
+  /// A utility function that returns true iff the AST rooted at 'root'
+  /// has a descendant node satisfying the given predicate. 'root' should have
+  /// a walk method that accepts an AST walker.
+  template <typename T>
+  static bool hasASTNodeSatisfyingPredicate(T *root,
+                                            std::function<bool(ASTNode)> pred) {
+    class SearchTraversal : public ASTWalker {
+      std::function<bool(ASTNode)> pred;
+      bool result = false;
+
+    public:
+      SearchTraversal(std::function<bool(ASTNode)> p): pred(p) { }
+
+      std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
+        if (pred(s)) {
+          result = true;
+          return { false, s};
+        }
+        return { true, s };
+      }
+
+      bool walkToDeclPre(Decl *d) override {
+        if (pred(d)) {
+          result = true;
+          return false;
+        }
+        return !result;
+      }
+
+      std::pair<bool, Expr *> walkToExprPre(Expr *e) override {
+        if (pred(e)) {
+          result = true;
+          return { false, e};
+        }
+        return { !result, e };
+      }
+
+      bool getResult() const { return result; }
+    };
+
+    SearchTraversal traversal(pred);
+    root->walk(traversal);
+    return traversal.getResult();
   }
 
   /// The entry point to the transformation.

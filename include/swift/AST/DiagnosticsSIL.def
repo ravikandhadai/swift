@@ -369,8 +369,7 @@ NOTE(previous_yield, none, "previous yield was here", ())
 ERROR(possible_return_before_yield, none,
       "accessor must yield on all paths before returning", ())
 
-NOTE(conflicting_branch, none,
-    "some targets of this branch yield and others don't", ())
+NOTE(conflicting_branch, none, "branch must yield on all paths", ())
 
 NOTE(one_yield, none, "found yield along one path", ())
 
@@ -384,6 +383,10 @@ NOTE(no_yield_in_guard_fallthrough, none, "must yield after 'guard'", ())
 
 NOTE(no_yield_in_guard_else, none,
      "'guard' must yield along the else branch", ())
+
+NOTE(switch_case_without_yield, none, "must yield in the switch case", ())
+
+NOTE(conflicting_switch, none, "switch must yield in all cases", ())
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)
