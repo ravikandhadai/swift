@@ -321,7 +321,7 @@ class YieldOnceCheck : public SILFunctionTransform {
   /// Merge oldState with newState. This performs the dataflow merge operation.
   /// This may have to create a new Conflict state, in which case it uses
   /// the mergeBlock which is the merge point where conflict is detected.
-  BBState merge(BBState oldState, BBState newState, SILBasicBlock *mergeBlock) {
+  BBState merge(BBState oldState, BBState newState, SILBasicBlock *mergeBlock) {	Ø
     // If the newState or oldState is already top of the lattice, return it.
     if (oldState.yieldState == Conflict) {
       return oldState;
