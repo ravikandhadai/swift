@@ -47,6 +47,8 @@ class YieldOnceCheck : public SILFunctionTransform {
     // For AfterYield and Conflict states, this field records the yield
     // instruction that was seen while propagating the state.
     SILInstruction *yieldInst = nullptr;
+    SILBasicBlock *yieldingPred = nullptr;
+    SILBasicBlock *nonYieldingPred = nullptr;
 
   public:
     static BBState getAfterYieldState(SILInstruction *yieldI) {
@@ -71,6 +73,12 @@ class YieldOnceCheck : public SILFunctionTransform {
     SILInstruction *getYieldInstruction() const {
       assert(yieldState == AfterYield || yieldState == Conflict);
       return yieldInst;
+    }
+
+    void setConflictDiagnosticState(SILBasicBlock *yieldPred,
+                                    SILBasicBlock *noyieldPred) {
+      yieldingPred = yieldPred;
+      nonYieldingPred = noyieldPred;
     }
   };
 
@@ -183,6 +191,7 @@ class YieldOnceCheck : public SILFunctionTransform {
   /// also for nodes that may not reach the exit of the control-flow graph.
   void diagnoseYieldOnceUsage(SILFunction &fun) {
     llvm::DenseMap<SILBasicBlock *, BBState> bbToStateMap;
+
     SmallVector<SILBasicBlock *, 16> worklist;
 
     auto *entryBB = &(*fun.begin());
@@ -249,6 +258,17 @@ class YieldOnceCheck : public SILFunctionTransform {
         if (mergedState.yieldState == oldState.yieldState)
           continue;
 
+        if (mergedState.yieldState == BBState::Conflict) {
+          // find a predecessor of 'succBB' that is not 'bb' that is already
+          // visted from the bbToStateMap.
+          SILBasicBlock *prevSeenBB = nullptr;
+          if (oldState.yieldState == BBState::BeforeYield) {
+            mergedState.setConflictDiagnosticState(bb, prevSeenBB);
+          } else {
+            mergedState.setConflictDiagnosticState(prevSeenBB, bb);
+          }
+        }
+
         // Even though at this point we know there has to be an error as
         // there is an inconsistency between states coming along two
         // different paths, we cannot stop here as we do not
@@ -291,6 +311,10 @@ class YieldOnceCheck : public SILFunctionTransform {
       // Add a note that points to the yield instruction found.
       auto *yieldInst = error.inState.getYieldInstruction();
       diagnose(astCtx, yieldInst->getLoc().getSourceLoc(), diag::one_yield);
+
+      // Find the first point where yieldPred and noYieldPred meet.
+      // This is the branch that results in this conflict. Therefore,
+      // analyze the branch and produce diagnostics.
     }
     }
   }
