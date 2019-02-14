@@ -18,16 +18,15 @@ struct TestReturnPathWithoutYield {
 
   var computed: Int {
     mutating _read {
-      if flag {
-        yield stored // expected-note {{found yield along one path}}
+      if flag {   // expected-note {{must yield when the branch condition is false}}
+        yield stored
       }
       flag = true
     } // expected-error {{accessor must yield on all paths before returning}}
 
     _modify {
-      // Diagnostics should attach a note to the earliest conflicting branch.
-      if flag {
-        yield &stored // expected-note {{found yield along one path}}
+      if flag {   // expected-note {{must yield when the branch condition is false}}
+        yield &stored
       }
 
       if !flag {
@@ -43,18 +42,18 @@ struct TestIfElseWithoutYield {
 
   var computed: Int {
     mutating _read {
-      if flag {
-        yield stored // expected-note {{found yield along one path}}
+      if flag {       // expected-note {{must yield when the branch condition is false}}
+        yield stored
       } else {
         flag = true
       }
     } // expected-error {{accessor must yield on all paths before returning}}
 
     _modify {
-      if flag {
+      if flag {       // expected-note {{must yield when the branch condition is true}}
         flag = true
       } else {
-        yield &stored // expected-note {{found yield along one path}}
+        yield &stored
       }
     } // expected-error {{accessor must yield on all paths before returning}}
   }
@@ -216,11 +215,11 @@ struct TestExplicitReturn {
 
   var computed: Int {
     mutating _read {
-      if stored > 0 {
+      if stored > 0 {  // expected-note {{must yield when the branch condition is true}}
         return
       }
       if flag {
-        yield stored // expected-note {{found yield along one path}}
+        yield stored
       } else {
         yield stored
       }
@@ -231,9 +230,9 @@ struct TestExplicitReturn {
       if stored > 0 {
         return
       }
-      if stored == 0 {
+      if stored == 0 { // expected-note {{must yield when the branch condition is false}}
         if flag {
-          yield &stored // expected-note {{found yield along one path}}
+          yield &stored
         } else {
           yield &stored
         }

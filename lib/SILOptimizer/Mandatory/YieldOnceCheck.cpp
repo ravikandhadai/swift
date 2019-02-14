@@ -19,6 +19,8 @@
 #include "swift/SIL/Dominance.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "llvm/ADT/DenseSet.h"
+#include "swift/SIL/CFG.h"
+#include "llvm/ADT/BreadthFirstIterator.h"
 
 using namespace swift;
 
@@ -52,7 +54,7 @@ class YieldOnceCheck : public SILFunctionTransform {
 
   public:
     static BBState getAfterYieldState(SILInstruction *yieldI) {
-      assert(yieldI != nullptr);
+      assert(yieldI);
 
       BBState afterYield;
       afterYield.yieldState = AfterYield;
@@ -61,7 +63,7 @@ class YieldOnceCheck : public SILFunctionTransform {
     }
 
     static BBState getConflictState(SILInstruction *yieldI) {
-      assert(yieldI != nullptr);
+      assert(yieldI);
 
       BBState conflictState;
       conflictState.yieldState = Conflict;
@@ -77,8 +79,19 @@ class YieldOnceCheck : public SILFunctionTransform {
 
     void setConflictDiagnosticState(SILBasicBlock *yieldPred,
                                     SILBasicBlock *noyieldPred) {
+      assert (yieldPred && noyieldPred);
       yieldingPred = yieldPred;
       nonYieldingPred = noyieldPred;
+    }
+
+    SILBasicBlock *getYieldingPred() {
+      assert(yieldState == Conflict);
+      return yieldingPred;
+    }
+
+    SILBasicBlock *getNonYieldingPred() {
+      assert(yieldState == Conflict);
+      return nonYieldingPred;
     }
   };
 
@@ -98,18 +111,18 @@ class YieldOnceCheck : public SILFunctionTransform {
 
   public:
     static YieldError getMultipleYieldError(YieldInst *yield, BBState state) {
-      assert(state.yieldState != BBState::BeforeYield);
+      assert (state.yieldState != BBState::BeforeYield);
       return YieldError(MultipleYield, yield, state);
     }
 
     static YieldError getReturnBeforeYieldError(ReturnInst *returnI,
                                                 BBState state) {
-      assert(state.yieldState == BBState::BeforeYield);
+      assert (state.yieldState == BBState::BeforeYield);
       return YieldError(ReturnBeforeYield, returnI, state);
     }
 
     static YieldError getReturnOnConflict(ReturnInst *returnI, BBState state) {
-      assert(state.yieldState == BBState::Conflict);
+      assert (state.yieldState == BBState::Conflict);
       return YieldError(ReturnOnConflict, returnI, state);
     }
   };
@@ -152,7 +165,7 @@ class YieldOnceCheck : public SILFunctionTransform {
     }
 
     // We cannot have throws within generalized accessors.
-    assert(!isa<ThrowInst>(term));
+    assert (!isa<ThrowInst>(term));
 
     return inState;
   }
@@ -258,10 +271,20 @@ class YieldOnceCheck : public SILFunctionTransform {
         if (mergedState.yieldState == oldState.yieldState)
           continue;
 
-        if (mergedState.yieldState == BBState::Conflict) {
+        if (mergedState.yieldState == BBState::Conflict &&
+            oldState.yieldState != BBState::Conflict &&
+            nextState.yieldState != BBState::Conflict) {
           // find a predecessor of 'succBB' that is not 'bb' that is already
           // visted from the bbToStateMap.
           SILBasicBlock *prevSeenBB = nullptr;
+          for (auto predBB : succBB->getPredecessorBlocks()) {
+            if (predBB != bb && bbToStateMap.count(predBB)) {
+              prevSeenBB = predBB;
+              break;
+            }
+          }
+          assert (prevSeenBB);
+
           if (oldState.yieldState == BBState::BeforeYield) {
             mergedState.setConflictDiagnosticState(bb, prevSeenBB);
           } else {
@@ -291,7 +314,7 @@ class YieldOnceCheck : public SILFunctionTransform {
     case YieldError::ReturnBeforeYield: {
       diagnose(astCtx, error.termInst->getLoc().getSourceLoc(),
                diag::return_before_yield);
-      return;
+        return;
     }
     case YieldError::MultipleYield: {
       diagnose(astCtx, error.termInst->getLoc().getSourceLoc(),
@@ -308,13 +331,59 @@ class YieldOnceCheck : public SILFunctionTransform {
       diagnose(astCtx, error.termInst->getLoc().getSourceLoc(),
                diag::possible_return_before_yield);
 
-      // Add a note that points to the yield instruction found.
+      // Find the first point where yieldPred and noYieldPred meet when
+      // traversing the CFG in the reverse order. This is the branch that
+      // results in this conflict. Then, analyze the branch and produce
+      // diagnostics.
+      auto &errorState = error.inState;
+
+      // Find all transitive predecessors of 'yieldPred' Basic block.
+      SmallPtrSet<SILBasicBlock *, 8> predcessorsOfYieldPred;
+      auto yieldPredRange =
+        llvm::breadth_first<llvm::Inverse<SILBasicBlock *>>(
+                                                  errorState.getYieldingPred());
+      for (auto *predBB : yieldPredRange) {
+        predcessorsOfYieldPred.insert(predBB);
+      }
+
+      // Find the first predecessor of 'noYieldPred' basic block that is also
+      // a predecessor of 'yieldPred'.
+      SILBasicBlock *branchBB = nullptr;
+      SILBasicBlock *previousBB = nullptr;
+
+      auto noyieldPredRange =
+        llvm::breadth_first<llvm::Inverse<SILBasicBlock *>>(
+                                              errorState.getNonYieldingPred());
+      for (auto *pred : noyieldPredRange) {
+        if (predcessorsOfYieldPred.count(pred)) {
+          branchBB = pred;
+          break;
+        }
+        previousBB = pred;
+      }
+      assert(branchBB && previousBB);
+
+      // Extract the branching instruction from the branchBB and the target
+      // that does not yield.
+      auto *branchInst = branchBB->getTerminator();
+      auto *noYieldTarget = previousBB;
+
+      // 'branchInst' cannot be an unconditionally branching instruction or
+      // an exit instruction or a yield instruction.
+      assert(!isa<BranchInst>(branchInst) && !isa<ReturnInst>(branchInst) &&
+             !isa<YieldInst>(branchInst) && !isa<ThrowInst>(branchInst));
+
+      // Handle each of the branching case and report diagnostics.
+      if (auto *condbr = dyn_cast<CondBranchInst>(branchInst)) {
+        auto diag = (condbr->getTrueBB() == noYieldTarget)
+                  ? diag::no_yield_true_branch : diag::no_yield_false_branch;
+        diagnose(astCtx, condbr->getLoc().getSourceLoc(), diag);
+        return;
+      }
+
+      // The fall back is to just point to one yield instruction found.
       auto *yieldInst = error.inState.getYieldInstruction();
       diagnose(astCtx, yieldInst->getLoc().getSourceLoc(), diag::one_yield);
-
-      // Find the first point where yieldPred and noYieldPred meet.
-      // This is the branch that results in this conflict. Therefore,
-      // analyze the branch and produce diagnostics.
     }
     }
   }

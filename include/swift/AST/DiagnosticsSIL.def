@@ -371,6 +371,12 @@ ERROR(possible_return_before_yield, none,
 
 NOTE(one_yield, none, "found yield along one path", ())
 
+NOTE(no_yield_false_branch, none,
+    "must yield when the branch condition is false", ())
+
+NOTE(no_yield_true_branch, none,
+    "must yield when the branch condition is true", ())
+
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)
 #  undef DIAG
