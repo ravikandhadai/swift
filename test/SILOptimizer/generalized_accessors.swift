@@ -163,13 +163,13 @@ struct TestYieldInSwitch {
     _modify {
       switch cp {
       case .north:
-        yield &stored // expected-note {{found yield along one path}}
+        yield &stored
       case .south:
         stored = 10
       case .east:
         yield &stored
       case .west:
-        stored = 12
+        stored = 12 // expected-note {{must yield in this case}}
       }
       cp = .north
     } // expected-error {{accessor must yield on all paths before returning}}
@@ -199,9 +199,9 @@ struct TestYieldInSwitchWithFallThrough {
       case .north:
         fallthrough
       case .south:
-        yield &stored // expected-note {{found yield along one path}}
+        yield &stored
       case .east:
-        fallthrough
+        fallthrough  // expected-note {{must yield in this case}}
       case .west:
         stored = 12
       }
@@ -272,20 +272,51 @@ struct TestYieldsInGuards {
 }
 
 struct TestYieldsInGuards2 {
-  var storedOpt: Int?
+  var flag: Bool
   var defaultStorage: Int
 
   var computed: Int {
     _read {
-      guard let stored = storedOpt else {
+      guard flag else { // expected-note {{must yield when the branch condition is false}}
         return
       }
-      yield stored // expected-note {{found yield along one path}}
+      yield defaultStorage
     } // expected-error {{accessor must yield on all paths before returning}}
 
     _modify {
-      guard let stored = storedOpt else {
-        yield &defaultStorage // expected-note {{found yield along one path}}
+      guard flag else { // expected-note {{must yield when the branch condition is true}}
+        yield &defaultStorage
+        return
+      }
+      defaultStorage += 1
+    } // expected-error {{accessor must yield on all paths before returning}}
+  }
+}
+
+// Fix me: 'If's and 'guard's with let patterns are diagnosed as switches of
+// enums as an optional is an enum. Fix this by the handling optionals
+// sepcially.
+
+struct TestYieldsInLetPatterns {
+  var storedOpt: Int?
+  var defaultStorage: Int
+
+  var computed: Int {
+    get { return defaultStorage }
+    _modify {
+      if var stored = storedOpt { // expected-note {{must yield in this case}}
+        stored += 1
+        return
+      }
+      yield &defaultStorage
+    } // expected-error {{accessor must yield on all paths before returning}}
+  }
+
+  var computed2: Int {
+    get { return defaultStorage }
+    _modify {
+      guard let stored = storedOpt else { // expected-note {{must yield in this case}}
+        yield &defaultStorage
         return
       }
       storedOpt = stored + 1
@@ -319,18 +350,18 @@ struct TestYieldInDoCatch2 {
   var computed: Int {
     _read {
       do {
-        try aThrowingFunction()
-        yield stored  // expected-note {{found yield along one path}}
+        try aThrowingFunction() // expected-note {{must yield in the error case}}
+        yield stored
       } catch {
       }
     } // expected-error {{accessor must yield on all paths before returning}}
 
     _modify {
       do {
-        try aThrowingFunction()
+        try aThrowingFunction() // expected-note {{must yield when try succeeds}}
       }
       catch {
-        yield &stored  // expected-note {{found yield along one path}}
+        yield &stored
       }
     } // expected-error {{accessor must yield on all paths before returning}}
   }
@@ -358,9 +389,9 @@ struct TestMutipleTries {
     _modify {
       do {
         try aThrowingFunction()
-        yield &stored           // expected-note {{found yield along one path}}
+        yield &stored
 
-        try aThrowingFunction()
+        try aThrowingFunction() // expected-note {{must yield in the error case}}
       }
       catch {
       }
@@ -376,10 +407,10 @@ struct TestMutipleTries {
         if flag {
           try aThrowingFunction()
         } else {
-          try aThrowingFunction()
+          try aThrowingFunction() // expected-note {{must yield in the error case}}
         }
 
-        yield stored // expected-note {{found yield along one path}}
+        yield stored
       } catch {
       }
     } // expected-error {{accessor must yield on all paths before returning}}
@@ -389,10 +420,10 @@ struct TestMutipleTries {
         switch bin {
         case .one:
           try aThrowingFunction()
-          yield &stored // expected-note {{found yield along one path}}
+          yield &stored
 
         case .two:
-          try aThrowingFunction()
+          try aThrowingFunction() // expected-note {{must yield in the error case}}
           yield &stored
         }
       } catch {
@@ -406,10 +437,10 @@ struct TestMutipleTries {
         if flag {
           try aThrowingFunction()
         } else {
-          try aThrowingFunction()
+          try aThrowingFunction() // expected-note {{must yield when try succeeds}}
         }
       } catch {
-        yield stored // expected-note {{found yield along one path}}
+        yield stored
       }
     } // expected-error {{accessor must yield on all paths before returning}}
 
@@ -419,10 +450,10 @@ struct TestMutipleTries {
         case .one:
           try aThrowingFunction()
         case .two:
-          try aThrowingFunction()
+          try aThrowingFunction() // expected-note {{must yield when try succeeds}}
         }
       } catch {
-        yield &stored // expected-note {{found yield along one path}}
+        yield &stored
       }
     } // expected-error {{accessor must yield on all paths before returning}}
   }
@@ -438,9 +469,12 @@ struct TestMutipleCatches {
   var stored: Int
   var computed: Int {
     _read {
+      // This is a very interesting test, where the error is on the try.
+      // It could have been been better if it is on the switch case in the
+      // error case.
       do {
-        try aThrowingFunction()
-        yield stored            // expected-note {{found yield along one path}}
+        try aThrowingFunction() // expected-note {{must yield in the error case}}
+        yield stored
       } catch NumError.One {
         yield stored
       } catch NumError.Two {
@@ -448,6 +482,19 @@ struct TestMutipleCatches {
       } catch NumError.Three {
       } catch {
         yield stored
+      }
+    }  // expected-error {{accessor must yield on all paths before returning}}
+
+    _modify {
+      do {
+        try aThrowingFunction() // expected-note {{must yield when try succeeds}}
+      } catch NumError.One {
+        yield &stored
+      } catch NumError.Two {
+        yield &stored
+      } catch NumError.Three {
+      } catch {
+        yield &stored
       }
     }  // expected-error {{accessor must yield on all paths before returning}}
   }
@@ -465,9 +512,9 @@ struct TestYieldWithLabeledBreaks {
       ifstmt: if flag {
         switch bin {
         case .one:
-          yield stored // expected-note {{found yield along one path}}
+          yield stored
         case .two:
-          break ifstmt
+          break ifstmt // expected-note {{must yield in this case}}
         }
       }
     } // expected-error {{accessor must yield on all paths before returning}}

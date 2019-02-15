@@ -176,7 +176,9 @@ class YieldOnceCheck : public SILFunctionTransform {
   /// \param oldState the previous state at the entry of the basic block
   /// \param newState the current state at the entry of the basic block
   /// \return the new state obtained by merging the oldState with the newState
-  BBState merge(SILBasicBlock *mergeBlock, BBState oldState, BBState newState) {
+  BBState merge(SILBasicBlock *mergeBlock, BBState oldState, BBState newState,
+                SILBasicBlock *recentPrevBlock,
+                llvm::DenseMap<SILBasicBlock *, BBState> &bbToStateMap) {
     if (oldState.yieldState == BBState::Conflict) {
       return oldState;
     }
@@ -195,7 +197,25 @@ class YieldOnceCheck : public SILFunctionTransform {
                                     ? newState.getYieldInstruction()
                                     : oldState.getYieldInstruction();
 
-    return BBState::getConflictState(yieldInst);
+    auto conflictState = BBState::getConflictState(yieldInst);
+
+    // find a predecessor of 'succBB' that is not 'recentPrevBlock'
+    // that is already visted from the bbToStateMap.
+    SILBasicBlock *prevSeenBB = nullptr;
+    for (auto predBB : mergeBlock->getPredecessorBlocks()) {
+      if (predBB != recentPrevBlock && bbToStateMap.count(predBB)) {
+        prevSeenBB = predBB;
+        break;
+      }
+    }
+    assert (prevSeenBB);
+
+    if (oldState.yieldState == BBState::BeforeYield) {
+      conflictState.setConflictDiagnosticState(recentPrevBlock, prevSeenBB);
+    } else {
+      conflictState.setConflictDiagnosticState(prevSeenBB, recentPrevBlock);
+    }
+    return conflictState;
   }
 
   /// Perform a data-flow analysis to check whether there is exactly one
@@ -266,31 +286,10 @@ class YieldOnceCheck : public SILFunctionTransform {
         // Here, the successor already has a state. Merge the states and
         // propagate it if it is different from the old state.
         const auto &oldState = insertResult.first->second;
-        auto mergedState = merge(succBB, oldState, nextState);
+        auto mergedState = merge(succBB, oldState, nextState, bb, bbToStateMap);
 
         if (mergedState.yieldState == oldState.yieldState)
           continue;
-
-        if (mergedState.yieldState == BBState::Conflict &&
-            oldState.yieldState != BBState::Conflict &&
-            nextState.yieldState != BBState::Conflict) {
-          // find a predecessor of 'succBB' that is not 'bb' that is already
-          // visted from the bbToStateMap.
-          SILBasicBlock *prevSeenBB = nullptr;
-          for (auto predBB : succBB->getPredecessorBlocks()) {
-            if (predBB != bb && bbToStateMap.count(predBB)) {
-              prevSeenBB = predBB;
-              break;
-            }
-          }
-          assert (prevSeenBB);
-
-          if (oldState.yieldState == BBState::BeforeYield) {
-            mergedState.setConflictDiagnosticState(bb, prevSeenBB);
-          } else {
-            mergedState.setConflictDiagnosticState(prevSeenBB, bb);
-          }
-        }
 
         // Even though at this point we know there has to be an error as
         // there is an inconsistency between states coming along two
@@ -337,6 +336,9 @@ class YieldOnceCheck : public SILFunctionTransform {
       // diagnostics.
       auto &errorState = error.inState;
 
+//      llvm::errs() << "Yielding bb: bb" << errorState.getYieldingPred()->getDebugID()  << "\n";
+//      llvm::errs() << "Non-yielding bb: bb" << errorState.getNonYieldingPred()->getDebugID()  << "\n";
+
       // Find all transitive predecessors of 'yieldPred' Basic block.
       SmallPtrSet<SILBasicBlock *, 8> predcessorsOfYieldPred;
       auto yieldPredRange =
@@ -349,7 +351,7 @@ class YieldOnceCheck : public SILFunctionTransform {
       // Find the first predecessor of 'noYieldPred' basic block that is also
       // a predecessor of 'yieldPred'.
       SILBasicBlock *branchBB = nullptr;
-      SILBasicBlock *previousBB = nullptr;
+      SmallPtrSet<SILBasicBlock *, 8> predcessorsOfNoYieldPred;
 
       auto noyieldPredRange =
         llvm::breadth_first<llvm::Inverse<SILBasicBlock *>>(
@@ -359,14 +361,25 @@ class YieldOnceCheck : public SILFunctionTransform {
           branchBB = pred;
           break;
         }
-        previousBB = pred;
+        predcessorsOfNoYieldPred.insert(pred);
       }
-      assert(branchBB && previousBB);
-
+      assert(branchBB);
       // Extract the branching instruction from the branchBB and the target
       // that does not yield.
       auto *branchInst = branchBB->getTerminator();
-      auto *noYieldTarget = previousBB;
+
+      // Find the target of  branchInst that doesn't yield.
+      SILBasicBlock *noYieldTarget = nullptr;
+      for (auto *succ : branchBB->getSuccessorBlocks()) {
+        if (predcessorsOfNoYieldPred.count(succ)) {
+          noYieldTarget = succ;
+          break;
+        }
+      }
+      assert (noYieldTarget);
+
+//      llvm::errs() << "Branch bb: bb" << branchBB->getDebugID()  << "\n";
+//      llvm::errs() << "noYieldTarget bb: bb" << noYieldTarget->getDebugID()  << "\n";
 
       // 'branchInst' cannot be an unconditionally branching instruction or
       // an exit instruction or a yield instruction.
@@ -376,8 +389,29 @@ class YieldOnceCheck : public SILFunctionTransform {
       // Handle each of the branching case and report diagnostics.
       if (auto *condbr = dyn_cast<CondBranchInst>(branchInst)) {
         auto diag = (condbr->getTrueBB() == noYieldTarget)
-                  ? diag::no_yield_true_branch : diag::no_yield_false_branch;
+            ? diag::true_branch_doesnt_yield : diag::false_branch_doesnt_yield;
         diagnose(astCtx, condbr->getLoc().getSourceLoc(), diag);
+        return;
+      }
+
+      // FIXME: Handle optionals specially as they can be switched in 'if's a
+      // 'guard's through let patterns.
+      if (auto *switchEnum = dyn_cast<SwitchEnumInst>(branchInst)) {
+        if (noYieldTarget->begin() != noYieldTarget->end()) {
+          diagnose(astCtx, noYieldTarget->begin()->getLoc().getSourceLoc(),
+                   diag::switch_case_doesnt_yield);
+          return;
+        }
+        diagnose(astCtx, switchEnum->getLoc().getSourceLoc(),
+                 diag::some_case_doesnt_yield);
+        return;
+      }
+
+      if (auto *tryApply = dyn_cast<TryApplyInst>(branchInst)) {
+        auto diag = (tryApply->getErrorBB() == noYieldTarget)
+            ? diag::error_branch_doesnt_yield
+            : diag::try_fallthrough_doesnt_yield;
+        diagnose(astCtx, tryApply->getLoc().getSourceLoc(), diag);
         return;
       }
 

@@ -371,11 +371,19 @@ ERROR(possible_return_before_yield, none,
 
 NOTE(one_yield, none, "found yield along one path", ())
 
-NOTE(no_yield_false_branch, none,
+NOTE(false_branch_doesnt_yield, none,
     "must yield when the branch condition is false", ())
 
-NOTE(no_yield_true_branch, none,
+NOTE(true_branch_doesnt_yield, none,
     "must yield when the branch condition is true", ())
+
+NOTE(switch_case_doesnt_yield, none, "must yield in this case", ())
+
+NOTE(some_case_doesnt_yield, none, "must yield in every switch case", ())
+
+NOTE(error_branch_doesnt_yield, none, "must yield in the error case", ())
+
+NOTE(try_fallthrough_doesnt_yield, none, "must yield when try succeeds", ())
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)
