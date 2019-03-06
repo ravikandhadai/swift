@@ -29,17 +29,22 @@ if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
     h.log(level: .info, "Maximum integer value: \(Int.max, as: .hex)")
 
     let privateID = 0x79abcdef
-    h.log(level: .error,
-          "Private Identifier: \(privateID, as: .hex, is: .private)")
+    h.log(
+      level: .error,
+      "Private Identifier: \(privateID, as: .hex, privacy: .private)")
     let addr = 0x7afebabe
-    h.log(level: .fault, "Invalid address: 0x\(addr, as: .hex, is: .public)")
+    h.log(
+      level: .fault,
+      "Invalid address: 0x\(addr, as: .hex, privacy: .public)")
 
     // Test logging with multiple arguments.
     let filePermissions = 0o777
     let pid = 122225
-    h.log(level: .error, """
+    h.log(
+      level: .error,
+      """
       Access prevented: process \(pid) initiated by \
-      user: \(privateID, is: .private) attempted resetting \
+      user: \(privateID, privacy: .private) attempted resetting \
       permissions to \(filePermissions, as: .octal)
       """)
   }
@@ -59,5 +64,6 @@ if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
     let h = Logger()
     h.log("a = c % d")
     h.log("Process failed after 99% completion")
+    h.log("Double percents: %%")
   }
 }

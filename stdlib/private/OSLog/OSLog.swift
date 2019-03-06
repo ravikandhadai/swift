@@ -18,7 +18,7 @@
 
 @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
 public struct Logger {
-  let oslogger: OSLog
+  internal let oslogger: OSLog
 
   /// Create a custom OS logger instance.
   public init(subsystem: String, category: String) {
@@ -47,7 +47,8 @@ public struct Logger {
 internal func osLog(
   _ logger: OSLog,
   _ logLevel: OSLogType,
-  _ oslogMessage: OSLogMessage) {
+  _ oslogMessage: OSLogMessage
+) {
   guard logger.isEnabled(type: logLevel) else { return }
 
   let byteSize = oslogMessage.argumentBufferByteSize

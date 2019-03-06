@@ -49,7 +49,7 @@ public let maxOSLogArgumentCount = 48
 ///
 /// This type converts (through its methods) the given string interpolation into
 /// a C-style format string and a sequence of arguments, which is represented
-/// by the type `OSLogArgumentSequence`.
+/// by the type `OSLogArguments`.
 ///
 /// Do not create an instance of this type directly. It is used by the compiler
 /// when you pass a string interpolation to the log APIs.
@@ -61,22 +61,23 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// to bytes and passed to the OS logging system. The arguments are
   /// (autoclosures of) expressions that are interpolated along with some
   /// headers.
-  public var argumentSequence: OSLogArgumentSequence
+  public var arguments: OSLogArguments
 
-  /// The summary byte, as defined by the OS logging system, that summarizes the
-  /// nature/type of the arguments.
+  /// The first summary byte, as defined by the OS logging system, that
+  /// summarizes the nature and type of the arguments.
   public var preamble: UInt8
 
-  /// Number of arguments i.e, number of interpolated expressions.
-  /// This will be determined on the fly in order to support concatenation
-  /// and interpolation of instances of `OSLogMessage`.
+  /// The second summary byte, which corresponds to the number of arguments i.e,
+  /// number of interpolated expressions. This will be determined on the fly in
+  /// order to support concatenation and interpolation of instances of
+  /// `OSLogMessage`.
   public var argumentCount: UInt8
 
   public init(literalCapacity: Int, interpolationCount: Int) {
     // TODO: format string must be fully constructed at compile time.
     // The parameters `literalCapacity` and `interpolationCount` are ignored.
     formatString = ""
-    argumentSequence = OSLogArgumentSequence()
+    arguments = OSLogArguments()
     preamble = 0
     argumentCount = 0
   }
@@ -100,15 +101,16 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   public mutating func appendInterpolation(
     _ number: @autoclosure @escaping () -> Int,
     as format: IntFormat = .decimal,
-    is privacy: Privacy = .public) {
+    privacy: Privacy = .public
+  ) {
     guard argumentCount < maxOSLogArgumentCount else { return }
 
     addIntHeadersAndFormatSpecifier(
       format,
       isPrivate: privacy == .private,
-      byteSize: UInt8(MemoryLayout<Int>.size),
-      isUnsigned: false)
-    argumentSequence.append(number)
+      byteSize: MemoryLayout<Int>.size,
+      isSigned: true)
+    arguments.append(number)
   }
 
   /// Construct/update format string and headers from the qualifiers (of the
@@ -118,23 +120,33 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   public mutating func addIntHeadersAndFormatSpecifier(
     _ format: IntFormat,
     isPrivate: Bool,
-    byteSize: UInt8,
-    isUnsigned: Bool) {
-    // Always explicitly set either public or private flag bit.
-    let flag: UInt8 = isPrivate ? 1 : 2
+    byteSize: Int,
+    isSigned: Bool
+  ) {
     formatString += getIntegerFormatSpecifier(
       format,
       isPrivate: isPrivate,
-      isLong: byteSize > 4,
-      isUnsigned: isUnsigned);
+      byteSize: byteSize,
+      isSigned: isSigned)
 
-    // Append the argument header and size.
-    argumentSequence.append(flag)
-    argumentSequence.append(byteSize)
+    addArgumentHeaders(
+      // Always explicitly set either public or private flag bit.
+      flagAndType: isPrivate ? 1 : 2,
+      byteSize: UInt8(byteSize))
 
-    // Update the summary bytes.
+    updateSummaryBytes(isPrivate: isPrivate)
+  }
+
+  // Update the summary bytes: preamble and argument count.
+  public mutating func updateSummaryBytes(isPrivate: Bool) {
     preamble |= isPrivate ? 1 : 0
     argumentCount += 1
+  }
+
+  // Append the given argument header and size.
+  public mutating func addArgumentHeaders(flagAndType: UInt8, byteSize: UInt8) {
+    arguments.append(flagAndType)
+    arguments.append(byteSize)
   }
 
   /// Construct an OS log format specifier from the given parameters.
@@ -142,11 +154,20 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   public func getIntegerFormatSpecifier(
     _ format: IntFormat,
     isPrivate: Bool,
-    isLong: Bool,
-    isUnsigned: Bool)
-    -> String {
+    byteSize: Int,
+    isSigned: Bool
+  ) -> String {
     var formatSpecifier: String = isPrivate ? "%{private}" : "%{public}"
-    formatSpecifier += isLong ? "l" : ""
+
+    // Determine the length modifier of the format specifier.
+    switch byteSize {
+    case _ where byteSize == MemoryLayout<CInt>.size:
+      break
+    case _ where byteSize == MemoryLayout<CLongLong>.size:
+      formatSpecifier += "ll"
+    default:
+      fatalError("Int size not supported")
+    }
 
     switch (format) {
     case .hex:
@@ -154,9 +175,9 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
     case .octal:
       formatSpecifier += "o"
     default:
-      formatSpecifier += isUnsigned ? "u" : "d"
+      formatSpecifier += isSigned ? "d" : "u"
     }
-    return formatSpecifier;
+    return formatSpecifier
   }
 }
 
@@ -165,9 +186,9 @@ extension String {
   /// interpreted as a C format string.
   public var percentEscapedString: String {
     get {
-      return self.reduce(into: "") { (result, char) in
-        result += (char == "%") ? "%%" : String(char)
-      }
+      return self.split(
+        separator: "%",
+        omittingEmptySubsequences: false).joined(separator: "%%")
     }
   }
 }
@@ -175,7 +196,7 @@ extension String {
 public struct OSLogMessage :
   ExpressibleByStringInterpolation, ExpressibleByStringLiteral
 {
-  let oslogInterpolation : OSLogInterpolation
+  public let oslogInterpolation : OSLogInterpolation
 
   /// Initializer for accepting string interpolations.
   public init(stringInterpolation: OSLogInterpolation) {
@@ -196,19 +217,21 @@ public struct OSLogMessage :
     get { return oslogInterpolation.formatString }
   }
 
-  /// The byte size of the argument buffer that will contain the preamble
-  /// and the elements of `oslogInterpolation.argumentSequence`.
+  /// The byte size of the argument buffer that will contain the elements of
+  /// `oslogInterpolation.arguments` and the two summary bytes: preamble and
+  /// argument count.
   public var argumentBufferByteSize: Int {
-    get { return oslogInterpolation.argumentSequence.byteCount + 2 }
+    get { return oslogInterpolation.arguments.byteCount + 2 }
   }
 
   /// Serialize the summary bytes and arguments into the given byte-buffer
   /// builder.
-  public func serializeArguments(
-    into bufferBuilder: inout OSLogByteBufferBuilder) {
+  internal func serializeArguments(
+    into bufferBuilder: inout OSLogByteBufferBuilder
+  ) {
     bufferBuilder.serialize(oslogInterpolation.preamble)
     bufferBuilder.serialize(oslogInterpolation.argumentCount)
-    oslogInterpolation.argumentSequence.serialize(into: &bufferBuilder)
+    oslogInterpolation.arguments.serialize(into: &bufferBuilder)
   }
 }
 
@@ -217,11 +240,11 @@ public struct OSLogMessage :
 /// are captured within closures and stored in an array. The closures accept an
 /// instance of `OSLogByteBufferBuilder`, and when invoked, serialize the
 /// argument using the passed `OSLogByteBufferBuilder` instance.
-public struct OSLogArgumentSequence {
+public struct OSLogArguments {
   /// An array of closures that captures arguments of possibly different types.
-  public var argumentClosures: [(inout OSLogByteBufferBuilder) -> ()]
+  internal var argumentClosures: [(inout OSLogByteBufferBuilder) -> ()]
   /// Sum total of the byte size of the arguments that are tracked.
-  public var byteCount: Int
+  internal var byteCount: Int
 
   public init() {
     argumentClosures = []
@@ -242,31 +265,32 @@ public struct OSLogArgumentSequence {
     byteCount += OSLogByteBufferBuilder.numBytesForEncoding(Int.self)
   }
 
-  public func serialize(into bufferBuilder: inout OSLogByteBufferBuilder) {
+  internal func serialize(into bufferBuilder: inout OSLogByteBufferBuilder) {
     argumentClosures.forEach { $0(&bufferBuilder) }
   }
 }
 
-/// A struct that manages serialization of instances of specific types to
-/// a byte buffer. The byte buffer is provided as an argument to the initializer
+/// A struct that manages serialization of instances of specific types to a
+/// byte buffer. The byte buffer is provided as an argument to the initializer
 /// so that its lifetime can be managed by the caller.
-public struct OSLogByteBufferBuilder {
-  public var position: UnsafeMutablePointer<UInt8>
+internal struct OSLogByteBufferBuilder {
+  internal var position: UnsafeMutablePointer<UInt8>
 
+  /// Initializer that accepts a pointer to a preexisting buffer.
   /// - Parameter bufferStart: the starting pointer to a byte buffer
   ///   that must contain the serialized bytes.
-  public init(_ bufferStart: UnsafeMutablePointer<UInt8>) {
+  internal init(_ bufferStart: UnsafeMutablePointer<UInt8>) {
     position = bufferStart
   }
 
   /// Serialize a UInt8 value at the buffer location pointed to by `position`.
-  public mutating func serialize(_ value: UInt8) {
+  internal mutating func serialize(_ value: UInt8) {
     position[0] = value
     position += 1
   }
 
   /// Serialize an Int at the buffer location pointed to by `position`.
-  public mutating func serialize(_ value: Int) {
+  internal mutating func serialize(_ value: Int) {
     let byteCount = MemoryLayout<Int>.size
     let dest = UnsafeMutableRawBufferPointer(start: position, count: byteCount)
     withUnsafeBytes(of: value) { dest.copyMemory(from: $0) }
@@ -274,12 +298,12 @@ public struct OSLogByteBufferBuilder {
   }
 
   /// Return the number of bytes needed for serializing an UInt8 value.
-  public static func numBytesForEncoding(_ typ: UInt8.Type) -> Int {
+  internal static func numBytesForEncoding(_ typ: UInt8.Type) -> Int {
     return 1
   }
 
   /// Return the number of bytes needed for serializing an `Int` value.
-  public static func numBytesForEncoding(_ typ: Int.Type) -> Int {
+  internal static func numBytesForEncoding(_ typ: Int.Type) -> Int {
     return MemoryLayout<Int>.size
   }
 }
