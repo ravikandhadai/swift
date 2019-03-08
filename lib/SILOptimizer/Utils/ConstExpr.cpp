@@ -362,6 +362,27 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
   return evaluator.getUnknown(value, UnknownReason::Default);
 }
 
+/// TODO: find a good place to put this.
+NominalTypeDecl *isStdlibIntegerType(CanType canType, ASTContext &astContext) {
+  auto *nominalDecl = canType->getNominalOrBoundGenericNominal();
+  if (!nominalDecl)
+    return nullptr;
+
+  if (nominalDecl == astContext.getIntDecl() ||
+      nominalDecl == astContext.getInt8Decl() ||
+      nominalDecl == astContext.getInt16Decl() ||
+      nominalDecl == astContext.getInt32Decl() ||
+      nominalDecl == astContext.getInt64Decl() ||
+      nominalDecl == astContext.getUIntDecl() ||
+      nominalDecl == astContext.getUInt8Decl() ||
+      nominalDecl == astContext.getUInt16Decl() ||
+      nominalDecl == astContext.getUInt32Decl() ||
+      nominalDecl == astContext.getUInt64Decl()) {
+    return nominalDecl;
+  }
+  return nullptr;
+}
+
 SymbolicValue
 ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
   const BuiltinInfo &builtin = inst->getBuiltinInfo();
@@ -462,25 +483,23 @@ ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
       return SymbolicValue::getInteger(result, evaluator.getASTContext());
     }
     case BuiltinValueKind::Sizeof: {
+      // We can determine size of primitive, numerical types like Integers and
+      // floating-point numbers. TypeConverter::convertType computes
+      // this information for all types, but it needs an IRGenModule.
       if (operand.getKind() != SymbolicValue::Metatype)
         return unknownResult();
 
       CanType canType = operand.getMetatypeValue();
-      auto *nominalDecl = canType->getNominalOrBoundGenericNominal();
-      if (!nominalDecl)
-        return unknownResult();
-
-      auto &astContext = evaluator.getASTContext();
-      if (nominalDecl != astContext.getIntDecl() &&
-          nominalDecl != astContext.getUIntDecl()) {
+      auto *intDecl = isStdlibIntegerType(canType, evaluator.getASTContext());
+      if (!intDecl) {
         return unknownResult();
       }
-
-      auto *fldDecl = *(astContext.getIntDecl()->getStoredProperties().begin());
+      auto *fldDecl = *(intDecl->getStoredProperties().begin());
       auto *builtinIntType = fldDecl->getType()->getAs<BuiltinIntegerType>();
       auto wordWidth = builtinIntType->getGreatestWidth();
 
-      // The returned integer also has the word length of the target platform.
+      // Note that the returned integer has value 'wordWidth' and also has
+      // size 'wordWidth'.
       return SymbolicValue::getInteger(wordWidth, wordWidth);
     }
     }

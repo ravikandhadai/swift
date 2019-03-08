@@ -704,11 +704,40 @@ func evaluate<T>(addressOnlyEnum: AddressOnlyEnum<T>) -> Int {
 //===----------------------------------------------------------------------===//
 
 func testMemoryLayoutSize() {
-  let memLayout = MemoryLayout<Int>.size
+  let intSize = MemoryLayout<Int>.size
 
 #if arch(i386) || arch(arm)
-  #assert(memLayout == 32)
-#else
-  #assert(memLayout == 64)
+  #assert(intSize == 32)
+#elseif arch(x86_64) || arch(arm64)
+  #assert(intSize == 64)
 #endif
+}
+
+func testMemoryLayoutOfFixedWidthInts() {
+  #assert(MemoryLayout<Int8>.size == 8)
+  #assert(MemoryLayout<Int16>.size == 16)
+  #assert(MemoryLayout<Int32>.size == 32)
+  #assert(MemoryLayout<Int64>.size == 64)
+
+  #assert(MemoryLayout<UInt8>.size == 8)
+  #assert(MemoryLayout<UInt16>.size == 16)
+  #assert(MemoryLayout<UInt32>.size == 32)
+  #assert(MemoryLayout<UInt64>.size == 64)
+}
+
+
+/// Test if the memory layout handling in the interpreter can handle `CInt`s
+/// which are just typealiases for stdlib Int's.
+func testMemoryLayoutOfCInts() {
+  #assert(MemoryLayout<CChar>.size == 8)
+  #assert(MemoryLayout<CShort>.size == 16)
+  #assert(MemoryLayout<CInt>.size == 32)
+  #assert(MemoryLayout<CLongLong>.size == 64)
+
+  let clongSize = MemoryLayout<CLong>.size
+  #if os(Windows) && arch(x86_64)
+    #assert(clongSize == 32)
+  #else
+    #assert(clongSize == 64)
+  #endif
 }
