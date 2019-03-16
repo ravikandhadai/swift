@@ -511,8 +511,7 @@ static std::string getPathDescription(DeclName BaseName, SILType BaseType,
 }
 
 /// Emits a diagnostic if beginning an access with the given in-progress
-/// accesses violates the law of exclusivity. Returns true when a
-/// diagnostic was emitted.
+/// accesses violates the law of exclusivity.
 static void diagnoseExclusivityViolation(const ConflictingAccess &Violation,
                                          ArrayRef<ApplyInst *> CallsToSwap,
                                          ASTContext &Ctx) {
@@ -615,7 +614,7 @@ static llvm::cl::opt<bool> ShouldAssertOnFailure(
                    "use only with debugging."));
 
 /// If making an access of the given kind at the given subpath would
-/// would conflict, returns the first recorded access it would conflict
+/// conflict, returns the first recorded access it would conflict
 /// with. Otherwise, returns None.
 static Optional<RecordedAccess>
 shouldReportAccess(const AccessInfo &Info,swift::SILAccessKind Kind,
@@ -725,7 +724,8 @@ static void checkCaptureAccess(ApplySite Apply, AccessState &State) {
       continue;
 
     SILValue Argument = Apply.getArgument(ArgumentIndex);
-    assert(Argument->getType().isAddress());
+    assert(Argument->getType().isAddress() ||
+           Argument->getType().hasReferenceSemantics());
 
     // A valid AccessedStorage should alway sbe found because Unsafe accesses
     // are not tracked by AccessSummaryAnalysis.

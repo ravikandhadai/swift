@@ -35,11 +35,19 @@ void AccessSummaryAnalysis::processFunction(FunctionInfo *info,
     ++index;
 
     auto *functionArg = cast<SILFunctionArgument>(arg);
-    // Only summarize @inout_aliasable arguments.
+    // Summarize @inout_aliasable argument and @guaranteed arguments.
+    // Note that accesses to boxed values that are passed @guaranteed has to
+    // be summarized as they could refer to a local variable.
     SILArgumentConvention convention =
         functionArg->getArgumentConvention().Value;
-    if (convention != SILArgumentConvention::Indirect_InoutAliasable)
+    if (convention != SILArgumentConvention::Indirect_InoutAliasable &&
+        !(isa<SILBoxType>(functionArg->getType().getASTType()) &&
+          convention == SILArgumentConvention::Direct_Guaranteed))
       continue;
+
+    llvm::errs() << "Summarizing argument: \n";
+    functionArg->dumpInContext();
+    llvm::errs() << "\n";
 
     processArgument(info, functionArg, argSummary, order);
   }
@@ -84,6 +92,7 @@ void AccessSummaryAnalysis::processArgument(FunctionInfo *info,
       assert(cast<EndUnpairedAccessInst>(user)->getEnforcement() ==
              SILAccessEnforcement::Dynamic);
       break;
+    case SILInstructionKind::ProjectBoxInst:
     case SILInstructionKind::StructElementAddrInst:
     case SILInstructionKind::TupleElementAddrInst: {
       // Eventually we'll summarize individual struct elements separately.
