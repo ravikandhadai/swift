@@ -614,3 +614,100 @@ struct S {
 // public func nestedConflict(x: inout Int) {
 //   doit(x: &x, x == 0 ? { x = 1 } : { x = 2})
 // }
+
+func testInnerFunctionsWithCaptures() -> Int {
+  var x = 0
+
+  func innerFun(y: inout Int) {
+    y += 1
+    x += 1  // expected-note {{conflicting access is here}}
+  }
+
+  innerFun(y: &x) // expected-error {{overlapping accesses to 'x', but modification requires exclusive access; consider copying to a local variable}}
+  return x
+}
+
+func testPassingInnerFunctionsWithCaptures() -> Int {
+  var x = 0
+
+  func bar(y: inout Int) {
+    y += 1
+    x += 1  // expected-note {{conflicting access is here}}
+  }
+
+  apply(f: bar, y: &x) // expected-error {{overlapping accesses to 'x', but modification requires exclusive access; consider copying to a local variable}}
+  return x
+}
+
+func apply(f: (inout Int) -> Void, y: inout Int) {
+  f(&y)
+}
+
+func testClosureLiteral() -> Int {
+  var x = 0
+
+  _ = {(y: inout Int) in
+    y += 1
+    x += 1 // expected-note {{conflicting access is here}}
+  }(&x) // expected-error {{overlapping accesses to 'x', but modification requires exclusive access; consider copying to a local variable}}
+  return x
+}
+
+func testClosureLiteralsAssignedToLocals() -> Int {
+  var x = 0
+  let clo = {(y: inout Int) in
+    y += 1
+    x += 1 // expected-note {{conflicting access is here}}
+  }
+  clo(&x) // expected-error {{overlapping accesses to 'x', but modification requires exclusive access; consider copying to a local variable}}
+  return x
+}
+
+var global: ((inout Int) -> Void)? = nil
+
+func testClosureLiteralsAssignedToGlobal() {
+  var x = 0
+  global = { (y: inout Int) in
+    x += 1
+    y += 1
+  }
+  global!(&x)
+}
+
+func testClosureTypedLocalCopiedToGlobal() {
+  var x = 0
+  let clo = { (y: inout Int) in
+    x += 1   // expected-note {{conflicting access is here}}
+    y += 1
+  }
+  global = clo
+  clo(&x) // expected-error {{overlapping accesses to 'x', but modification requires exclusive access; consider copying to a local variable}}
+}
+
+// Test exclusivity for variables of class type. These tests are mainly for
+// detecting false positives.
+
+class A {
+  var i: Int = 0
+}
+
+func testLocalVarsOfClassType() {
+  let a = A()
+  bar(a, a)
+}
+
+func bar(_ a: A, _ b: A) {
+  a.i = 1
+}
+
+func testClosureCapturingClassTypedVariable() {
+  let a = A()
+  let c = { (x: A) in a.i = 1 }
+  c(a)
+}
+
+func testClosureAcceptingInoutClassTypedVariable() {
+  var a = A()
+  let _ = { (x: inout A) in a.i = 1 }(&a)  // expected-error {{overlapping accesses to 'a', but modification requires exclusive access; consider copying to a local variable}}
+                                           // expected-note@-1 {{conflicting access is here}}
+}

@@ -724,8 +724,8 @@ static void checkCaptureAccess(ApplySite Apply, AccessState &State) {
       continue;
 
     SILValue Argument = Apply.getArgument(ArgumentIndex);
-    assert(Argument->getType().isAddress() ||
-           Argument->getType().hasReferenceSemantics());
+    auto ArgumentType = Argument->getType();
+    assert(ArgumentType.isAddress() || ArgumentType.is<SILBoxType>());
 
     // A valid AccessedStorage should alway sbe found because Unsafe accesses
     // are not tracked by AccessSummaryAnalysis.

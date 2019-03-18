@@ -41,13 +41,9 @@ void AccessSummaryAnalysis::processFunction(FunctionInfo *info,
     SILArgumentConvention convention =
         functionArg->getArgumentConvention().Value;
     if (convention != SILArgumentConvention::Indirect_InoutAliasable &&
-        !(isa<SILBoxType>(functionArg->getType().getASTType()) &&
+        !(functionArg->getType().is<SILBoxType>() &&
           convention == SILArgumentConvention::Direct_Guaranteed))
       continue;
-
-    llvm::errs() << "Summarizing argument: \n";
-    functionArg->dumpInContext();
-    llvm::errs() << "\n";
 
     processArgument(info, functionArg, argSummary, order);
   }
