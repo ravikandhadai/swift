@@ -114,6 +114,12 @@ private:
 
     /// This represents an index *into* a memory object.
     RK_DerivedAddress,
+
+    /// This represents an array value.
+    RK_Array,
+
+    /// This represents an address of a memory object containing an array.
+    RK_ArrayAddress,
   };
 
   union {
@@ -157,6 +163,12 @@ private:
     /// When this SymbolicValue is of "DerivedAddress" kind, this pointer stores
     /// information about the memory object and access path of the access.
     DerivedAddressValue *derivedAddress;
+
+    /// For RK_Array, this is the elements of the array.
+    ArraySymbolicValue *array;
+
+    /// For RK_ArrayAddress, this is the memory object referenced.
+    SymbolicValueMemoryObject *arrayAddress;
   } value;
 
   RepresentationKind representationKind : 8;
@@ -177,6 +189,8 @@ private:
   } auxInfo;
 
 public:
+  using Allocator = std::function<void *(unsigned long, unsigned)>;
+
   /// This enum is used to indicate the sort of value held by a SymbolicValue
   /// independent of its concrete representation.  This is the public
   /// interface to SymbolicValue.
@@ -209,6 +223,9 @@ public:
     /// This value represents the address of, or into, a memory object.
     Address,
 
+    /// This represents an array value.
+    Array,
+
     /// These values are generally only seen internally to the system, external
     /// clients shouldn't have to deal with them.
     UninitMemory
@@ -225,7 +242,7 @@ public:
 
   static SymbolicValue getUnknown(SILNode *node, UnknownReason reason,
                                   llvm::ArrayRef<SourceLoc> callStack,
-                                  ASTContext &astContext);
+                                  Allocator allocator);
 
   /// Return true if this represents an unknown result.
   bool isUnknown() const { return getKind() == Unknown; }
@@ -271,23 +288,21 @@ public:
   }
 
   static SymbolicValue getInteger(int64_t value, unsigned bitWidth);
-  static SymbolicValue getInteger(const APInt &value,
-                                  ASTContext &astContext);
+  static SymbolicValue getInteger(const APInt &value, Allocator allocator);
 
   APInt getIntegerValue() const;
   unsigned getIntegerValueBitWidth() const;
 
   /// Returns a SymbolicValue representing a UTF-8 encoded string.
-  static SymbolicValue getString(StringRef string,
-                                 ASTContext &astContext);
+  static SymbolicValue getString(StringRef string, Allocator allocator);
 
   /// Returns the UTF-8 encoded string underlying a SymbolicValue.
   StringRef getStringValue() const;
 
   /// This returns an aggregate value with the specified elements in it.  This
-  /// copies the elements into the specified ASTContext.
+  /// copies the elements into the specified Allocator.
   static SymbolicValue getAggregate(ArrayRef<SymbolicValue> elements,
-                                    ASTContext &astContext);
+                                    Allocator allocator);
 
   ArrayRef<SymbolicValue> getAggregateValue() const;
 
@@ -304,7 +319,7 @@ public:
   /// `payload` must be a constant.
   static SymbolicValue getEnumWithPayload(EnumElementDecl *decl,
                                           SymbolicValue payload,
-                                          ASTContext &astContext);
+                                          Allocator allocator);
 
   EnumElementDecl *getEnumValue() const;
 
@@ -322,7 +337,7 @@ public:
   /// indexed by a path.
   static SymbolicValue getAddress(SymbolicValueMemoryObject *memoryObject,
                                   ArrayRef<unsigned> indices,
-                                  ASTContext &astContext);
+                                  Allocator allocator);
 
   /// Return the memory object of this reference along with any access path
   /// indices involved.
@@ -331,6 +346,20 @@ public:
 
   /// Return just the memory object for an address value.
   SymbolicValueMemoryObject *getAddressValueMemoryObject() const;
+
+  /// Produce an array of elements.
+  static SymbolicValue getArray(ArrayRef<SymbolicValue> elements,
+                                CanType elementType,
+                                Allocator allocator);
+  static SymbolicValue
+  getArrayAddress(SymbolicValueMemoryObject *memoryObject) {
+    SymbolicValue result;
+    result.representationKind = RK_ArrayAddress;
+    result.value.directAddress = memoryObject;
+    return result;
+  }
+
+  ArrayRef<SymbolicValue> getArrayValue(CanType &elementType) const;
 
   //===--------------------------------------------------------------------===//
   // Helpers
@@ -345,9 +374,9 @@ public:
   /// reason, we fall back to using the specified location.
   void emitUnknownDiagnosticNotes(SILLocation fallbackLoc);
 
-  /// Clone this SymbolicValue into the specified ASTContext and return the new
-  /// version.  This only works for valid constants.
-  SymbolicValue cloneInto(ASTContext &astContext) const;
+  /// Clone this SymbolicValue into the specified Allocator and return the new
+  /// version. This only works for valid constants.
+  SymbolicValue cloneInto(Allocator allocator) const;
 
   void print(llvm::raw_ostream &os, unsigned indent = 0) const;
   void dump() const;
@@ -374,7 +403,7 @@ struct SymbolicValueMemoryObject {
 
   /// Create a new memory object whose overall type is as specified.
   static SymbolicValueMemoryObject *create(Type type, SymbolicValue value,
-                                           ASTContext &astContext);
+                                           SymbolicValue::Allocator allocator);
 
   /// Given that this memory object contains an aggregate value like
   /// {{1, 2}, 3}, and given an access path like [0,1], return the indexed
@@ -392,7 +421,8 @@ struct SymbolicValueMemoryObject {
   ///
   /// Precondition: The access path must be valid for this memory object's type.
   void setIndexedElement(ArrayRef<unsigned> accessPath,
-                         SymbolicValue newElement, ASTContext &astCtx);
+                         SymbolicValue newElement,
+                         SymbolicValue::Allocator allocator);
 
 private:
   const Type type;

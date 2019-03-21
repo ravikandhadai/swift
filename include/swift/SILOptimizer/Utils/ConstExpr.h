@@ -42,10 +42,13 @@ enum class UnknownReason;
 /// This class is the main entrypoint for evaluating constant expressions.  It
 /// also handles caching of previously computed constexpr results.
 class ConstExprEvaluator {
+
+  using Allocator = std::function<void *(unsigned long, unsigned)>;
+
   /// We store arguments and result values for the cached constexpr calls we
   /// have already analyzed in this ASTContext so that they are available even
   /// after this ConstExprEvaluator is gone.
-  ASTContext &astContext;
+  Allocator allocator;
 
   /// The current call stack, used for providing accurate diagnostics.
   llvm::SmallVector<SourceLoc, 4> callStack;
@@ -54,10 +57,10 @@ class ConstExprEvaluator {
   void operator=(const ConstExprEvaluator &) = delete;
 
 public:
-  explicit ConstExprEvaluator(SILModule &m);
+  explicit ConstExprEvaluator(Allocator alloc);
   ~ConstExprEvaluator();
 
-  ASTContext &getASTContext() { return astContext; }
+  Allocator getAllocator() { return allocator; }
 
   void pushCallStack(SourceLoc loc) { callStack.push_back(loc); }
 

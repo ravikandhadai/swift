@@ -27,6 +27,7 @@
 #include "llvm/Support/TrailingObjects.h"
 
 using namespace swift;
+using Allocator = SymbolicValue::Allocator;
 
 static llvm::Optional<SymbolicValue>
 evaluateAndCacheCall(SILFunction &fn, SubstitutionMap substitutionMap,
@@ -39,6 +40,10 @@ evaluateAndCacheCall(SILFunction &fn, SubstitutionMap substitutionMap,
 // general framework.
 
 enum class WellKnownFunction {
+  // Array.init()
+  ArrayInitEmpty,
+  // Array._allocateUninitializedArray
+  AllocateUninitializedArray,
   // String.init()
   StringInitEmpty,
   // String.init(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)
@@ -50,6 +55,10 @@ enum class WellKnownFunction {
 };
 
 static llvm::Optional<WellKnownFunction> classifyFunction(SILFunction *fn) {
+  if (fn->hasSemanticsAttr("array.init.empty"))
+    return WellKnownFunction::ArrayInitEmpty;
+  if (fn->hasSemanticsAttr("array.uninitialized_intrinsic"))
+    return WellKnownFunction::AllocateUninitializedArray;
   if (fn->hasSemanticsAttr("string.init_empty"))
     return WellKnownFunction::StringInitEmpty;
   // There are two string initializers in the standard library with the
@@ -115,7 +124,7 @@ public:
     assert(!calculatedValues.count(addr));
     auto type = substituteGenericParamsAndSimpify(addr->getType().getASTType());
     auto *memObject = SymbolicValueMemoryObject::create(
-        type, initialValue, evaluator.getASTContext());
+        type, initialValue, evaluator.getAllocator());
     auto result = SymbolicValue::getAddress(memObject);
     setValue(addr, result);
     return result;
@@ -178,9 +187,9 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
   // If this a trivial constant instruction that we can handle, then fold it
   // immediately.
   if (auto *ili = dyn_cast<IntegerLiteralInst>(value))
-    return SymbolicValue::getInteger(ili->getValue(), evaluator.getASTContext());
+    return SymbolicValue::getInteger(ili->getValue(), evaluator.getAllocator());
   if (auto *sli = dyn_cast<StringLiteralInst>(value))
-    return SymbolicValue::getString(sli->getValue(), evaluator.getASTContext());
+    return SymbolicValue::getString(sli->getValue(), evaluator.getAllocator());
 
   if (auto *fri = dyn_cast<FunctionRefInst>(value))
     return SymbolicValue::getFunction(fri->getReferencedFunction());
@@ -256,7 +265,7 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
       elts.push_back(val);
     }
 
-    return SymbolicValue::getAggregate(elts, evaluator.getASTContext());
+    return SymbolicValue::getAggregate(elts, evaluator.getAllocator());
   }
 
   // If this is a struct or tuple element addressor, compute a more derived
@@ -278,7 +287,7 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
       index = cast<TupleElementAddrInst>(inst)->getFieldNo();
     accessPath.push_back(index);
     return SymbolicValue::getAddress(memObject, accessPath,
-                                     evaluator.getASTContext());
+                                     evaluator.getAllocator());
   }
 
   // If this is a load, then we either have computed the value of the memory
@@ -335,7 +344,7 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
     if (!payload.isConstant())
       return payload;
     return SymbolicValue::getEnumWithPayload(enumVal->getElement(), payload,
-                                             evaluator.getASTContext());
+                                             evaluator.getAllocator());
   }
 
   // This one returns the address of its enum payload.
@@ -349,6 +358,29 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
   // This instruction is a marker that returns its first operand.
   if (auto *bai = dyn_cast<BeginAccessInst>(value))
     return getConstantValue(bai->getOperand());
+
+  // Builtin.RawPointer and addresses have the same representation.
+  if (auto *p2ai = dyn_cast<PointerToAddressInst>(value))
+    return getConstantValue(p2ai->getOperand());
+
+  // Indexing a pointer moves the deepest index of the access path it represents
+  // within a memory object. For example, if a pointer p represents the access
+  // path [1, 2] within a memory object, p + 1 represents [1, 3]
+  if (auto *ia = dyn_cast<IndexAddrInst>(value)) {
+    auto index = getConstantValue(ia->getOperand(1));
+    if (!index.isConstant())
+      return index;
+    auto basePtr = getConstantValue(ia->getOperand(0));
+    if (basePtr.getKind() != SymbolicValue::Address)
+      return basePtr;
+
+    SmallVector<unsigned, 4> accessPath;
+    auto *memObject = basePtr.getAddressValue(accessPath);
+    assert(!accessPath.empty() && "Can't index a non-indexed address");
+    accessPath.back() += index.getIntegerValue().getLimitedValue();
+    return SymbolicValue::getAddress(memObject, accessPath,
+                                     evaluator.getAllocator());
+  }
 
   LLVM_DEBUG(llvm::dbgs() << "ConstExpr Unknown simple: " << *value << "\n");
 
@@ -402,12 +434,12 @@ ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
       if (overflowed)
         return evaluator.getUnknown(SILValue(inst), UnknownReason::Overflow);
 
-      auto &astContext = evaluator.getASTContext();
+      auto allocator = evaluator.getAllocator();
       // Build the Symbolic value result for our truncated value.
       return SymbolicValue::getAggregate(
-          {SymbolicValue::getInteger(result, astContext),
-           SymbolicValue::getInteger(APInt(1, overflowed), astContext)},
-          astContext);
+          {SymbolicValue::getInteger(result, allocator),
+           SymbolicValue::getInteger(APInt(1, overflowed), allocator)},
+          allocator);
     };
 
     switch (builtin.ID) {
@@ -453,7 +485,7 @@ ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
           break;
         }
       }
-      return SymbolicValue::getInteger(result, evaluator.getASTContext());
+      return SymbolicValue::getInteger(result, evaluator.getAllocator());
     }
     }
   }
@@ -476,7 +508,7 @@ ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
 
       auto result = fn(operand0.getIntegerValue(), operand1.getIntegerValue());
       return SymbolicValue::getInteger(APInt(1, result),
-                                       evaluator.getASTContext());
+                                       evaluator.getAllocator());
     };
 
 #define REQUIRE_KIND(KIND)                                                     \
@@ -491,7 +523,7 @@ ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
   case BuiltinValueKind::OPCODE: {                                             \
     REQUIRE_KIND(Integer)                                                      \
     auto l = operand0.getIntegerValue(), r = operand1.getIntegerValue();       \
-    return SymbolicValue::getInteger((EXPR), evaluator.getASTContext());       \
+    return SymbolicValue::getInteger((EXPR), evaluator.getAllocator());        \
   }
       INT_BINOP(Add, l + r)
       INT_BINOP(And, l & r)
@@ -559,12 +591,12 @@ ConstExprFunctionState::computeConstantValueBuiltin(BuiltinInst *inst) {
       if (overflowed && !operand2.getIntegerValue().isNullValue())
         return evaluator.getUnknown(SILValue(inst), UnknownReason::Overflow);
 
-      auto &astContext = evaluator.getASTContext();
+      auto allocator = evaluator.getAllocator();
       // Build the Symbolic value result for our normal and overflow bit.
       return SymbolicValue::getAggregate(
-          {SymbolicValue::getInteger(result, astContext),
-           SymbolicValue::getInteger(APInt(1, overflowed), astContext)},
-          astContext);
+          {SymbolicValue::getInteger(result, allocator),
+           SymbolicValue::getInteger(APInt(1, overflowed), allocator)},
+          allocator);
     };
 
     switch (builtin.ID) {
@@ -602,6 +634,15 @@ ConstExprFunctionState::computeOpaqueCallResult(ApplyInst *apply,
   return evaluator.getUnknown((SILInstruction *)apply, UnknownReason::Default);
 }
 
+/// If the specified type is a Swift.Array of some element type, then return the
+/// element type.  Otherwise, return a null Type.
+static Type getArrayElementType(Type ty) {
+  if (auto bgst = ty->getAs<BoundGenericStructType>())
+    if (bgst->getDecl() == bgst->getASTContext().getArrayDecl())
+      return bgst->getGenericArgs()[0];
+  return Type();
+}
+
 /// Given a call to a well known function, collect its arguments as constants,
 /// fold it, and return None.  If any of the arguments are not constants, marks
 /// the call's results as Unknown, and return an Unknown with information about
@@ -611,11 +652,83 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
                                                    WellKnownFunction callee) {
   auto conventions = apply->getSubstCalleeConv();
   switch (callee) {
+  case WellKnownFunction::ArrayInitEmpty: { // Array.init()
+    assert(conventions.getNumDirectSILResults() == 1 &&
+           conventions.getNumIndirectSILResults() == 0 &&
+           "unexpected Array.init() signature");
+
+    auto literal = getConstantValue(apply->getOperand(1));
+    if (literal.getKind() != SymbolicValue::Metatype)
+      break;
+
+    auto literalType = literal.getMetatypeValue();
+
+    auto arrayVal = SymbolicValue::getArray(
+        {}, getArrayElementType(literalType)->getCanonicalType(),
+        evaluator.getAllocator());
+    setValue(apply, arrayVal);
+    return None;
+  }
+  case WellKnownFunction::AllocateUninitializedArray: {
+    // This function has this signature:
+    //   func _allocateUninitializedArray<Element>(_ builtinCount: Builtin.Word)
+    //     -> (Array<Element>, Builtin.RawPointer)
+    assert(conventions.getNumParameters() == 1 &&
+           conventions.getNumDirectSILResults() == 2 &&
+           conventions.getNumIndirectSILResults() == 0 &&
+           "unexpected _allocateUninitializedArray signature");
+
+    // Figure out the allocation size.
+    auto numElementsSV = getConstantValue(apply->getOperand(1));
+    if (!numElementsSV.isConstant())
+      return numElementsSV;
+
+    unsigned numElements = numElementsSV.getIntegerValue().getLimitedValue();
+
+    // We only support allocating uninitialized arrays in flow-sensitive code
+    // for now.
+    // TODO: Support allocating uninitialized arrays in top-level code too. This
+    // will allow const-evaluated array literals in top-level code.
+    if (!fn)
+      return evaluator.getUnknown((SILInstruction *)apply, UnknownReason::Default);
+
+    SmallVector<SymbolicValue, 8> elementConstants;
+
+    // In the flow sensitive case, we can analyze this as an allocation of
+    // uninitialized array memory, and allow the stores to the pointer result
+    // to initialize the elements in a normal flow sensitive way.
+    elementConstants.assign(numElements, SymbolicValue::getUninitMemory());
+
+    auto arrayType = apply->getType().castTo<TupleType>()->getElementType(0);
+    auto arrayEltType = getArrayElementType(arrayType);
+    assert(arrayEltType && "Couldn't understand Swift.Array type?");
+
+    // Build this value as an array of elements.  Wrap it up into a memory
+    // object with an address refering to it.
+    auto arrayVal = SymbolicValue::getArray(elementConstants,
+                                            arrayEltType->getCanonicalType(),
+                                            evaluator.getAllocator());
+
+    auto *memObject = SymbolicValueMemoryObject::create(
+        arrayType, arrayVal, evaluator.getAllocator());
+
+    // Okay, now we have the array memory object, return the indirect array
+    // value and the pointer object we need for the tuple result.
+    auto indirectArr = SymbolicValue::getArrayAddress(memObject);
+
+    // The address notationally points to the first element of the array.
+    auto address =
+        SymbolicValue::getAddress(memObject, {0}, evaluator.getAllocator());
+
+    setValue(apply, SymbolicValue::getAggregate({indirectArr, address},
+                                                 evaluator.getAllocator()));
+    return None;
+  }
   case WellKnownFunction::StringInitEmpty: { // String.init()
     assert(conventions.getNumDirectSILResults() == 1 &&
            conventions.getNumIndirectSILResults() == 0 &&
            "unexpected String.init() signature");
-    auto result = SymbolicValue::getString("", evaluator.getASTContext());
+    auto result = SymbolicValue::getString("", evaluator.getAllocator());
     setValue(apply, result);
     return None;
   }
@@ -664,8 +777,7 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
 
     auto result = SmallString<8>(firstString.getStringValue());
     result.append(otherString.getStringValue());
-    auto resultVal =
-        SymbolicValue::getString(result, evaluator.getASTContext());
+    auto resultVal = SymbolicValue::getString(result, evaluator.getAllocator());
     computeFSStore(resultVal, firstOperand);
     return None;
   }
@@ -691,9 +803,9 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
     // The result is a Swift.Bool which is a struct that wraps an Int1.
     int isEqual = firstString.getStringValue() == otherString.getStringValue();
     auto intVal =
-        SymbolicValue::getInteger(APInt(1, isEqual), evaluator.getASTContext());
+        SymbolicValue::getInteger(APInt(1, isEqual), evaluator.getAllocator());
     auto result = SymbolicValue::getAggregate(ArrayRef<SymbolicValue>(intVal),
-                                              evaluator.getASTContext());
+                                              evaluator.getAllocator());
     setValue(apply, result);
     return None;
   }
@@ -878,7 +990,7 @@ ConstExprFunctionState::initializeAddressFromSingleWriter(SILValue addr) {
   // Sets the pointed-at memory to `value`.
   auto setMemoryValue = [&](SymbolicValue value) {
     memoryObject->setIndexedElement(accessPath, value,
-                                    evaluator.getASTContext());
+                                    evaluator.getAllocator());
   };
 
   // Gets the pointed-at memory value.
@@ -1167,7 +1279,7 @@ ConstExprFunctionState::computeFSStore(SymbolicValue storedCst, SILValue dest) {
   SmallVector<unsigned, 4> accessPath;
   auto *memoryObject = it->second.getAddressValue(accessPath);
   memoryObject->setIndexedElement(accessPath, storedCst,
-                                  evaluator.getASTContext());
+                                  evaluator.getAllocator());
   return None;
 }
 
@@ -1291,7 +1403,7 @@ static llvm::Optional<SymbolicValue> evaluateAndCacheCall(
     // Make sure we haven't exceeded our interpreter iteration cap.
     if (++numInstEvaluated > ConstExprLimit)
       return SymbolicValue::getUnknown(inst, UnknownReason::TooManyInstructions,
-                                       {}, evaluator.getASTContext());
+                                       {}, evaluator.getAllocator());
 
     // If we can evaluate this flow sensitively, then keep going.
     if (!isa<TermInst>(inst)) {
@@ -1415,15 +1527,14 @@ static llvm::Optional<SymbolicValue> evaluateAndCacheCall(
 // ConstExprEvaluator implementation.
 //===----------------------------------------------------------------------===//
 
-ConstExprEvaluator::ConstExprEvaluator(SILModule &m)
-    : astContext(m.getASTContext()) {}
+ConstExprEvaluator::ConstExprEvaluator(Allocator alloc) : allocator(alloc) {}
 
 ConstExprEvaluator::~ConstExprEvaluator() {}
 
 SymbolicValue ConstExprEvaluator::getUnknown(SILNode *node,
                                              UnknownReason reason) {
   return SymbolicValue::getUnknown(node, reason, getCallStack(),
-                                   getASTContext());
+                                   getAllocator());
 }
 
 /// Analyze the specified values to determine if they are constant values.  This
