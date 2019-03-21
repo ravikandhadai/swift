@@ -26,7 +26,6 @@
 
 #include "swift/Basic/LLVM.h"
 #include "swift/Basic/SourceLoc.h"
-#include "llvm/Support/Allocator.h"
 
 namespace swift {
 class ApplyInst;
@@ -37,6 +36,7 @@ class SILModule;
 class SILNode;
 class SILValue;
 class SymbolicValue;
+class SymbolicValueAllocator;
 enum class UnknownReason;
 
 /// This class is the main entrypoint for evaluating constant expressions.  It
@@ -45,7 +45,7 @@ class ConstExprEvaluator {
   /// We store arguments and result values for the cached constexpr calls we
   /// have already analyzed in this ASTContext so that they are available even
   /// after this ConstExprEvaluator is gone.
-  ASTContext &astContext;
+  SymbolicValueAllocator &allocator;
 
   /// The current call stack, used for providing accurate diagnostics.
   llvm::SmallVector<SourceLoc, 4> callStack;
@@ -54,10 +54,10 @@ class ConstExprEvaluator {
   void operator=(const ConstExprEvaluator &) = delete;
 
 public:
-  explicit ConstExprEvaluator(SILModule &m);
+  explicit ConstExprEvaluator(SymbolicValueAllocator &alloc);
   ~ConstExprEvaluator();
 
-  ASTContext &getASTContext() { return astContext; }
+  SymbolicValueAllocator &getAllocator() { return allocator; }
 
   void pushCallStack(SourceLoc loc) { callStack.push_back(loc); }
 
