@@ -77,7 +77,7 @@ static llvm::Optional<WellKnownFunction> classifyFunction(SILFunction *fn) {
 // ConstExprFunctionState implementation.
 //===----------------------------------------------------------------------===//
 
-namespace {
+namespace swift {
 /// This type represents the state of computed values within a function
 /// as evaluation happens.  A separate instance of this is made for each
 /// callee in a call chain to represent the constant values given the set of
@@ -116,6 +116,15 @@ public:
 
   void setValue(SILValue value, SymbolicValue symVal) {
     calculatedValues.insert({value, symVal});
+  }
+
+  /// Return the symbolic value for a SILValue if its result has been
+  /// calculated. If not, return None.
+  llvm::Optional<SymbolicValue> lookupValue(SILValue value) {
+    auto it = calculatedValues.find(value);
+    if (it != calculatedValues.end())
+      return it->second;
+    return None;
   }
 
   /// Invariant: Before the call, `calculatedValues` must not contain `addr`
@@ -164,7 +173,7 @@ private:
   llvm::Optional<SymbolicValue>
   initializeAddressFromSingleWriter(SILValue addr);
 };
-} // end anonymous namespace
+}
 
 /// Simplify the specified type based on knowledge of substitutions if we have
 /// any.
@@ -1557,4 +1566,33 @@ void ConstExprEvaluator::computeConstantValues(
     // at.  We don't want lots of constants folded to trigger a limit.
     numInstEvaluated = 0;
   }
+}
+
+//===----------------------------------------------------------------------===//
+// ConstExprStepEvaluator implementation.
+//===----------------------------------------------------------------------===//
+
+ConstExprStepEvaluator::ConstExprStepEvaluator(ConstExprEvaluator &eval,
+                                               SILFunction *fun)
+  : internalState(new ConstExprFunctionState(eval, fun, { }, stepsEvaluated)) {
+  }
+
+ConstExprStepEvaluator::~ConstExprStepEvaluator() {
+  delete internalState;
+}
+
+/// TODO: if it result of evaluation is a an error, meaning there is a symboic
+/// value that is returned, make all SILValues mutated by the instruction as
+/// unknown.
+Optional<SymbolicValue> ConstExprStepEvaluator::stepOver(SILInstruction *inst) {
+  return internalState->evaluateFlowSensitive(inst);
+}
+
+Optional<SymbolicValue>
+ConstExprStepEvaluator::lookupConstValue(SILValue value) {
+  return internalState->lookupValue(value);
+}
+
+bool ConstExprStepEvaluator::isKnownPrimitive(SILFunction *fun) {
+  return classifyFunction(fun).hasValue();
 }

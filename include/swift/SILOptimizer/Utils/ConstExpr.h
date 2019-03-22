@@ -33,10 +33,12 @@ class ApplyInst;
 class ASTContext;
 class Operand;
 class SILInstruction;
+class SILFunction;
 class SILModule;
 class SILNode;
 class SILValue;
 class SymbolicValue;
+class ConstExprFunctionState;
 enum class UnknownReason;
 
 /// This class is the main entrypoint for evaluating constant expressions.  It
@@ -85,6 +87,27 @@ public:
   /// that occur after after folding them.
   void computeConstantValues(ArrayRef<SILValue> values,
                              SmallVectorImpl<SymbolicValue> &results);
+};
+
+/// Constant expression evaluator that performs step-by-step evaluation
+/// by evaluating one instruction at a time.
+class ConstExprStepEvaluator {
+private:
+  ConstExprFunctionState *internalState;
+  unsigned stepsEvaluated = 0;
+
+  ConstExprStepEvaluator(const ConstExprEvaluator &) = delete;
+  void operator=(const ConstExprEvaluator &) = delete;
+
+public:
+  explicit ConstExprStepEvaluator(ConstExprEvaluator &eval, SILFunction *fun);
+  ~ConstExprStepEvaluator();
+
+  Optional<SymbolicValue> stepOver(SILInstruction *inst);
+
+  Optional<SymbolicValue> lookupConstValue(SILValue value);
+
+  bool isKnownPrimitive(SILFunction *fun);
 };
 
 } // end namespace swift
