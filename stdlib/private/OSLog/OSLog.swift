@@ -32,6 +32,7 @@ public struct Logger {
 
   /// Log a string interpolation at a given level. The level is `default` if
   /// it is not specified.
+  @_semantics("oslog")
   public func log(level: OSLogType = .default, _ message: OSLogMessage) {
     osLog(logObject, level, message)
   }
@@ -44,6 +45,7 @@ public struct Logger {
 /// extract the format string, serialize the arguments to a byte buffer,
 /// and pass them to the OS logging system.
 @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
+@_transparent
 internal func osLog(
   _ logObject: OSLog,
   _ logLevel: OSLogType,

@@ -123,6 +123,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// instances of `OSLogMessage`.
   internal var argumentCount: UInt8
 
+  @_transparent
   public init(literalCapacity: Int, interpolationCount: Int) {
     // TODO: format string must be fully constructed at compile time.
     // The parameters `literalCapacity` and `interpolationCount` are ignored.
@@ -132,8 +133,9 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
     argumentCount = 0
   }
 
+  @_transparent
   public mutating func appendLiteral(_ literal: String) {
-    formatString += literal.percentEscapedString
+    formatString += literal //literal.percentEscapedString TODO: fix this.
   }
 
   /// Define interpolation for expressions of type Int. This definition enables
@@ -148,6 +150,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   ///    enum `IntFormat`.
   ///  - privacy: a privacy qualifier which is either private or public.
   ///    The default is public.
+  @_transparent
   public mutating func appendInterpolation(
     _ number: @autoclosure @escaping () -> Int,
     format: IntFormat = .decimal,
@@ -167,6 +170,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// interpolated expression) passed as parameters.
   ///
   /// All arguments to this function must be known at compile time.
+  @_transparent
   public mutating func addIntHeadersAndFormatSpecifier(
     _ format: IntFormat,
     isPrivate: Bool,
@@ -190,6 +194,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// Set the private bit of the preamble if the `isPrivate` parameter is true
   /// and increment the argument count. Note that the private bit in the
   /// preamable is set if any of the arguments is private.
+  @_transparent
   internal mutating func updateSummaryBytes(isPrivate: Bool) {
     if (isPrivate) {
       preamble |= PreambleBitMask.privateBitMask.rawValue
@@ -198,6 +203,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   }
 
   /// Append the given argument headers and size.
+  @_transparent
   internal mutating func addArgumentHeaders(
     flag: ArgumentFlag,
     type: ArgumentType,
@@ -212,6 +218,9 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
 
   /// Construct an os_log format specifier from the given parameters.
   /// All arguments to this function must be known at compile time.
+  @usableFromInline
+  @_effects(readonly)
+  @_semantics("compiler.evaluable")
   internal func getIntegerFormatSpecifier(
     _ format: IntFormat,
     isPrivate: Bool,
@@ -242,6 +251,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
 extension String {
   /// Replace all percents "%" in the string by "%%" so that the string can be
   /// interpreted as a C format string.
+  @_semantics("string.escapePercent")
   public var percentEscapedString: String {
     get {
       return self
@@ -257,6 +267,7 @@ public struct OSLogMessage :
   public let interpolation: OSLogInterpolation
 
   /// Initializer for accepting string interpolations.
+  @_transparent
   public init(stringInterpolation: OSLogInterpolation) {
     interpolation = stringInterpolation
   }
