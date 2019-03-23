@@ -27,16 +27,15 @@
 #include "swift/Basic/LLVM.h"
 #include "swift/Basic/SourceLoc.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "swift/SIL/SILBasicBlock.h"
 
 namespace swift {
-class ApplyInst;
 class ASTContext;
 class Operand;
-class SILInstruction;
 class SILFunction;
 class SILModule;
 class SILNode;
-class SILValue;
 class SymbolicValue;
 class ConstExprFunctionState;
 enum class UnknownReason;
@@ -93,8 +92,12 @@ public:
 /// by evaluating one instruction at a time.
 class ConstExprStepEvaluator {
 private:
+  ConstExprEvaluator &evaluator;
   ConstExprFunctionState *internalState;
   unsigned stepsEvaluated = 0;
+  /// Targets of conditional branches that were visited. This is used to detect
+  /// loops during evaluation.
+  SmallPtrSet<SILBasicBlock *, 8> visitedBlocks;
 
   ConstExprStepEvaluator(const ConstExprEvaluator &) = delete;
   void operator=(const ConstExprEvaluator &) = delete;
@@ -103,7 +106,8 @@ public:
   explicit ConstExprStepEvaluator(ConstExprEvaluator &eval, SILFunction *fun);
   ~ConstExprStepEvaluator();
 
-  Optional<SymbolicValue> stepOver(SILInstruction *inst);
+  std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+  stepOver(SILBasicBlock::iterator instI);
 
   Optional<SymbolicValue> lookupConstValue(SILValue value);
 

@@ -32,7 +32,7 @@ public struct Logger {
 
   /// Log a string interpolation at a given level. The level is `default` if
   /// it is not specified.
-  @_semantics("oslog")
+  @_semantics("oslog.log")
   public func log(level: OSLogType = .default, _ message: OSLogMessage) {
     osLog(logObject, level, message)
   }

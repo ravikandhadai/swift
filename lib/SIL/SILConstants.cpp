@@ -822,6 +822,7 @@ static SymbolicValue setIndexedElement(SymbolicValue aggregate,
                                        ArrayRef<unsigned> accessPath,
                                        SymbolicValue newElement, Type type,
                                        Allocator allocator) {
+  llvm::errs() << "started set index element"  << "\n";
   // We're done if we've run out of access path.
   if (accessPath.empty())
     return newElement;
@@ -860,6 +861,10 @@ static SymbolicValue setIndexedElement(SymbolicValue aggregate,
     oldElts = aggregate.getArrayValue(arrayEltTy);
     eltType = arrayEltTy;
   } else {
+    llvm::errs() << "Aggregate value: "  << "\n";
+    aggregate.print(llvm::errs());
+
+    llvm::errs() << "Dealing with aggregate, type: " << type  << "\n";
     oldElts = aggregate.getAggregateValue();
 
     if (auto *decl = type->getStructOrBoundGenericStruct()) {
@@ -872,6 +877,7 @@ static SymbolicValue setIndexedElement(SymbolicValue aggregate,
     } else {
       llvm_unreachable("the accessPath is invalid for this type");
     }
+    llvm::errs() << "Ended dealing with aggregate"  << "\n";
   }
 
   // Update the indexed element of the aggregate.
@@ -886,6 +892,7 @@ static SymbolicValue setIndexedElement(SymbolicValue aggregate,
     aggregate = SymbolicValue::getArray(newElts, eltType->getCanonicalType(),
                                         allocator);
   aggregate = SymbolicValue::getAggregate(newElts, allocator);
+  llvm::errs() << "ended set index element"  << "\n";
   return aggregate;
 }
 
