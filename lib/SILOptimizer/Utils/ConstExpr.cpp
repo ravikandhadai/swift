@@ -1386,7 +1386,6 @@ ConstExprFunctionState::evaluateBranchOrSimpleInstruction(
   // If we can evaluate this flow sensitively, then return the next instruction.
   if (!isa<TermInst>(inst)) {
     auto fsResult = evaluateFlowSensitive(inst);
-    llvm::errs() <<  " ENdded Flow sensitive evaluation" << "\n";
     if (fsResult.hasValue())
       return { None, fsResult };
     return { ++instI, None };
@@ -1512,9 +1511,7 @@ static llvm::Optional<SymbolicValue> evaluateAndCacheCall(
   visitedBlocks.insert(&fn.front());
 
   while (1) {
-    llvm::errs() <<  "Started iteration";
     SILInstruction *inst = &*nextInst;
-    llvm::errs() <<  " for inst" << *inst  << "\n";
     LLVM_DEBUG(llvm::dbgs() << "ConstExpr interpret: "; inst->dump());
 
     // Make sure we haven't exceeded our interpreter iteration cap.
@@ -1550,14 +1547,11 @@ static llvm::Optional<SymbolicValue> evaluateAndCacheCall(
     Optional<SymbolicValue> errorVal = None;
     std::tie(nextInstOpt, errorVal) =
       state.evaluateBranchOrSimpleInstruction(nextInst, visitedBlocks);
-    llvm::errs() <<  " ENdded simple call for" << *inst  << "\n";
-
     if (errorVal.hasValue())
       return errorVal;
 
     assert(nextInstOpt.hasValue());
     nextInst = nextInstOpt.getValue();
-    llvm::errs() <<  " Ended iteration for inst" << *inst  << "\n";
   }
 }
 

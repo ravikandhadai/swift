@@ -52,68 +52,73 @@ namespace {
 // The definitions of the captured arguments need not be pulled in.
 // For now this is not used!
 Optional<std::pair<SILBasicBlock::iterator, SILBasicBlock::iterator>>
-  getStringInterpolationInstrs(SILInstruction *seed,  SILFunction &fun) {
-  // Try to get the start of the interpolation, which is an AllocStack
-  // of PackedOSLogMessage by going backward.
-  SILInstruction *startInstr = nullptr;
-
-  auto queue = std::queue<SILInstruction*>();
-  queue.push(seed);
-  
-  while (!queue.empty()) {
-    auto currInst = queue.front();
-    queue.pop();
-
-    // If we have an alloc-stack instruction, check if it is the start of the
-    // interpolation.
-    if (auto *allocInst = dyn_cast<AllocStackInst>(currInst)) {
-      auto varDecl = allocInst->getDecl();
-      llvm::errs() << "Declname: " << varDecl->getNameStr() << "\n";
-      // This is an string interpolation construction.
-      if (varDecl && varDecl->getNameStr().equals("$interpolation")) {
-        startInstr = allocInst;
-        break;
-      }
-    }
-
-    for (auto &operand : currInst->getAllOperands()) {
-      if (auto *valueI = operand.get()->getDefiningInstruction()) {
-        queue.push(valueI);
-      }
-    }
-  }
-
-  if (!startInstr) {
-    llvm::errs() << "Couldn't find start instruction of osLog \n";
-    return None;
-  }
+  getStringInterpolationInstrs(SILInstruction *first, SILInstruction *last,
+                               SILFunction &fun) {
+  assert(first != last);
+//  // Try to get the start of the interpolation, which is an AllocStack
+//  // of PackedOSLogMessage by going backward.
+//  SILInstruction *startInstr = nullptr;
+//
+//  auto queue = std::queue<SILInstruction*>();
+//  queue.push(seed);
+//
+//  while (!queue.empty()) {
+//    auto currInst = queue.front();
+//    queue.pop();
+//
+//    // If we have an alloc-stack instruction, check if it is the start of the
+//    // interpolation.
+//    if (auto *allocInst = dyn_cast<AllocStackInst>(currInst)) {
+//      auto varDecl = allocInst->getDecl();
+//      llvm::errs() << "Declname: " << varDecl->getNameStr() << "\n";
+//      // This is an string interpolation construction.
+//      if (varDecl && varDecl->getNameStr().equals("$interpolation")) {
+//        startInstr = allocInst;
+//        break;
+//      }
+//    }
+//
+//    for (auto &operand : currInst->getAllOperands()) {
+//      if (auto *valueI = operand.get()->getDefiningInstruction()) {
+//        queue.push(valueI);
+//      }
+//    }
+//  }
+//
+//  if (!startInstr) {
+//    llvm::errs() << "Couldn't find start instruction of osLog \n";
+//    return None;
+//  }
 
   // Collect all instructions from the start instruction down to the seed inst.
-  SILBasicBlock::iterator startInst;
-  SILBasicBlock::iterator endInst;
-  for (auto bbI = fun.begin(); bbI != fun.end(); bbI++) {
-    auto *bb = &(*bbI);
-    for (auto instI = bb->begin(); instI != bb->end(); instI++) {
+  SILBasicBlock::iterator startI;
+  SILBasicBlock::iterator endI;
+
+  llvm::errs() << "Start inst" << *first  << "\n";
+  llvm::errs() << "End inst" << *last  << "\n";
+
+  for (auto &bb : fun) {
+    for (auto instI = bb.begin(); instI != bb.end(); instI++) {
       auto *Iptr = &(*instI);
 
-      if (Iptr == startInstr) {
-        startInst = instI;
+      if (Iptr == first) {
+        startI = instI;
       }
-      if (Iptr == seed) {
-        endInst = instI;
+      if (Iptr == last) {
+        endI = instI;
         break;
       }
     }
   }
   std::pair<SILBasicBlock::iterator, SILBasicBlock::iterator> res =
-    { startInst, endInst };
+    { startI, endI };
   return res;
 }
 
-void dumpInstructions(SILBasicBlock::iterator startInst,
-                      SILBasicBlock::iterator endInst) {
-  llvm::errs() << "Size: " << std::distance(startInst, endInst) << "\n";
-  for (auto currInst = startInst; currInst != endInst; currInst++) {
+void dumpInstructions(SILBasicBlock::iterator start,
+                      SILBasicBlock::iterator end) {
+//  llvm::errs() << "Size: " << std::distance(end, start) << "\n";
+  for (auto currInst = start; currInst != end; currInst++) {
     llvm::errs() << *currInst << "\n";
   }
 }
@@ -517,11 +522,15 @@ class OSLogOptimization : public SILFunctionTransform {
         SILBasicBlock::iterator startInst;
         SILBasicBlock::iterator endInst;
         std::tie(startInst, endInst) =
-          getStringInterpolationInstrs(packedMsgArg->getDefiningInstruction(),
-                                     fun).getValue();
+            getStringInterpolationInstrs(
+                          packedMsgArg->getDefiningInstruction(),
+                          applyInst->getOperand(0)->getDefiningInstruction(),
+                          fun)
+                          .getValue();
 
         llvm::errs() << "Instructs to interpret: \n";
         dumpInstructions(startInst, endInst);
+        return;
 
         // (d) Interpret the code
         llvm::BumpPtrAllocator bumpAllocator;
