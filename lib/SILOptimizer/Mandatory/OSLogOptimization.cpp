@@ -48,6 +48,16 @@ static void diagnose(ASTContext &Context, SourceLoc loc, Diag<T...> diag,
 
 namespace {
 
+SILBasicBlock::iterator findIteratorForInstruction(SILInstruction *keyInst) {
+  auto *bb = keyInst->getParent();
+  for (auto currI = bb->begin(), endI = bb->end(); currI != endI; currI++) {
+    if (keyInst == &(*currI)) {
+      return currI;
+    }
+  }
+  llvm_unreachable("Parent block doesn't contain instruction.");
+}
+
 // TODO: make sure that we do not over-slice esp when we have autoclosures.
 // The definitions of the captured arguments need not be pulled in.
 // For now this is not used!
@@ -425,18 +435,15 @@ class OSLogOptimization : public SILFunctionTransform {
 
   llvm::Optional<SymbolicValue>
   partiallyEvaluate(ConstExprEvaluator &constEval, SILFunction *fun,
-                    SILBasicBlock::iterator startInst,
-                    SILBasicBlock::iterator endInst,
+                    SILBasicBlock::iterator startIter,
+                    SILInstruction *endInst,
                     SILValue keyOperand) {
     // Initialize the interpreter state
     ConstExprStepEvaluator stepEval(constEval, fun);
 
-    for (auto currInst = startInst; ; currInst++) {
-      if (currInst == endInst) { // || currInst == fun->g) {
-        break;
-      }
-      auto inst = &(*currInst);
-      //llvm::errs() << "Partially evaluating: " << *inst << "\n";
+    auto currI = startIter;
+    while(&(*currI) != endInst) {
+      auto inst = &(*currI);
 
       // If we see a control-flow instruction return an error
       if (isa<ReturnInst>(inst)) {
@@ -449,12 +456,21 @@ class OSLogOptimization : public SILFunctionTransform {
 
       // If this is a call to apply, interpret this only if this is a
       // compiler-evaluable function or a well-known function (which is like
-      // a primitve operation).
+      // a primitve operation). For every non-apply instruction, if we can't
+      // evaluate this flow-sensitively, ignore this and keep going.
+      Optional<SymbolicValue> errorVal = None;
+      Optional<SILBasicBlock::iterator> nextI = None;
+
       if (auto *apply = dyn_cast<ApplyInst>(inst)) {
         auto calleeFun = apply->getCalleeFunction();
         if (!calleeFun ||
             (!stepEval.isKnownPrimitive(calleeFun) &&
              !calleeFun->hasSemanticsAttrThatStartsWith("oslog"))) {
+          if (currI == inst->getParent()->end()) {
+            return None;
+          }
+          llvm::errs() << "Skipping call: " << *inst << "\n";
+          currI++;
           continue;
         }
         
@@ -462,25 +478,28 @@ class OSLogOptimization : public SILFunctionTransform {
             calleeFun->hasSemanticsAttr("string.makeUTF8")) {
           stringUTF8InitCall = apply;
         }
+        if (calleeFun->hasSemanticsAttrThatStartsWith("oslog")) {
+          llvm::errs() << "Evaluating oslog call: " << *inst << "\n";
+        }
+      }
 
-        // Evaluation of this function bound to not fail.
-        auto res = stepEval.stepOver(currInst);
-        auto errorVal = res.second;
-        if (errorVal.hasValue() &&
-            calleeFun->hasSemanticsAttr("compiler.evaluable")) {
-          llvm::errs() << "Interpretation of compiler evaluable function failed with this error: " << errorVal.getValue() << "\n";
+      // Evaluation of this function bound to not fail.
+      std::tie(nextI, errorVal) = stepEval.stepOver(currI);
+      if (errorVal.hasValue()){
+        llvm::errs() << "Interpretation of " << *currI << "failed: " << errorVal.getValue() << "\n";
+        if (currI == inst->getParent()->end()) {
           return None;
         }
+        currI++;
         continue;
       }
 
-      // For every non-apply instruction, if we can't evaluate this
-      // flow-sensitively, ignore this and keep going.
-      auto res = stepEval.stepOver(currInst);
-      auto errorVal = res.second;
-      if (errorVal.hasValue()) { // If it has a value then it signals an error.
-        continue;
+      if (!nextI.hasValue()) {
+        // We don't have a next instruction and we haven't seen the end
+        // instruction.
+        return None;
       }
+      currI = nextI.getValue();
     }
     auto symValOpt = stepEval.lookupConstValue(keyOperand);
     return symValOpt;
@@ -500,37 +519,27 @@ class OSLogOptimization : public SILFunctionTransform {
     SILModule &M = getFunction()->getModule();
     auto &fun = *getFunction();
     auto deletedInsts = SmallVector<SILInstruction *, 10>();
-    for (auto &BB : fun) {
-      for (auto &I : BB) {
-        // (a) check if this is a call to "oslog"
-        auto *applyInst = dyn_cast<ApplyInst>(&I);
+
+    // Do a breadth-first traversal of the basic blocks and identify the
+    // instructions that create a OSLogMessage.
+    for (auto &bb : fun) {
+      for (auto &inst : bb) {
+        // (a) Check if this is a call to "oslog"
+        auto *applyInst = dyn_cast<ApplyInst>(&inst);
         if (!applyInst || !applyInst->getCalleeFunction()
-            || !applyInst->getCalleeFunction()->hasSemanticsAttrThatStartsWith(
-                                                          "oslog.log"))
+            || !applyInst->getCalleeFunction()
+                  ->hasSemanticsAttrThatStartsWith("oslog.log"))
           continue;
-        llvm::errs() << "Found call to oslog " << I << "\n";
+        llvm::errs() << "Found call to oslog " << inst << "\n";
 
-        // (b) extract the second operand to the call.
-        // This is the value that needs to be statically computed.
-        SILValue packedMsgArg = applyInst->getArgument(1);
-        // Ensure that this
-        llvm::errs() << "Res operand: " << packedMsgArg << "\n";
+        // (b) Extract the second operand to the call. This is the value that
+        // needs to be statically computed.
+        SILValue oslogMessageArg = applyInst->getArgument(1);
+        llvm::errs() << "Res operand: " << oslogMessageArg << "\n";
 
-        // (c) Walk backwards along the use-def chain and identify the
-        // the sequence of instructions that needs to be interpreted
-        // to statically determine the value of `packedMsgArg`
-        SILBasicBlock::iterator startInst;
-        SILBasicBlock::iterator endInst;
-        std::tie(startInst, endInst) =
-            getStringInterpolationInstrs(
-                          packedMsgArg->getDefiningInstruction(),
-                          applyInst->getOperand(0)->getDefiningInstruction(),
-                          fun)
-                          .getValue();
-
-        llvm::errs() << "Instructs to interpret: \n";
-        dumpInstructions(startInst, endInst);
-        return;
+        auto allocStackIter =
+          findIteratorForInstruction(oslogMessageArg->getDefiningInstruction());
+        llvm::errs() << "Starting interpretation from: " << *allocStackIter << "\n";
 
         // (d) Interpret the code
         llvm::BumpPtrAllocator bumpAllocator;
@@ -538,20 +547,26 @@ class OSLogOptimization : public SILFunctionTransform {
                    [&](unsigned long bytes, unsigned alignment) {
                      return bumpAllocator.Allocate(bytes, alignment);
                    });
-        auto resValue = partiallyEvaluate(evaluator, &fun, startInst, endInst,
-                                          packedMsgArg);
+        auto resValue = partiallyEvaluate(evaluator, &fun, allocStackIter,
+                                          applyInst, oslogMessageArg);
         if (!resValue.hasValue()) {
           llvm::errs() << "Interpretation failed!! \n";
         }
-        auto packedMsgValue = resValue.getValue();
+        auto oslogMessageValue = resValue.getValue();
 
         // for debugging
-        llvm::errs() << "Result value for " <<  packedMsgArg <<  ": \n";
-        packedMsgValue.dump();
+        SymbolicValue printableValue = oslogMessageValue;
+        if (oslogMessageValue.getKind() == SymbolicValue::Address) {
+          SmallVector<unsigned, 2> accessPath;
+          printableValue = oslogMessageValue.getAddressValue(accessPath)->getValue();
+        }
+        llvm::errs() << "Result value for " <<  oslogMessageArg  <<  ": \n";
+        printableValue.dump();
         llvm::errs() << "\n";
+        return;
 
         // (e) Optimize the body of oslog using the constant value for the PackedOSLogMessage.
-        optimizeOSLogFun(applyInst, packedMsgArg, packedMsgValue, fun, M);
+        optimizeOSLogFun(applyInst, oslogMessageArg, oslogMessageValue, fun, M);
         break;
       }
     }

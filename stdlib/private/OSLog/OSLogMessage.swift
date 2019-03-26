@@ -21,6 +21,7 @@
 ///
 /// See `OSLogInterpolation.appendInterpolation` definitions for default options
 /// for integer types.
+@_frozen
 public enum IntFormat {
   case decimal
   case hex
@@ -35,6 +36,7 @@ public enum IntFormat {
 ///
 /// See `OSLogInterpolation.appendInterpolation` definitions for default options
 /// for each supported type.
+@_frozen
 public enum Privacy {
   case `private`
   case `public`
@@ -163,7 +165,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
     format: IntFormat = .decimal,
     privacy: Privacy = .public
   ) {
-    guard argumentCount < maxOSLogArgumentCount else { return }
+    //guard argumentCount < maxOSLogArgumentCount else { return }
 
     addIntHeadersAndFormatSpecifier(
       format,
@@ -171,7 +173,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
       bitWidth: Int.bitWidth,
       isSigned: true)
 
-    updatePreamble(privacy: privacy)
+    //updatePreamble(privacy: privacy)
 
     arguments.append(number)
     argumentCount += 1
@@ -194,10 +196,10 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
       bitWidth: bitWidth,
       isSigned: isSigned)
 
-    addArgumentHeaders(
-      privacy: privacy,
-      type: .scalar,
-      size: UInt8(bitWidth / bitsPerByte))
+//    addArgumentHeaders(
+//      privacy: privacy,
+//      type: .scalar,
+//      size: UInt8(bitWidth / bitsPerByte))
   }
 
   /// Set the private bit of the preamble if the `isPrivate` parameter is true
