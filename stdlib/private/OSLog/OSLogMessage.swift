@@ -40,6 +40,16 @@ public enum IntFormat {
 public enum Privacy {
   case `private`
   case `public`
+
+  /// Note that here we cannot use equality comparisons with enum types
+  // as it is not supported by the interpreter.
+  @_transparent
+  public var isPrivate : Bool {
+    if case .private = self {
+      return true
+    }
+    return false
+  }
 }
 
 /// Maximum number of arguments i.e., interpolated expressions that can
@@ -97,6 +107,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// argument header. The first two bits are used to indicate privacy and
   /// the other two are reserved.
   @usableFromInline
+  @_frozen
   internal enum ArgumentFlag: UInt8 {
     case privateFlag = 0x1
     case publicFlag = 0x2
@@ -106,6 +117,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// which occupies four most significant bits of the first byte of the
   /// argument header.
   @usableFromInline
+  @_frozen
   internal enum ArgumentType: UInt8 {
     case scalar = 0
     // TODO: more types will be added here.
@@ -119,10 +131,22 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// Bit mask for setting bits in the peamble. The bits denoted by the bit
   /// mask indicate whether there is an argument that is private, and whether
   /// there is an argument that is non-scalar: String, NSObject or Pointer.
+  @_frozen
   @usableFromInline
   internal enum PreambleBitMask: UInt8 {
-    case privateBitMask = 0x1
-    case nonScalarBitMask = 0x2
+    case privateBitMask
+    case nonScalarBitMask
+
+    @_transparent
+    @usableFromInline
+    internal var rawValue: UInt8 {
+      switch self {
+        case .privateBitMask:
+          return 0x1
+        case .nonScalarBitMask:
+          return 0x2
+      }
+    }
   }
 
   /// The second summary byte that denotes the number of arguments, which is
@@ -165,16 +189,13 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
     format: IntFormat = .decimal,
     privacy: Privacy = .public
   ) {
-    //guard argumentCount < maxOSLogArgumentCount else { return }
+    guard argumentCount < maxOSLogArgumentCount else { return }
 
     addIntHeadersAndFormatSpecifier(
       format,
-      privacy: privacy,
+      isPrivate: privacy.isPrivate,
       bitWidth: Int.bitWidth,
       isSigned: true)
-
-    //updatePreamble(privacy: privacy)
-
     arguments.append(number)
     argumentCount += 1
   }
@@ -186,28 +207,31 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   @_transparent
   public mutating func addIntHeadersAndFormatSpecifier(
     _ format: IntFormat,
-    privacy: Privacy,
+    isPrivate: Bool,
     bitWidth: Int,
     isSigned: Bool
   ) {
     formatString += getIntegerFormatSpecifier(
       format,
-      privacy: privacy,
+      isPrivate: isPrivate,
       bitWidth: bitWidth,
       isSigned: isSigned)
 
-//    addArgumentHeaders(
-//      privacy: privacy,
-//      type: .scalar,
-//      size: UInt8(bitWidth / bitsPerByte))
+    addArgumentHeaders(
+      flag: isPrivate ? .privateFlag : .publicFlag,
+      type: .scalar,
+      size: UInt8(bitWidth / bitsPerByte))
+
+    updatePreamble(isPrivate: isPrivate)
   }
 
   /// Set the private bit of the preamble if the `isPrivate` parameter is true
   /// and increment the argument count. Note that the private bit in the
   /// preamable is set if any of the arguments is private.
   @usableFromInline
-  internal mutating func updatePreamble(privacy: Privacy) {
-    if privacy == .private {
+  @_transparent
+  internal mutating func updatePreamble(isPrivate: Bool) {
+    if isPrivate {
       preamble |= PreambleBitMask.privateBitMask.rawValue
     }
   }
@@ -215,13 +239,12 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// Append the given argument headers and size.
   @usableFromInline
   internal mutating func addArgumentHeaders(
-    privacy: Privacy,
+    flag: ArgumentFlag,
     type: ArgumentType,
     size: UInt8
   ) {
     // Flag and type take up one byte where the least significant four bits
     // is flag and most significant four bits is the type.
-    let flag: ArgumentFlag = privacy == .private ? .privateFlag : .publicFlag
     let flagAndType: UInt8 = (type.rawValue << 4) | flag.rawValue
     arguments.append(flagAndType)
     arguments.append(size)
@@ -229,17 +252,18 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
 
   /// Construct an os_log format specifier from the given parameters.
   /// All arguments to this function must be known at compile time.
-  @usableFromInline
+  /// Note that this function must be inlinable as we need the implementation
+  /// of the function for interpretation at compile time.
   @_effects(readonly)
+  @inlinable
   @_semantics("oslog.interpolation.getFormatSpecifier")
   internal func getIntegerFormatSpecifier(
     _ format: IntFormat,
-    privacy: Privacy,
+    isPrivate: Bool,
     bitWidth: Int,
     isSigned: Bool
   ) -> String {
-    var formatSpecifier: String =
-      privacy == .private ? "%{private}" : "%{public}"
+    var formatSpecifier: String = isPrivate ? "%{private}" : "%{public}"
 
     // Add a length modifier, if needed, to the specifier
     // TODO: more length modifiers will be added.
