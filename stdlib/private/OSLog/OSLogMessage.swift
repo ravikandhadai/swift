@@ -131,22 +131,11 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// Bit mask for setting bits in the peamble. The bits denoted by the bit
   /// mask indicate whether there is an argument that is private, and whether
   /// there is an argument that is non-scalar: String, NSObject or Pointer.
-  @_frozen
   @usableFromInline
+  @_frozen
   internal enum PreambleBitMask: UInt8 {
-    case privateBitMask
-    case nonScalarBitMask
-
-    @_transparent
-    @usableFromInline
-    internal var rawValue: UInt8 {
-      switch self {
-        case .privateBitMask:
-          return 0x1
-        case .nonScalarBitMask:
-          return 0x2
-      }
-    }
+    case privateBitMask = 0x1
+    case nonScalarBitMask = 0x2
   }
 
   /// The second summary byte that denotes the number of arguments, which is
@@ -326,11 +315,11 @@ public struct OSLogMessage :
   /// The byte size of the buffer that will passed to the C os_log ABI.
   /// It will contain the elements of interpolation.arguments and the two
   /// summary bytes: preamble and argument count.
-  @_transparent
   public var bufferSize: Int { return interpolation.arguments.byteCount + 2 }
 
   /// Serialize the summary bytes and arguments into the given byte-buffer
   /// builder. The summary bytes are serailized first followed by the arguments.
+  @usableFromInline
   internal func serializeArguments(
     into bufferBuilder: inout OSLogByteBufferBuilder
   ) {
@@ -383,12 +372,14 @@ internal struct OSLogArguments {
 /// A struct that manages serialization of instances of specific types to a
 /// byte buffer. The byte buffer is provided as an argument to the initializer
 /// so that its lifetime can be managed by the caller.
+@usableFromInline
 internal struct OSLogByteBufferBuilder {
   internal var position: UnsafeMutablePointer<UInt8>
 
   /// Initializer that accepts a pointer to a preexisting buffer.
   /// - Parameter bufferStart: the starting pointer to a byte buffer
   ///   that must contain the serialized bytes.
+  @usableFromInline
   internal init(_ bufferStart: UnsafeMutablePointer<UInt8>) {
     position = bufferStart
   }

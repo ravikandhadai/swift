@@ -58,206 +58,131 @@ SILBasicBlock::iterator findIteratorForInstruction(SILInstruction *keyInst) {
   llvm_unreachable("Parent block doesn't contain instruction.");
 }
 
-// TODO: make sure that we do not over-slice esp when we have autoclosures.
-// The definitions of the captured arguments need not be pulled in.
-// For now this is not used!
-Optional<std::pair<SILBasicBlock::iterator, SILBasicBlock::iterator>>
-  getStringInterpolationInstrs(SILInstruction *first, SILInstruction *last,
-                               SILFunction &fun) {
-  assert(first != last);
-//  // Try to get the start of the interpolation, which is an AllocStack
-//  // of PackedOSLogMessage by going backward.
-//  SILInstruction *startInstr = nullptr;
-//
-//  auto queue = std::queue<SILInstruction*>();
-//  queue.push(seed);
-//
-//  while (!queue.empty()) {
-//    auto currInst = queue.front();
-//    queue.pop();
-//
-//    // If we have an alloc-stack instruction, check if it is the start of the
-//    // interpolation.
-//    if (auto *allocInst = dyn_cast<AllocStackInst>(currInst)) {
-//      auto varDecl = allocInst->getDecl();
-//      llvm::errs() << "Declname: " << varDecl->getNameStr() << "\n";
-//      // This is an string interpolation construction.
-//      if (varDecl && varDecl->getNameStr().equals("$interpolation")) {
-//        startInstr = allocInst;
-//        break;
-//      }
-//    }
-//
-//    for (auto &operand : currInst->getAllOperands()) {
-//      if (auto *valueI = operand.get()->getDefiningInstruction()) {
-//        queue.push(valueI);
-//      }
-//    }
-//  }
-//
-//  if (!startInstr) {
-//    llvm::errs() << "Couldn't find start instruction of osLog \n";
-//    return None;
-//  }
+/// A utility function for inlining the apply instruction into the caller.
+/// TODO: move some of the boiler plate code here could be moved into the
+/// SILInliner utility.
+std::pair<SILBasicBlock::iterator, SILBasicBlock *>
+inlineFunction(ApplyInst *applyInst, SILFunction &caller,
+               SILFunctionTransform &transform) {
+  FullApplySite applySite = FullApplySite(applyInst);
 
-  // Collect all instructions from the start instruction down to the seed inst.
-  SILBasicBlock::iterator startI;
-  SILBasicBlock::iterator endI;
+  SILOpenedArchetypesTracker OpenedArchetypesTracker(&caller);
+  caller.getModule().registerDeleteNotificationHandler(
+                                            &OpenedArchetypesTracker);
+  // The callee only needs to know about opened archetypes used in
+  // the substitution list.
+  OpenedArchetypesTracker.registerUsedOpenedArchetypes(applyInst);
+  SILOptFunctionBuilder funcBuilder(transform);
+  SILInliner inliner(funcBuilder,
+                     SILInliner::InlineKind::PerformanceInline,
+                     applySite.getSubstitutionMap(),
+                     OpenedArchetypesTracker);
+  SmallVector<SILValue, 8> args;
+  for (const auto &arg : applySite.getArguments())
+    args.push_back(arg);
+  return inliner.inlineFunction(applySite.getReferencedFunction(),
+                                applySite, args);
+}
 
-  llvm::errs() << "Start inst" << *first  << "\n";
-  llvm::errs() << "End inst" << *last  << "\n";
+/// Skips or evaluates the instruction based on the policy and handles errors.
+Optional<SILBasicBlock::iterator>
+evaluateOrSkip(ConstExprStepEvaluator &stepEval,
+               SILBasicBlock::iterator instI) {
+  auto inst = &(*instI);
 
-  for (auto &bb : fun) {
-    for (auto instI = bb.begin(); instI != bb.end(); instI++) {
-      auto *Iptr = &(*instI);
+  // TODO: ensure that we invalidate any mutable state whenever we skip
+  // an instruction or if the instruction cannot be evaluated.
 
-      if (Iptr == first) {
-        startI = instI;
+  // If this is a call to apply, interpret this only if this is a
+  // compiler-evaluable function or a well-known function (which is like
+  // a primitve operation). For every non-apply instruction, if we can't
+  // evaluate this flow-sensitively, ignore this and keep going.
+  Optional<SymbolicValue> errorVal = None;
+  Optional<SILBasicBlock::iterator> nextI = None;
+
+  if (auto *apply = dyn_cast<ApplyInst>(inst)) {
+    auto calleeFun = apply->getCalleeFunction();
+    if (!calleeFun || (!stepEval.isKnownPrimitive(calleeFun) &&
+        !calleeFun->hasSemanticsAttrThatStartsWith("oslog"))) {
+      if (isa<TermInst>(inst)) {
+        // We do not know the target branch if we skipped this call which is
+        // a terminal instruction.
+        return None;
       }
-      if (Iptr == last) {
-        endI = instI;
-        break;
-      }
+      llvm::errs() << "Skipping call: " << *inst << "\n";
+      return ++instI;
+    }
+    if (calleeFun->hasSemanticsAttrThatStartsWith("oslog")) {
+      llvm::errs() << "Evaluating oslog call: " << *inst << "\n";
     }
   }
-  std::pair<SILBasicBlock::iterator, SILBasicBlock::iterator> res =
-    { startI, endI };
-  return res;
-}
 
-void dumpInstructions(SILBasicBlock::iterator start,
-                      SILBasicBlock::iterator end) {
-//  llvm::errs() << "Size: " << std::distance(end, start) << "\n";
-  for (auto currInst = start; currInst != end; currInst++) {
-    llvm::errs() << *currInst << "\n";
-  }
-}
-
-class SymbolicValueCodeGenerator {
-  SILBuilder &B;
-  SILLocation &Loc;
-  ASTContext &astCtx;
-  SILModule &M;
-  llvm::Optional<ApplyInst *> stringUTF8InitCall;
-
-public:
-  SymbolicValueCodeGenerator(SILBuilder &builder, ASTContext &astctx,
-                             SILLocation &loc, SILModule &mod,
-                             llvm::Optional<ApplyInst *> stringInit = None)
-  : B(builder), Loc(loc), astCtx(astctx), M(mod),
-    stringUTF8InitCall(stringInit) {
+  // Evaluation of this function bound not to fail.
+  std::tie(nextI, errorVal) = stepEval.stepOver(instI);
+  if (errorVal.hasValue()){
+    llvm::errs() << "Interpretation of " << *instI << "failed: " << errorVal.getValue() << "\n";
   }
 
-  SILValue generateCode(SymbolicValue symVal, SILType &expectedType);
-};
+  if (!nextI.hasValue()) {
+    if (isa<TermInst>(inst)) {
+      return None;
+    }
+    return ++instI;
+  }
+  return nextI;
+}
 
-/// This function generates SIL for converting a symbolic value into an instance
-/// of the provided SILType. The code only handles those conversions that are
-/// needed for os_log implementation.
-/// Note that the symbolic value do not store a type.
-/// Therefore, we need to pass in the expectedType of the result to
-/// construct appropriate code.
-SILValue SymbolicValueCodeGenerator::generateCode(SymbolicValue symVal,
-                                    SILType &expectedType) {
+/// This function generates SIL for converting a symbolic value into an
+/// instance of the provided SILType. The code only handles those conversions
+/// that are needed by the OSLogOptimization pass. Other symbolic value kinds
+/// shall be added incrementally as and when they are needed.
+SILValue generateCode(SymbolicValue symVal,
+                      SILType &expectedType,
+                      SILBuilder &builder,
+                      SILLocation &loc,
+                      llvm::Optional<ApplyInst *> stringUTF8InitCall) {
+  auto &astContext = expectedType.getASTContext();
+
   switch (symVal.getKind()) {
   case SymbolicValue::String: {
-    assert(astCtx.getStringDecl() == expectedType.getASTType()->getAnyNominal());
+    assert(astContext.getStringDecl() ==
+           expectedType.getASTType()->getAnyNominal());
     assert(stringUTF8InitCall.hasValue());
-    
-    auto stringVal = symVal.getStringValue(); // Note: this is a utf8 string.
-    auto *stringLitInst = B.createStringLiteral(Loc, stringVal,
-                                            StringLiteralInst::Encoding::UTF8);
-    
-    // create a builtin word for the size of the string
-    auto *sizeInst = B.createIntegerLiteral(Loc,
-                                            SILType::getBuiltinWordType(astCtx),
-                                            stringVal.size());
-    auto *isAscii = B.createIntegerLiteral(Loc,
-                                SILType::getBuiltinIntegerType(1, astCtx),
-                                          0); // Set to false.
-    
+
+    auto stringVal = symVal.getStringValue(); // Note that this is a utf8 string.
+    auto *stringLitInst =
+      builder.createStringLiteral(loc, stringVal,
+                                  StringLiteralInst::Encoding::UTF8);
+
+    // Create a builtin word for the size of the string
+    auto *sizeInst =
+      builder.createIntegerLiteral(loc, SILType::getBuiltinWordType(astContext),
+                                   stringVal.size());
+    // Set isAscii to false.
+    auto *isAscii =
+      builder.createIntegerLiteral(loc,
+                                   SILType::getBuiltinIntegerType(1, astContext),
+                                   0);
     auto *initCall = stringUTF8InitCall.getValue();
-    
-    auto args  = SmallVector<SILValue, 2>();
+
+    auto args  = SmallVector<SILValue, 4>();
     args.push_back(stringLitInst);
     args.push_back(sizeInst);
     args.push_back(isAscii);
     args.push_back(initCall->getOperand(4));
-    
-    auto *applyInst = B.createApply(Loc, initCall->getOperand(0),
+
+    auto *applyInst = builder.createApply(loc, initCall->getOperand(0),
                                     SubstitutionMap(),
                                     ArrayRef<SILValue>(args), false);
     return applyInst;
   }
-  case SymbolicValue::Integer: {
-    // create a swift Integer struct of appropriate bit-width
-    APInt resInt = symVal.getIntegerValue();
-    assert(expectedType.getASTType()->is<BuiltinIntegerType>());
-
-    auto *intLitInst = B.createIntegerLiteral(Loc, expectedType, resInt);
-    return intLitInst;
-  }
-  case SymbolicValue::EnumWithPayload: {
-    auto *enumDecl = expectedType.getEnumOrBoundGenericEnum();
-    assert(enumDecl);
-    
-    // generate code for the payload
-    auto enumPayload = symVal.getEnumPayloadValue();
-    auto *enumElemDecl = symVal.getEnumValue();
-    auto elemType = expectedType.getEnumElementType(enumElemDecl, M);
-    auto payloadSILVal = generateCode(enumPayload, elemType);
-   
-    
-    auto *enumInst = B.createEnum(Loc, payloadSILVal, enumElemDecl,
-                                  expectedType);
-    return enumInst;
-  }
-  case SymbolicValue::Aggregate: {
-    // Recursively get the types of the fields.
-    auto *structDecl = expectedType.getStructOrBoundGenericStruct();
-    assert(structDecl);
-
-    auto aggVal = symVal.getAggregateValue();
-    auto aggValIter = aggVal.begin();
-    SmallVector<SILValue, 3> newopds;
-
-    for (auto *fieldDecl: structDecl->getStoredProperties()) {
-      if (auto *field = dyn_cast<VarDecl>(fieldDecl)) {
-        auto fieldType = expectedType.getFieldType(fieldDecl, M);
-        newopds.push_back(generateCode(*aggValIter, fieldType));
-        ++aggValIter;
-      }
-    }
-    auto *structInst = B.createStruct(Loc, expectedType, newopds);
-    return structInst;
-  }
   default: {
-    llvm::errs() << "Unsupported symbolic value kind: \n";
-    symVal.print(llvm::errs());
-    llvm::errs() << "\n";
     assert(false &&
-           "Given symbolic value kind not yet supported\n");
+           "Symbolic value other than strings are not supported");
   }
   }
 }
 
-static bool isConcreteNumberDecl(NominalTypeDecl * numberDecl,
-                                 ASTContext &astCtx) {
-  return (numberDecl == astCtx.getIntDecl() ||
-          numberDecl == astCtx.getInt8Decl() ||
-          numberDecl == astCtx.getInt16Decl() ||
-          numberDecl == astCtx.getInt32Decl() ||
-          numberDecl == astCtx.getInt64Decl() ||
-          numberDecl == astCtx.getUIntDecl() ||
-          numberDecl == astCtx.getUInt8Decl() ||
-          numberDecl == astCtx.getUInt16Decl() ||
-          numberDecl == astCtx.getUInt32Decl() ||
-          numberDecl == astCtx.getUInt64Decl() ||
-          numberDecl == astCtx.getDoubleDecl() ||
-          numberDecl == astCtx.getFloatDecl() ||
-          numberDecl == astCtx.getFloat80Decl() ||
-          numberDecl == astCtx.getBoolDecl());
-}
   
 class OSLogOptimization : public SILFunctionTransform {
   
@@ -268,116 +193,41 @@ class OSLogOptimization : public SILFunctionTransform {
   
   ~OSLogOptimization() override {}
 
-  /// A utility function for inlining the apply instruction into the caller.
-  std::pair<SILBasicBlock::iterator, SILBasicBlock *>
-  inlineFunction(ApplyInst *applyInst, SILFunction &caller) {
-    // Inline the instructions
-    FullApplySite applySite = FullApplySite(applyInst);
-    
-    SILOpenedArchetypesTracker OpenedArchetypesTracker(&caller);
-    caller.getModule().registerDeleteNotificationHandler(
-                                                    &OpenedArchetypesTracker);
-    // The callee only needs to know about opened archetypes used in
-    // the substitution list.
-    OpenedArchetypesTracker.registerUsedOpenedArchetypes(applyInst);
-    SILOptFunctionBuilder funcBuilder(*this);
-    SILInliner inliner(funcBuilder,
-                       SILInliner::InlineKind::PerformanceInline,
-                       applySite.getSubstitutionMap(),
-                       OpenedArchetypesTracker);
-    
-    SmallVector<SILValue, 8> args;
-    for (const auto &arg : applySite.getArguments())
-      args.push_back(arg);
-    return inliner.inlineFunction(applySite.getReferencedFunction(),
-                                  applySite, args);
-  }
-  
-  void getAllTransitiveUses(SingleValueInstruction *inst,
-                            SmallVectorImpl<SILInstruction *> &result) {
-    auto queue = std::queue<SingleValueInstruction *>();
-    queue.push(inst);
-    result.push_back(inst);
-    
-    while (!queue.empty()) {
-      auto currInst = queue.front();
-      queue.pop();
-      
-      for (auto use : currInst->getUses()) {
-        auto *user = use->getUser();
-        result.push_back(user);
-        
-        if (auto *singValUser = dyn_cast<SingleValueInstruction>(user)) {
-          queue.push(singValUser);
-        }
-      }
-    }
-  }
-    
-  void collectStructFieldUses(SILValue structVar, unsigned fieldNum,
-                              SILFunction &fun,
-                              SmallVectorImpl<SILInstruction *> &result) {
-    for (auto bbI = fun.begin(); bbI != fun.end(); bbI++) {
-      auto *bb = &(*bbI);
-      for (auto instI = bb->begin(); instI != bb->end(); instI++) {
-        auto *inst = &(*instI);
-        auto *seInst = dyn_cast<StructExtractInst>(inst);
-        if (!seInst || seInst->getOperand() != structVar)
-          continue;
-        getAllTransitiveUses(seInst, result);
-      }
-    }
-  }
-  
   /// Search for loads of packedMsgArg fields that are constants and
   /// replace them with their values.
-  bool fold(SILValue packedMsgArg, SymbolicValue packedMsgValue,
-            SILBasicBlock::iterator firstInlinedInst,
-            SILBasicBlock *lastBB, SILFunction &fun, SILModule &module) {
-    auto &astCtx = packedMsgArg->getType().getASTContext();
-    
-    auto packedMsgAggregate = packedMsgValue.getAggregateValue();
+  bool fold(ConstExprStepEvaluator &stepEval, SILBasicBlock::iterator startInst,
+            SILBasicBlock *lastBB) {
+    auto &astCtx = getFunction()->getASTContext();
     
     // A mapping from SILValue to its constant value, if any.
-    llvm::SmallMapVector<StructExtractInst *, SymbolicValue, 4> constantMap;
-    // We can try removing all constant-valued users. Most of them will be
-    // dead if they are just producing intermediate results of a constant
-    // computation.
-    llvm::SetVector<SILInstruction *> possiblyDeadUsers;
+    llvm::SmallMapVector<SingleValueInstruction *, SymbolicValue, 4> constantMap;
 
-    // Record seen instructions to avoid going around loops.
-    llvm::SetVector<SILInstruction *> seenUsers;
-    seenUsers.insert(packedMsgArg->getDefiningInstruction());
-    
-    auto *firstInlinedBB = firstInlinedInst->getParent();
-    for (auto bbI = firstInlinedBB->getIterator(); bbI != fun.end(); bbI++) {
-      auto *bb = &(*bbI);
-      auto instI = (bb == firstInlinedBB) ? firstInlinedInst : bb->begin();
-      
-      for (; instI != bb->end(); instI++) {
-        auto *user = &(*instI);
-        if (seenUsers.count(user))
-          continue;
-        seenUsers.insert(user); // Record that we have seen this user.
+    for(auto currI = startInst, endI = lastBB->end(); currI != endI; ) {
+      auto *currInst = &(*currI);
 
-        auto *seInst = dyn_cast<StructExtractInst>(user);
-        if (!seInst || seInst->getOperand() != packedMsgArg)
-          continue;
+      // TODO: make sure we invalidate non-constant state during interpretation.
 
-        auto instVal = packedMsgAggregate[seInst->getFieldNo()];
-        auto silType = seInst->getType();
-        auto astType = silType.getASTType();
-        
-        // Track builtin and stdlib integer values.
-        if (astType->is<BuiltinIntegerType>() ||
-            isConcreteNumberDecl(astType->getAnyNominal(), astCtx)) {
-          constantMap.insert({ seInst, instVal });
-        }
-        
-        // Track constant string values.
-        if (astCtx.getStringDecl() == astType->getAnyNominal()) {
-          constantMap.insert({ seInst, instVal });
-        }
+      auto nextI = evaluateOrSkip(stepEval, currI);
+      if (!nextI) {
+        break;
+      }
+      currI = nextI.getValue();
+
+      // If we found a constant value for the result of the instruction,
+      // track it, if it could be folded.
+      auto *singleValInst = dyn_cast<SingleValueInstruction>(currInst);
+      if (!singleValInst)
+        continue;
+
+      auto symVal = stepEval.lookupConstValue(singleValInst);
+      if (!symVal.hasValue())
+        continue;
+
+      auto silType = singleValInst->getType();
+      // Track constant string values.
+      if (!silType.isAddress() &&
+          astCtx.getStringDecl() == silType.getASTType()->getAnyNominal()) {
+        constantMap.insert({ singleValInst, symVal.getValue() });
       }
     }
 
@@ -388,30 +238,23 @@ class OSLogOptimization : public SILFunctionTransform {
       auto *inst = kv.first;
       auto symVal = kv.second;
 
+      // Generate code for the string literal.
+      SILBuilderWithScope builder(inst);
+      auto loc = inst->getLoc();
+      auto instType = inst->getType();
+      auto newSILVal = generateCode(symVal, instType, builder, loc,
+                                    this->stringUTF8InitCall);
+
+      // for debugging
       llvm::errs() << "Folding Inst: "<< *inst << " with value: ";
       symVal.print(llvm::errs());
       llvm::errs() << "\n";
-
-      // Build data structures needed for code generation
-      SILBuilderWithScope B(inst);
-      auto loc = inst->getLoc();
-      SymbolicValueCodeGenerator codeGen(B, astCtx, loc, module,
-                                         this->stringUTF8InitCall);
-
-      // generate code
-      auto instType = inst->getType();
-      auto newSILVal = codeGen.generateCode(symVal, instType);
-      
       llvm::errs() << "New SILValue: " << newSILVal << "\n";
 
       // fold using the new value and record deleted instructions
       inst->replaceAllUsesWith(newSILVal);
       deletedInsts.push_back(inst);
-      
-      // Collect all instructions of fun that references the folded fields of
-      // PackedOSLogMessage and recursively delete all their uses as well.
-//      collectStructFieldUses(packedMsgArg, inst->getFieldNo(), fun,
-//                            deletedInsts);
+      // TODO: remove calls to getIntegerFormatSpecifier.
     }
     
     recursivelyDeleteTriviallyDeadInstructions(deletedInsts, true,
@@ -420,27 +263,10 @@ class OSLogOptimization : public SILFunctionTransform {
     return !deletedInsts.empty();
   }
 
-  void optimizeOSLogFun(ApplyInst *applyInst, SILValue packedMsgArg,
-                        SymbolicValue packedMsgValue,
-                        SILFunction &caller, SILModule &M) {
-    
-    // (a) Inline osLog call into the caller
-    SILBasicBlock::iterator firstInlinedInst;
-    SILBasicBlock *lastBB;
-    std::tie(firstInlinedInst, lastBB) = inlineFunction(applyInst, caller);
-    
-    // (b) fold simple constants in the body of oslog
-    fold(packedMsgArg, packedMsgValue, firstInlinedInst, lastBB, caller, M);
-  }
-
   llvm::Optional<SymbolicValue>
-  partiallyEvaluate(ConstExprEvaluator &constEval, SILFunction *fun,
-                    SILBasicBlock::iterator startIter,
-                    SILInstruction *endInst,
+  partiallyEvaluate(ConstExprStepEvaluator &stepEval,
+                    SILBasicBlock::iterator startIter, SILInstruction *endInst,
                     SILValue keyOperand) {
-    // Initialize the interpreter state
-    ConstExprStepEvaluator stepEval(constEval, fun);
-
     auto currI = startIter;
     while(&(*currI) != endInst) {
       auto inst = &(*currI);
@@ -451,49 +277,19 @@ class OSLogOptimization : public SILFunctionTransform {
         return None;
       }
 
-      // TODO: ensure that we invalidate any mutable state whenever we give
-      // the interpretation.
-
-      // If this is a call to apply, interpret this only if this is a
-      // compiler-evaluable function or a well-known function (which is like
-      // a primitve operation). For every non-apply instruction, if we can't
-      // evaluate this flow-sensitively, ignore this and keep going.
-      Optional<SymbolicValue> errorVal = None;
-      Optional<SILBasicBlock::iterator> nextI = None;
-
-      if (auto *apply = dyn_cast<ApplyInst>(inst)) {
-        auto calleeFun = apply->getCalleeFunction();
-        if (!calleeFun ||
-            (!stepEval.isKnownPrimitive(calleeFun) &&
-             !calleeFun->hasSemanticsAttrThatStartsWith("oslog"))) {
-          if (currI == inst->getParent()->end()) {
-            return None;
+      // TODO: is this needed?
+      if (!stringUTF8InitCall) {
+        if (auto *apply = dyn_cast<ApplyInst>(inst)) {
+          if (auto calleeFun = apply->getCalleeFunction()) {
+            if (calleeFun->hasSemanticsAttr("string.makeUTF8")) {
+              stringUTF8InitCall = apply;
+            }
           }
-          llvm::errs() << "Skipping call: " << *inst << "\n";
-          currI++;
-          continue;
-        }
-        
-        if (!stringUTF8InitCall &&
-            calleeFun->hasSemanticsAttr("string.makeUTF8")) {
-          stringUTF8InitCall = apply;
-        }
-        if (calleeFun->hasSemanticsAttrThatStartsWith("oslog")) {
-          llvm::errs() << "Evaluating oslog call: " << *inst << "\n";
         }
       }
 
       // Evaluation of this function bound to not fail.
-      std::tie(nextI, errorVal) = stepEval.stepOver(currI);
-      if (errorVal.hasValue()){
-        llvm::errs() << "Interpretation of " << *currI << "failed: " << errorVal.getValue() << "\n";
-        if (currI == inst->getParent()->end()) {
-          return None;
-        }
-        currI++;
-        continue;
-      }
-
+      auto nextI = evaluateOrSkip(stepEval, currI);
       if (!nextI.hasValue()) {
         // We don't have a next instruction and we haven't seen the end
         // instruction.
@@ -503,6 +299,31 @@ class OSLogOptimization : public SILFunctionTransform {
     }
     auto symValOpt = stepEval.lookupConstValue(keyOperand);
     return symValOpt;
+  }
+
+  void optimizeOSLogCall(ConstExprStepEvaluator &stepEval,
+                         ApplyInst *applyInst) {
+    // Load and link the callee before inlining. This is needed to link
+    // (shared) functions that are used in the callee body.
+    auto &caller = *getFunction();
+    auto *callee = applyInst->getReferencedFunction();
+    assert(callee);
+
+    if (callee->isExternalDeclaration()) {
+      callee->getModule().loadFunction(callee);
+      assert(!callee->isExternalDeclaration());
+      caller.getModule().linkFunction(callee,
+                                      SILModule::LinkingMode::LinkNormal);
+    }
+
+    // Inline the log call into the caller
+    SILBasicBlock::iterator firstInlinedInst;
+    SILBasicBlock *lastBB;
+    std::tie(firstInlinedInst, lastBB) =
+      inlineFunction(applyInst, caller, *this);
+
+    // Constant-fold simple constants in the body of the log method.
+    fold(stepEval, firstInlinedInst, lastBB);
   }
 
   /// The entry point to the transformation.
@@ -516,15 +337,12 @@ class OSLogOptimization : public SILFunctionTransform {
                     Demangle::DemangleOptions::SimplifiedUIDemangleOptions());
     llvm::errs() << "Running the OSLogOptimzation phase on " << fname << "\n";
 
-    SILModule &M = getFunction()->getModule();
     auto &fun = *getFunction();
     auto deletedInsts = SmallVector<SILInstruction *, 10>();
 
-    // Do a breadth-first traversal of the basic blocks and identify the
-    // instructions that create a OSLogMessage.
     for (auto &bb : fun) {
       for (auto &inst : bb) {
-        // (a) Check if this is a call to "oslog"
+        // Check if this is a call to "oslog".
         auto *applyInst = dyn_cast<ApplyInst>(&inst);
         if (!applyInst || !applyInst->getCalleeFunction()
             || !applyInst->getCalleeFunction()
@@ -532,7 +350,7 @@ class OSLogOptimization : public SILFunctionTransform {
           continue;
         llvm::errs() << "Found call to oslog " << inst << "\n";
 
-        // (b) Extract the second operand to the call. This is the value that
+        // Extract the second operand to the call. This is the value that
         // needs to be statically computed.
         SILValue oslogMessageArg = applyInst->getArgument(1);
         llvm::errs() << "Res operand: " << oslogMessageArg << "\n";
@@ -541,20 +359,24 @@ class OSLogOptimization : public SILFunctionTransform {
           findIteratorForInstruction(oslogMessageArg->getDefiningInstruction());
         llvm::errs() << "Starting interpretation from: " << *allocStackIter << "\n";
 
-        // (d) Interpret the code
+        // Create a step evaluator.
         llvm::BumpPtrAllocator bumpAllocator;
         ConstExprEvaluator evaluator(
                    [&](unsigned long bytes, unsigned alignment) {
                      return bumpAllocator.Allocate(bytes, alignment);
                    });
-        auto resValue = partiallyEvaluate(evaluator, &fun, allocStackIter,
-                                          applyInst, oslogMessageArg);
+        ConstExprStepEvaluator stepEval(evaluator, &fun);
+
+        // Partially evaluate and compute the format string using the step
+        // evaluator.
+        auto resValue = partiallyEvaluate(stepEval, allocStackIter, applyInst,
+                                          oslogMessageArg);
         if (!resValue.hasValue()) {
           llvm::errs() << "Interpretation failed!! \n";
         }
-        auto oslogMessageValue = resValue.getValue();
 
         // for debugging
+        auto oslogMessageValue = resValue.getValue();
         SymbolicValue printableValue = oslogMessageValue;
         if (oslogMessageValue.getKind() == SymbolicValue::Address) {
           SmallVector<unsigned, 2> accessPath;
@@ -563,10 +385,9 @@ class OSLogOptimization : public SILFunctionTransform {
         llvm::errs() << "Result value for " <<  oslogMessageArg  <<  ": \n";
         printableValue.dump();
         llvm::errs() << "\n";
-        return;
 
-        // (e) Optimize the body of oslog using the constant value for the PackedOSLogMessage.
-        optimizeOSLogFun(applyInst, oslogMessageArg, oslogMessageValue, fun, M);
+        // Optimize the body of log function using the step evaluator.
+        optimizeOSLogCall(stepEval, applyInst);
         break;
       }
     }
