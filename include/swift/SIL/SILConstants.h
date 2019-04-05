@@ -58,6 +58,10 @@ enum class UnknownReason {
 
   /// Unspecified trap detected.
   Trap,
+
+  /// Used to represent an unknown symbolic value that was mutated by an
+  /// unevaluatable instruction during interpretation.
+  MutatedByUnevaluatableInstruction,
 };
 
 /// This is the symbolic value tracked for each SILValue in a scope.  We

@@ -1607,19 +1607,75 @@ ConstExprStepEvaluator::~ConstExprStepEvaluator() {
   delete internalState;
 }
 
-/// TODO: if it result of evaluation is a an error, meaning there is a symboic
-/// value that is returned, make all SILValues mutated by the instruction as
-/// unknown.
+/// This function evaluates an instruction and if the evaluation fails,
+/// skips the instruction. When an instruction is skipped, only the part of the
+/// state that is guaranteed to be constant, despite not knowing the effects of
+/// the instruction, is preserved. Specifically, any portion of a
+/// SymbolicValueMemoryObject that could possibly be mutated by the skipped
+/// instruction is reset to an unknown symbolic value. This function preserves
+/// soundness of interpretation despite skipping instructions.
+/// \param instI instruction to be evaluated in the current interpreter state.
+/// \returns a pair where the first and elements are defined as follows:
+///   First element: if not None, it is the iterator to the next
+///   instruction from the where the evaluation can continue.
+///   The first element is None iff the evaluation fails and if the
+///   next instruction from where the evaluation must continue cannot be
+///   determined. This would be the case if `instI` is branch whose target
+///   depends on the result of the evaluation e.g. like a condbr.
+///
+///   Second element: if the evaluation is successful, returns None.
+///   Otherwise, returns the error in the form of a symbolic value.
 std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
-ConstExprStepEvaluator::stepOver(SILBasicBlock::iterator instI) {
+ConstExprStepEvaluator::
+evaluateOrSkipInstruction(SILBasicBlock::iterator instI) {
   // Make sure we haven't exceeded our interpreter iteration cap.
+  SILInstruction *inst = &(*instI);
   if (++stepsEvaluated > ConstExprLimit)
     return { None,
-      SymbolicValue::getUnknown(&(*instI), UnknownReason::TooManyInstructions,
-                                {}, evaluator.getAllocator()) };
+      SymbolicValue::getUnknown(inst, UnknownReason::TooManyInstructions, {},
+                                evaluator.getAllocator()) };
 
-  return internalState->
-            evaluateBranchOrSimpleInstruction(instI, visitedBlocks);
+  auto nextInstAndError =
+    internalState->evaluateBranchOrSimpleInstruction(instI, visitedBlocks);
+  Optional<SILBasicBlock::iterator> nextI = nextInstAndError.first;
+  Optional<SILBasicBlock::iterator> errorVal = nextInstAndError.second;
+
+  if (!errorVal) {
+    assert (nextI)
+    return nextInstAndError;
+  }
+
+  // Since the evaluation has failed, make all state that could be mutated by
+  // the instruction unknown symbolic value.
+  for (auto operand : inst->getAllOperands()) {
+    auto constVal = lookupConstValue(operand);
+    if (!constValOpt) {
+      continue;
+    }
+    auto constVal = constValOpt.getValue();
+    if (constVal.getKind() != SymbolicValue::Address) {
+      continue;
+    }
+    // Write an unknown value into the address.
+    SmallVector<unsigned, 4> accessPath;
+    auto *memoryObject = constVal.getAddressValue(accessPath);
+    auto unknownValue =
+      SymbolicValue::getUnknown(inst,
+                                UnknownReason::MutatedByUnevaluatableInstruction,
+                                {}, evaluator.getAllocator());
+    memoryObject->setIndexedElement(accessPath, unknownValue,
+                                    evaluator.getAllocator());
+  }
+
+  //If we have a next instruction in the basic
+  // block return it, otherwise return None.
+  if (!isa<TermInst>(inst)) {
+    return { ++instI, errorVal };
+  }
+
+  // Evaluation cannot fail on unconditional branches.
+  assert(!isa<CondBranchInst>(inst));
+  return { None, errorVal };
 }
 
 Optional<SymbolicValue>

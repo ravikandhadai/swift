@@ -107,7 +107,7 @@ public:
   ~ConstExprStepEvaluator();
 
   std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
-  stepOver(SILBasicBlock::iterator instI);
+  evaluateOrSkipInstruction(SILBasicBlock::iterator instI);
 
   Optional<SymbolicValue> lookupConstValue(SILValue value);
 

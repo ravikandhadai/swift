@@ -117,7 +117,7 @@ evaluateOrSkip(ConstExprStepEvaluator &stepEval,
     }
   }
 
-  // Evaluation of this function bound not to fail.
+  // Evaluation of this function should not to fail.
   std::tie(nextI, errorVal) = stepEval.stepOver(instI);
   if (errorVal.hasValue()){
     llvm::errs() << "Interpretation of " << *instI << "failed: " << errorVal.getValue() << "\n";
