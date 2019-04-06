@@ -227,6 +227,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
 
   /// Append the given argument headers and size.
   @usableFromInline
+  @_transparent
   internal mutating func addArgumentHeaders(
     flag: ArgumentFlag,
     type: ArgumentType,
@@ -234,7 +235,7 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   ) {
     // Flag and type take up one byte where the least significant four bits
     // is flag and most significant four bits is the type.
-    let flagAndType: UInt8 = (type.rawValue << 4) | flag.rawValue
+    let flagAndType: UInt8 = (type.rawValue &<< 16) | flag.rawValue
     arguments.append(flagAndType)
     arguments.append(size)
   }

@@ -176,6 +176,30 @@ public:
   llvm::Optional<SymbolicValue> computeFSStore(SymbolicValue storedCst,
                                                SILValue dest);
 
+//  void dump() {
+//    for (auto &kv : calculatedValues) {
+//      auto symval = kv.second;
+//      if (!symval.isConstant())
+//        continue;
+//
+//      Optional<SymbolicValue> aggVal = None;
+//      if (symval.getKind() == SymbolicValue::Address) {
+//        SmallVector<unsigned, 4> ap;
+//        auto *memObj = symval.getAddressValue(ap);
+//
+//        auto memVal = memObj->getValue();
+//        if (memVal.getKind() == SymbolicValue::Aggregate)
+//          aggVal = memVal;
+//      } else if (symval.getKind() == SymbolicValue::Aggregate) {
+//        aggVal = symval;
+//      }
+//
+//      if (aggVal && aggVal.getValue().getAggregateValue().size() == 4) {
+//        llvm::errs() << "  " << aggVal.getValue() << "\n";
+//      }
+//    }
+//  }
+
 private:
   llvm::Optional<SymbolicValue>
   initializeAddressFromSingleWriter(SILValue addr);
@@ -1607,48 +1631,45 @@ ConstExprStepEvaluator::~ConstExprStepEvaluator() {
   delete internalState;
 }
 
-/// This function evaluates an instruction and if the evaluation fails,
-/// skips the instruction. When an instruction is skipped, only the part of the
-/// state that is guaranteed to be constant, despite not knowing the effects of
-/// the instruction, is preserved. Specifically, any portion of a
-/// SymbolicValueMemoryObject that could possibly be mutated by the skipped
-/// instruction is reset to an unknown symbolic value. This function preserves
-/// soundness of interpretation despite skipping instructions.
-/// \param instI instruction to be evaluated in the current interpreter state.
-/// \returns a pair where the first and elements are defined as follows:
-///   First element: if not None, it is the iterator to the next
-///   instruction from the where the evaluation can continue.
-///   The first element is None iff the evaluation fails and if the
-///   next instruction from where the evaluation must continue cannot be
-///   determined. This would be the case if `instI` is branch whose target
-///   depends on the result of the evaluation e.g. like a condbr.
-///
-///   Second element: if the evaluation is successful, returns None.
-///   Otherwise, returns the error in the form of a symbolic value.
+Optional<SymbolicValue> ConstExprStepEvaluator::
+  incrementStepsAndCheckLimit(SILInstruction *inst,
+                              bool includeInInstructionLimit) {
+  if (includeInInstructionLimit && ++stepsEvaluated > ConstExprLimit) {
+    return SymbolicValue::getUnknown(inst,
+                                     UnknownReason::TooManyInstructions, {},
+                                     evaluator.getAllocator());
+  }
+  return None;
+}
+
 std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
-ConstExprStepEvaluator::
-evaluateOrSkipInstruction(SILBasicBlock::iterator instI) {
-  // Make sure we haven't exceeded our interpreter iteration cap.
+ConstExprStepEvaluator::evaluate(SILBasicBlock::iterator instI,
+                                 bool includeInInstructionLimit) {
+  // Make sure we haven't exceeded our interpreter iteration cap, if we have to.
+  auto limitError =
+    incrementStepsAndCheckLimit(&(*instI), includeInInstructionLimit);
+  if (limitError) {
+    return { None, limitError.getValue() };
+  }
+  return internalState->evaluateBranchOrSimpleInstruction(instI, visitedBlocks);
+}
+
+std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+ConstExprStepEvaluator::skip(SILBasicBlock::iterator instI,
+                             bool includeInInstructionLimit) {
   SILInstruction *inst = &(*instI);
-  if (++stepsEvaluated > ConstExprLimit)
-    return { None,
-      SymbolicValue::getUnknown(inst, UnknownReason::TooManyInstructions, {},
-                                evaluator.getAllocator()) };
 
-  auto nextInstAndError =
-    internalState->evaluateBranchOrSimpleInstruction(instI, visitedBlocks);
-  Optional<SILBasicBlock::iterator> nextI = nextInstAndError.first;
-  Optional<SILBasicBlock::iterator> errorVal = nextInstAndError.second;
-
-  if (!errorVal) {
-    assert (nextI)
-    return nextInstAndError;
+  // Make sure we haven't exceeded our interpreter iteration cap, if we have to.
+  auto limitError =
+    incrementStepsAndCheckLimit(inst, includeInInstructionLimit);
+  if (limitError) {
+    return { None, limitError.getValue() };
   }
 
-  // Since the evaluation has failed, make all state that could be mutated by
-  // the instruction unknown symbolic value.
-  for (auto operand : inst->getAllOperands()) {
-    auto constVal = lookupConstValue(operand);
+  // Reset all constant state that could be mutated by the instruction
+  // to an unknown symbolic value.
+  for (auto &operand : inst->getAllOperands()) {
+    auto constValOpt = lookupConstValue(operand.get());
     if (!constValOpt) {
       continue;
     }
@@ -1661,21 +1682,61 @@ evaluateOrSkipInstruction(SILBasicBlock::iterator instI) {
     auto *memoryObject = constVal.getAddressValue(accessPath);
     auto unknownValue =
       SymbolicValue::getUnknown(inst,
-                                UnknownReason::MutatedByUnevaluatableInstruction,
+                                UnknownReason::MutatedBySkippedInstruction,
                                 {}, evaluator.getAllocator());
-    memoryObject->setIndexedElement(accessPath, unknownValue,
-                                    evaluator.getAllocator());
+
+    auto memoryContent = memoryObject->getValue();
+    if (memoryContent.getKind() == SymbolicValue::Aggregate ||
+        memoryContent.getKind() == SymbolicValue::Array) {
+      memoryObject->setIndexedElement(accessPath, unknownValue,
+                                      evaluator.getAllocator());
+    } else {
+      memoryObject->setValue(unknownValue);
+    }
   }
 
-  //If we have a next instruction in the basic
-  // block return it, otherwise return None.
+  // Map the results of the skipped instruction to unknown values.
+  for (auto result : inst->getResults()) {
+    internalState->setValue(result,
+                            SymbolicValue::getUnknown(inst,
+                              UnknownReason::ReturnedBySkippedInstruction,
+                              {}, evaluator.getAllocator()));
+  }
+
+  // If we have a next instruction in the basic block return it.
+  // Otherwise, return None for the next instruction.
+  // Note that we can find the next instruction in the case of unconditional
+  // branches. But, there is no real need to do that as of now.
   if (!isa<TermInst>(inst)) {
-    return { ++instI, errorVal };
+    return { ++instI, None };
+  }
+  return { None, None };
+}
+
+std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+ConstExprStepEvaluator::
+tryEvaluateOrElseSkip(SILBasicBlock::iterator instI) {
+
+  auto evaluateResult = evaluate(instI);
+  Optional<SILBasicBlock::iterator> nextI = evaluateResult.first;
+  Optional<SymbolicValue> errorVal = evaluateResult.second;
+
+  if (!errorVal) {
+    assert (nextI);
+    return evaluateResult;
   }
 
-  // Evaluation cannot fail on unconditional branches.
-  assert(!isa<CondBranchInst>(inst));
-  return { None, errorVal };
+  assert (!nextI);
+  // Evaluation cannot fail on unconditional branches. This is asserted to
+  // make sure that we have a next instruction to continue evaluation for
+  // unconditional branches.
+  assert(!isa<BranchInst>(&(*instI)));
+
+  // Since the evaluation has failed, skip the instruction. Note that
+  // we should exclude this instruction from the instruction limit as we
+  // have already accounted for it in the call to `evaluate`.
+  auto skipResult = skip(instI, /*includeInInstructionLimit*/false);
+  return { skipResult.first, errorVal };
 }
 
 Optional<SymbolicValue>
@@ -1689,4 +1750,8 @@ ConstExprStepEvaluator::lookupConstValue(SILValue value) {
 
 bool ConstExprStepEvaluator::isKnownPrimitive(SILFunction *fun) {
   return classifyFunction(fun).hasValue();
+}
+
+void ConstExprStepEvaluator::dumpState() {
+  //internalState->dump();
 }

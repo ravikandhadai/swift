@@ -84,51 +84,50 @@ inlineFunction(ApplyInst *applyInst, SILFunction &caller,
                                 applySite, args);
 }
 
+/// Decide if we must try evaluating an instruction.
+/// Returns true if the instruction is not a call or if it is, it calls a
+/// known primitive that the interpreter supprots or calls an os_log function
+/// that is annotated so.
+bool shouldAttemptEvaluation(SILInstruction *inst,
+                             ConstExprStepEvaluator &stepEval) {
+  auto *apply = dyn_cast<ApplyInst>(inst);
+  if (!apply)
+    return true;
+
+  auto calleeFun = apply->getCalleeFunction();
+  if (!calleeFun)
+    return false;
+
+  return stepEval.isKnownPrimitive(calleeFun) ||
+          calleeFun->hasSemanticsAttrThatStartsWith("oslog");
+}
+
 /// Skips or evaluates the instruction based on the policy and handles errors.
 Optional<SILBasicBlock::iterator>
 evaluateOrSkip(ConstExprStepEvaluator &stepEval,
                SILBasicBlock::iterator instI) {
   auto inst = &(*instI);
 
-  // TODO: ensure that we invalidate any mutable state whenever we skip
-  // an instruction or if the instruction cannot be evaluated.
-
-  // If this is a call to apply, interpret this only if this is a
-  // compiler-evaluable function or a well-known function (which is like
-  // a primitve operation). For every non-apply instruction, if we can't
-  // evaluate this flow-sensitively, ignore this and keep going.
   Optional<SymbolicValue> errorVal = None;
   Optional<SILBasicBlock::iterator> nextI = None;
 
-  if (auto *apply = dyn_cast<ApplyInst>(inst)) {
-    auto calleeFun = apply->getCalleeFunction();
-    if (!calleeFun || (!stepEval.isKnownPrimitive(calleeFun) &&
-        !calleeFun->hasSemanticsAttrThatStartsWith("oslog"))) {
-      if (isa<TermInst>(inst)) {
-        // We do not know the target branch if we skipped this call which is
-        // a terminal instruction.
-        return None;
-      }
-      llvm::errs() << "Skipping call: " << *inst << "\n";
-      return ++instI;
-    }
-    if (calleeFun->hasSemanticsAttrThatStartsWith("oslog")) {
-      llvm::errs() << "Evaluating oslog call: " << *inst << "\n";
-    }
+  // Note that skipping a call conservatively accounts for its effects on the
+  // interpreter state.
+  if (shouldAttemptEvaluation(inst, stepEval)) {
+     //llvm::errs() << "Evaluating: " << *inst << "\n";
+    std::tie(nextI, errorVal) = stepEval.tryEvaluateOrElseSkip(instI);
+  } else {
+    //llvm::errs() << "Skipping call: " << *inst << "\n";
+    std::tie(nextI, errorVal) = stepEval.skip(instI);
   }
 
-  // Evaluation of this function should not to fail.
-  std::tie(nextI, errorVal) = stepEval.stepOver(instI);
-  if (errorVal.hasValue()){
-    llvm::errs() << "Interpretation of " << *instI << "failed: " << errorVal.getValue() << "\n";
-  }
-
-  if (!nextI.hasValue()) {
-    if (isa<TermInst>(inst)) {
-      return None;
-    }
-    return ++instI;
-  }
+//  if (errorVal.hasValue()){
+//    llvm::errs() << "Interpretation of " << *instI << "failed: " << errorVal.getValue() << "\n";
+//  }
+//  else {
+//    llvm::errs() << "  State: \n";
+//    stepEval.dumpState();
+//  }
   return nextI;
 }
 
@@ -205,12 +204,11 @@ class OSLogOptimization : public SILFunctionTransform {
     for(auto currI = startInst, endI = lastBB->end(); currI != endI; ) {
       auto *currInst = &(*currI);
 
-      // TODO: make sure we invalidate non-constant state during interpretation.
-
       auto nextI = evaluateOrSkip(stepEval, currI);
       if (!nextI) {
         break;
       }
+      // Set the next instruction to continue evaluation from.
       currI = nextI.getValue();
 
       // If we found a constant value for the result of the instruction,
@@ -288,7 +286,7 @@ class OSLogOptimization : public SILFunctionTransform {
         }
       }
 
-      // Evaluation of this function bound to not fail.
+      // Evaluation of this function is bound to not fail.
       auto nextI = evaluateOrSkip(stepEval, currI);
       if (!nextI.hasValue()) {
         // We don't have a next instruction and we haven't seen the end
