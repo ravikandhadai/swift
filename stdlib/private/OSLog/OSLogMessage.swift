@@ -206,38 +206,48 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
       bitWidth: bitWidth,
       isSigned: isSigned)
 
-    addArgumentHeaders(
-      flag: isPrivate ? .privateFlag : .publicFlag,
-      type: .scalar,
-      size: UInt8(bitWidth / bitsPerByte))
+    let (firstByte, secondByte) =
+      getScalarHeaders(isPrivate: isPrivate, bitWidth: bitWidth)
+    arguments.append(firstByte)
+    arguments.append(secondByte)
 
-    updatePreamble(isPrivate: isPrivate)
+    preamble = getUpdatedPreamble(isPrivate: isPrivate)
+  }
+
+  @usableFromInline
+  internal func getScalarHeaders(
+    isPrivate: Bool,
+    bitWidth: Int
+  ) -> (UInt8, UInt8) {
+    return getArgumentHeaders(
+      isPrivate: isPrivate,
+      bitWidth: bitWidth,
+      type: .scalar)
+  }
+
+  /// Append the given argument headers and size.
+  internal func getArgumentHeaders(
+    isPrivate: Bool,
+    bitWidth: Int,
+    type: ArgumentType
+  ) -> (UInt8, UInt8) {
+    // Flag and type take up one byte where the least significant four bits
+    // is flag and most significant four bits is the type.
+    let flag: ArgumentFlag = isPrivate ? .privateFlag : .publicFlag
+    let flagAndType: UInt8 = (type.rawValue &<< 4) | flag.rawValue
+    let size = UInt8(bitWidth / bitsPerByte)
+    return (flagAndType, size)
   }
 
   /// Set the private bit of the preamble if the `isPrivate` parameter is true
   /// and increment the argument count. Note that the private bit in the
   /// preamable is set if any of the arguments is private.
   @usableFromInline
-  @_transparent
-  internal mutating func updatePreamble(isPrivate: Bool) {
+  internal func getUpdatedPreamble(isPrivate: Bool) -> UInt8 {
     if isPrivate {
-      preamble |= PreambleBitMask.privateBitMask.rawValue
+      return preamble | PreambleBitMask.privateBitMask.rawValue
     }
-  }
-
-  /// Append the given argument headers and size.
-  @usableFromInline
-  @_transparent
-  internal mutating func addArgumentHeaders(
-    flag: ArgumentFlag,
-    type: ArgumentType,
-    size: UInt8
-  ) {
-    // Flag and type take up one byte where the least significant four bits
-    // is flag and most significant four bits is the type.
-    let flagAndType: UInt8 = (type.rawValue &<< 16) | flag.rawValue
-    arguments.append(flagAndType)
-    arguments.append(size)
+    return preamble
   }
 
   /// Construct an os_log format specifier from the given parameters.
