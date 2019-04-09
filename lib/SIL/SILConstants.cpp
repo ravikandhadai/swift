@@ -605,6 +605,11 @@ static bool emitNoteDiagnostic(SILInstruction *badInst, UnknownReason reason,
     diagnose(ctx, sourceLoc, diag::constexpr_trap)
         .highlight(loc.getSourceRange());
     break;
+  case UnknownReason::ReturnedBySkippedInstruction:
+  case UnknownReason::MutatedBySkippedInstruction:
+    diagnose(ctx, sourceLoc, diag::constexpr_trap)
+      .highlight(loc.getSourceRange());
+      break;
   }
   return true;
 }

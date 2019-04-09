@@ -854,6 +854,7 @@ SymbolicValue ConstExprFunctionState::getConstantValue(SILValue value) {
   if (it != calculatedValues.end())
     return it->second;
 
+  llvm::errs() << "Recursing..."  << "\n";
   // Compute the value of a normal instruction based on its operands.
   auto result = computeConstantValue(value);
 
@@ -863,6 +864,7 @@ SymbolicValue ConstExprFunctionState::getConstantValue(SILValue value) {
     LLVM_DEBUG(llvm::dbgs() << "  RESULT: "; result.dump());
   }
 
+  llvm::errs() << " |-> Completed Recursing..."  << "\n";
   setValue(value, result);
   return result;
 }
@@ -1489,4 +1491,142 @@ void ConstExprEvaluator::computeConstantValues(
     // at.  We don't want lots of constants folded to trigger a limit.
     numInstEvaluated = 0;
   }
+}
+
+//===----------------------------------------------------------------------===//
+// ConstExprStepEvaluator implementation.
+//===----------------------------------------------------------------------===//
+
+ConstExprStepEvaluator::ConstExprStepEvaluator(ConstExprEvaluator &eval,
+                                               SILFunction *fun)
+  : evaluator(eval),
+  internalState(new ConstExprFunctionState(eval, fun, { }, stepsEvaluated)) {
+  }
+
+ConstExprStepEvaluator::~ConstExprStepEvaluator() {
+  delete internalState;
+}
+
+Optional<SymbolicValue> ConstExprStepEvaluator::
+  incrementStepsAndCheckLimit(SILInstruction *inst,
+                              bool includeInInstructionLimit) {
+  if (includeInInstructionLimit && ++stepsEvaluated > ConstExprLimit) {
+    return SymbolicValue::getUnknown(inst,
+                                     UnknownReason::TooManyInstructions, {},
+                                     evaluator.getAllocator());
+  }
+  return None;
+}
+
+std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+ConstExprStepEvaluator::evaluate(SILBasicBlock::iterator instI,
+                                 bool includeInInstructionLimit) {
+  // Make sure we haven't exceeded our interpreter iteration cap, if we have to.
+  auto limitError =
+    incrementStepsAndCheckLimit(&(*instI), includeInInstructionLimit);
+  if (limitError) {
+    return { None, limitError.getValue() };
+  }
+  return internalState->evaluateInstructionAndGetNext(instI, visitedBlocks);
+}
+
+std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+ConstExprStepEvaluator::skip(SILBasicBlock::iterator instI,
+                             bool includeInInstructionLimit) {
+  SILInstruction *inst = &(*instI);
+
+  // Make sure we haven't exceeded our interpreter iteration cap, if we have to.
+  auto limitError =
+    incrementStepsAndCheckLimit(inst, includeInInstructionLimit);
+  if (limitError) {
+    return { None, limitError.getValue() };
+  }
+
+  // Reset all constant state that could be mutated by the instruction
+  // to an unknown symbolic value.
+  for (auto &operand : inst->getAllOperands()) {
+    auto constValOpt = lookupConstValue(operand.get());
+    if (!constValOpt) {
+      continue;
+    }
+    auto constVal = constValOpt.getValue();
+    if (constVal.getKind() != SymbolicValue::Address) {
+      continue;
+    }
+    // Write an unknown value into the address.
+    SmallVector<unsigned, 4> accessPath;
+    auto *memoryObject = constVal.getAddressValue(accessPath);
+    auto unknownValue =
+      SymbolicValue::getUnknown(inst,
+                                UnknownReason::MutatedBySkippedInstruction,
+                                {}, evaluator.getAllocator());
+
+    auto memoryContent = memoryObject->getValue();
+    if (memoryContent.getKind() == SymbolicValue::Aggregate) {
+      memoryObject->setIndexedElement(accessPath, unknownValue,
+                                      evaluator.getAllocator());
+    } else {
+      memoryObject->setValue(unknownValue);
+    }
+  }
+
+  // Map the results of the skipped instruction to unknown values.
+  for (auto result : inst->getResults()) {
+    internalState->setValue(result,
+                            SymbolicValue::getUnknown(inst,
+                              UnknownReason::ReturnedBySkippedInstruction,
+                              {}, evaluator.getAllocator()));
+  }
+
+  // If we have a next instruction in the basic block return it.
+  // Otherwise, return None for the next instruction.
+  // Note that we can find the next instruction in the case of unconditional
+  // branches. But, there is no real need to do that as of now.
+  if (!isa<TermInst>(inst)) {
+    return { ++instI, None };
+  }
+  return { None, None };
+}
+
+std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+ConstExprStepEvaluator::
+tryEvaluateOrElseSkip(SILBasicBlock::iterator instI) {
+
+  auto evaluateResult = evaluate(instI);
+  Optional<SILBasicBlock::iterator> nextI = evaluateResult.first;
+  Optional<SymbolicValue> errorVal = evaluateResult.second;
+
+  if (!errorVal) {
+    assert (nextI);
+    return evaluateResult;
+  }
+
+  assert (!nextI);
+  // Evaluation cannot fail on unconditional branches. This is asserted to
+  // make sure that we have a next instruction to continue evaluation for
+  // unconditional branches.
+  assert(!isa<BranchInst>(&(*instI)));
+
+  // Since the evaluation has failed, skip the instruction. Note that
+  // we should exclude this instruction from the instruction limit as we
+  // have already accounted for it in the call to `evaluate`.
+  auto skipResult = skip(instI, /*includeInInstructionLimit*/false);
+  return { skipResult.first, errorVal };
+}
+
+Optional<SymbolicValue>
+ConstExprStepEvaluator::lookupConstValue(SILValue value) {
+  auto res = internalState->lookupValue(value);
+  if (res && !res->isConstant()) {
+    return None;
+  }
+  return res;
+}
+
+bool ConstExprStepEvaluator::isKnownPrimitive(SILFunction *fun) {
+  return classifyFunction(fun).hasValue();
+}
+
+void ConstExprStepEvaluator::dumpState() {
+  //internalState->dump();
 }
