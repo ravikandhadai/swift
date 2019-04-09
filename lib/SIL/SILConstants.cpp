@@ -723,6 +723,11 @@ static bool emitNoteDiagnostic(SILInstruction *badInst, UnknownReason reason,
     diagnose(ctx, sourceLoc, diag::constexpr_trap)
         .highlight(loc.getSourceRange());
     break;
+  case UnknownReason::ReturnedBySkippedInstruction:
+  case UnknownReason::MutatedBySkippedInstruction:
+    diagnose(ctx, sourceLoc, diag::constexpr_trap)
+      .highlight(loc.getSourceRange());
+      break;
   }
   return true;
 }
@@ -878,14 +883,13 @@ static SymbolicValue setIndexedElement(SymbolicValue aggregate,
   SmallVector<SymbolicValue, 4> newElts(oldElts.begin(), oldElts.end());
   newElts[elementNo] = setIndexedElement(newElts[elementNo],
                                          accessPath.drop_front(), newElement,
-                                         eltType, astCtx);
+                                         eltType, allocator);
 
   if (aggregate.getKind() == SymbolicValue::Aggregate)
-    aggregate = SymbolicValue::getAggregate(newElts, astCtx);
+    aggregate = SymbolicValue::getAggregate(newElts, allocator);
   else
     aggregate = SymbolicValue::getArray(newElts, eltType->getCanonicalType(),
                                         allocator);
-  aggregate = SymbolicValue::getAggregate(newElts, allocator);
   return aggregate;
 }
 
