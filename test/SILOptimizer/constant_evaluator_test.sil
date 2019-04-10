@@ -1,0 +1,33 @@
+// RUN: %target-sil-opt -test-constant-evaluator %s | %FileCheck %s
+
+/// The tests for the constant evaluator in stepwise evaluation mode in
+/// which instructions are evaluated one by one following the control-flow
+/// of the program. The evaluator will be run on every function that starts
+/// with `interpret` prefix and outputs the result of the value returned
+/// by the function.
+
+sil_stage canonical
+
+import Builtin
+import Swift
+
+sil [ossa] @interpretIntLiteral : $@convention(thin) () -> Builtin.Int64 {
+bb0:
+  %0 = integer_literal $Builtin.Int64, 17
+  return %0 : $(Builtin.Int64)
+}
+
+// CHECK-LABEL: @interpretIntLiteral
+// CHECK: Returns int: 17
+
+// 1 + 1
+sil [ossa] @interpretAddition : $@convention(thin) () -> Builtin.Int32 {
+bb0:
+  %0 = integer_literal $Builtin.Int32, 1
+  %1 = builtin "add_Int32"(%0 : $Builtin.Int32, %0 : $Builtin.Int32) : $(Builtin.Int32)
+  %2 = integer_literal $Builtin.Int32, 2
+  return %2 : $(Builtin.Int32)
+}
+
+// CHECK-LABEL: @interpretAddition
+// CHECK: Returns int: 2

@@ -43,20 +43,19 @@ enum class UnknownReason;
 /// This class is the main entrypoint for evaluating constant expressions.  It
 /// also handles caching of previously computed constexpr results.
 class ConstExprEvaluator {
-  /// We store arguments and result values for the cached constexpr calls we
-  /// have already analyzed in this ASTContext so that they are available even
-  /// after this ConstExprEvaluator is gone.
   SymbolicValueAllocator &allocator;
 
   /// The current call stack, used for providing accurate diagnostics.
   llvm::SmallVector<SourceLoc, 4> callStack;
 
-  ConstExprEvaluator(const ConstExprEvaluator &) = delete;
+  // ConstExprEvaluator(const ConstExprEvaluator &) = delete;
   void operator=(const ConstExprEvaluator &) = delete;
 
 public:
   explicit ConstExprEvaluator(SymbolicValueAllocator &alloc);
   ~ConstExprEvaluator();
+
+  explicit ConstExprEvaluator(const ConstExprEvaluator &other);
 
   SymbolicValueAllocator &getAllocator() { return allocator; }
 
@@ -85,26 +84,34 @@ public:
                              SmallVectorImpl<SymbolicValue> &results);
 };
 
-/// Constant expression evaluator that performs step-by-step evaluation
-/// by evaluating one instruction at a time.
+/// A constant-expression evaluator that can be used to step through a control
+/// flow graph (SILFunction body) by evaluating one instruction at a time.
+/// This evaluator can also "skip" instructions and only track constant values
+/// of variables whose values could be computed.
 class ConstExprStepEvaluator {
 private:
-  ConstExprEvaluator &evaluator;
-  ConstExprFunctionState *internalState;
-  unsigned stepsEvaluated = 0;
-  /// Targets of conditional branches that were visited. This is used to detect
-  /// loops during evaluation.
-  SmallPtrSet<SILBasicBlock *, 8> visitedBlocks;
+  ConstExprEvaluator evaluator;
 
-  ConstExprStepEvaluator(const ConstExprEvaluator &) = delete;
-  void operator=(const ConstExprEvaluator &) = delete;
+  ConstExprFunctionState *internalState;
+
+  unsigned stepsEvaluated = 0;
+
+  /// Targets of branches that were visited. This is used to detect loops during
+  /// evaluation.
+  SmallPtrSet<SILBasicBlock *, 8> visitedBlocks;
 
   Optional<SymbolicValue>
   incrementStepsAndCheckLimit(SILInstruction *inst,
                               bool includeInInstructionLimit);
 
+  ConstExprStepEvaluator(const ConstExprEvaluator &) = delete;
+  void operator=(const ConstExprEvaluator &) = delete;
+
 public:
-  explicit ConstExprStepEvaluator(ConstExprEvaluator &eval, SILFunction *fun);
+  /// Constructs a step evaluator given an allocator and a non-null pointer to a
+  /// SILFunction.
+  explicit ConstExprStepEvaluator(SymbolicValueAllocator &alloc,
+                                  SILFunction *fun);
   ~ConstExprStepEvaluator();
 
   /// Evaluate an instruction in the current interpreter state.
@@ -154,9 +161,7 @@ public:
 
   Optional<SymbolicValue> lookupConstValue(SILValue value);
 
-  bool isKnownPrimitive(SILFunction *fun);
-
-  void dumpState();
+  bool isKnownFunction(SILFunction *fun);
 };
 
 } // end namespace swift
