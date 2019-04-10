@@ -35,22 +35,22 @@ class ConstantEvaluatorTester : public SILFunctionTransform {
     if (!shouldInterpret() || fun->empty())
       return;
 
-    llvm::outs() << "@" << fun->getName() << "\n";
+    llvm::errs() << "@" << fun->getName() << "\n";
 
     SymbolicValueBumpAllocator allocator;
     ConstExprStepEvaluator stepEvaluator(allocator, fun);
 
     for (auto currI = fun->getEntryBlock()->begin();;) {
       auto *inst = &(*currI);
+
       if (auto *returnInst = dyn_cast<ReturnInst>(inst)) {
         auto returnVal =
             stepEvaluator.lookupConstValue(returnInst->getOperand());
 
         if (!returnVal) {
-          llvm::outs() << "Returns unknown"
-                       << "\n";
+          llvm::errs() << "Returns unknown" << "\n";
         }
-        llvm::outs() << "Returns " << returnVal.getValue() << "\n";
+        llvm::errs() << "Returns " << returnVal.getValue() << "\n";
         break;
       }
 

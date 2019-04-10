@@ -1,33 +1,74 @@
-// RUN: %target-sil-opt -test-constant-evaluator %s | %FileCheck %s
+// RUN: %target-sil-opt -test-constant-evaluator %s 2>&1 | %FileCheck %s -v
 
-/// The tests for the constant evaluator in stepwise evaluation mode in
-/// which instructions are evaluated one by one following the control-flow
-/// of the program. The evaluator will be run on every function that starts
-/// with `interpret` prefix and outputs the result of the value returned
-/// by the function.
+/// Tests for the constant evaluator in stepwise evaluation mode (also referred
+/// to as flow-sensitive mode) in which instructions are evaluated following
+/// the control flow of the program. The evaluator will be run on every function
+/// whose name starts with `interpret` prefix and outputs the constant value
+/// returned by the function or diagnostics if the evaluation fails.
 
 sil_stage canonical
 
 import Builtin
 import Swift
 
-sil [ossa] @interpretIntLiteral : $@convention(thin) () -> Builtin.Int64 {
+// CHECK-LABEL: @interpretIntLiteral
+sil @interpretIntLiteral : $@convention(thin) () -> Builtin.Int64 {
 bb0:
   %0 = integer_literal $Builtin.Int64, 17
   return %0 : $(Builtin.Int64)
-}
+} // CHECK: Returns int: 17
 
-// CHECK-LABEL: @interpretIntLiteral
-// CHECK: Returns int: 17
-
-// 1 + 1
-sil [ossa] @interpretAddition : $@convention(thin) () -> Builtin.Int32 {
+// CHECK-LABEL: @interpretAddition
+sil @interpretAddition : $@convention(thin) () -> Builtin.Int32 {
 bb0:
   %0 = integer_literal $Builtin.Int32, 1
   %1 = builtin "add_Int32"(%0 : $Builtin.Int32, %0 : $Builtin.Int32) : $(Builtin.Int32)
   %2 = integer_literal $Builtin.Int32, 2
   return %2 : $(Builtin.Int32)
+} // CHECK: Returns int: 2
+
+// CHECK-LABEL: @interpretAndDiagnoseNonConstantVars
+sil hidden @interpretAndDiagnoseNonConstantVars : $@convention(thin) (Int) -> () {
+bb0(%0 : $Int):
+  %4 = struct_extract %0 : $Int, #Int._value
+    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: expression not evaluable as constant here
+  %10 = tuple ()
+  return %10 : $()
 }
 
-// CHECK-LABEL: @interpretAddition
-// CHECK: Returns int: 2
+sil @$ss8readLine16strippingNewlineSSSgSb_tF : $@convention(thin) (Bool) -> @owned Optional<String>
+
+// CHECK-LABEL: @interpretAndDiagnoseNonConstantCalls
+sil @interpretAndDiagnoseNonConstantCalls : $@convention(thin) () -> () {
+bb0:
+  %0 = integer_literal $Builtin.Int1, -1
+  %1 = struct $Bool (%0 : $Builtin.Int1)
+  // function_ref readLine(strippingNewline:)
+  %2 = function_ref @$ss8readLine16strippingNewlineSSSgSb_tF : $@convention(thin) (Bool) -> @owned Optional<String>
+  %3 = apply %2(%1) : $@convention(thin) (Bool) -> @owned Optional<String>
+    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: could not fold operation
+  release_value %3 : $Optional<String>
+  %5 = tuple ()
+  return %5 : $()
+}
+
+// CHECK-LABEL: @interpretAndDiagnoseLoops
+sil hidden @interpretAndDiagnoseLoops : $@convention(thin) () -> () {
+bb0:
+  br bb1
+
+bb1:
+  %3 = integer_literal $Builtin.Int64, 0
+  %4 = integer_literal $Builtin.Int64, 100
+
+  %5 = builtin "cmp_slt_Int64"(%3 : $Builtin.Int64, %4 : $Builtin.Int64) : $Builtin.Int1
+  cond_br %5, bb2, bb3
+
+bb2:
+  br bb1
+    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: control flow loop found
+
+bb3:
+  %10 = tuple ()
+  return %10 : $()
+}

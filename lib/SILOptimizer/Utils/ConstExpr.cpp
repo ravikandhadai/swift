@@ -854,7 +854,6 @@ SymbolicValue ConstExprFunctionState::getConstantValue(SILValue value) {
   if (it != calculatedValues.end())
     return it->second;
 
-  llvm::errs() << "Recursing..."  << "\n";
   // Compute the value of a normal instruction based on its operands.
   auto result = computeConstantValue(value);
 
@@ -864,7 +863,6 @@ SymbolicValue ConstExprFunctionState::getConstantValue(SILValue value) {
     LLVM_DEBUG(llvm::dbgs() << "  RESULT: "; result.dump());
   }
 
-  llvm::errs() << " |-> Completed Recursing..."  << "\n";
   setValue(value, result);
   return result;
 }

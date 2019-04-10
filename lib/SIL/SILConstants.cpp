@@ -570,22 +570,21 @@ SymbolicValue SymbolicValue::lookThroughSingleElementAggregates() const {
 /// Emits an explanatory note if there is useful information to note or if there
 /// is an interesting SourceLoc to point at.
 /// Returns true if a diagnostic was emitted.
-static bool emitNoteDiagnostic(SILInstruction *badInst, UnknownReason reason,
-                               SILLocation fallbackLoc) {
-  auto loc = skipInternalLocations(badInst->getDebugLocation()).getLocation();
+static bool emitNoteDiagnostic(SILNode *unknownNode, SILLocation loc,
+                               UnknownReason reason, ASTContext &ctx) {
   if (loc.isNull()) {
-    // If we have important clarifying information, make sure to emit it.
-    if (reason == UnknownReason::Default || fallbackLoc.isNull())
-      return false;
-    loc = fallbackLoc;
+    return false;
   }
-
-  auto &ctx = badInst->getModule().getASTContext();
   auto sourceLoc = loc.getSourceLoc();
   switch (reason) {
   case UnknownReason::Default:
-    diagnose(ctx, sourceLoc, diag::constexpr_unknown_reason_default)
+    if (isa<SILInstruction>(unknownNode)) {
+      diagnose(ctx, sourceLoc, diag::constexpr_unknown_reason_default)
+              .highlight(loc.getSourceRange());
+    } else {
+      diagnose(ctx, sourceLoc, diag::constexpr_not_evaluable)
         .highlight(loc.getSourceRange());
+    }
     break;
   case UnknownReason::TooManyInstructions:
     // TODO: Should pop up a level of the stack trace.
@@ -617,17 +616,19 @@ static bool emitNoteDiagnostic(SILInstruction *badInst, UnknownReason reason,
 /// Given that this is an 'Unknown' value, emit diagnostic notes providing
 /// context about what the problem is.
 void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
-  auto badInst = dyn_cast<SILInstruction>(getUnknownNode());
-  if (!badInst)
-    return;
+  auto unknownNode = getUnknownNode();
+  ASTContext &ctx = unknownNode->getModule()->getASTContext();
+  SILLocation loc = fallbackLoc;
 
-  bool emittedFirstNote = emitNoteDiagnostic(badInst, getUnknownReason(),
-                                             fallbackLoc);
+  if (auto badInst = dyn_cast<SILInstruction>(unknownNode)) {
+    loc = skipInternalLocations(badInst->getDebugLocation()).getLocation();
+  }
+  bool emittedFirstNote = emitNoteDiagnostic(unknownNode, loc,
+                                             getUnknownReason(), ctx);
 
   auto sourceLoc = fallbackLoc.getSourceLoc();
-  auto &module = badInst->getModule();
   if (sourceLoc.isInvalid()) {
-    diagnose(module.getASTContext(), sourceLoc, diag::constexpr_not_evaluable);
+    diagnose(ctx, sourceLoc, diag::constexpr_not_evaluable);
     return;
   }
   for (auto &sourceLoc : llvm::reverse(getUnknownCallStack())) {
@@ -637,7 +638,7 @@ void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
 
     auto diag = emittedFirstNote ? diag::constexpr_called_from
                                  : diag::constexpr_not_evaluable;
-    diagnose(module.getASTContext(), sourceLoc, diag);
+    diagnose(ctx, sourceLoc, diag);
     emittedFirstNote = true;
   }
 }
