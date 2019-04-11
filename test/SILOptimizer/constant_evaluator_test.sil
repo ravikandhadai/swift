@@ -11,21 +11,95 @@ sil_stage canonical
 import Builtin
 import Swift
 
-// CHECK-LABEL: @interpretIntLiteral
-sil @interpretIntLiteral : $@convention(thin) () -> Builtin.Int64 {
+// Test builtin literals and operations.
+
+// CHECK-LABEL: @interpretBuiltinIntLiteral
+sil @interpretBuiltinIntLiteral : $@convention(thin) () -> Builtin.Int64 {
 bb0:
   %0 = integer_literal $Builtin.Int64, 17
   return %0 : $(Builtin.Int64)
 } // CHECK: Returns int: 17
 
-// CHECK-LABEL: @interpretAddition
-sil @interpretAddition : $@convention(thin) () -> Builtin.Int32 {
+// CHECK-LABEL: @interpretBuiltinAddition
+sil @interpretBuiltinAddition : $@convention(thin) () -> Builtin.Int32 {
 bb0:
   %0 = integer_literal $Builtin.Int32, 1
   %1 = builtin "add_Int32"(%0 : $Builtin.Int32, %0 : $Builtin.Int32) : $(Builtin.Int32)
-  %2 = integer_literal $Builtin.Int32, 2
-  return %2 : $(Builtin.Int32)
+  return %1 : $(Builtin.Int32)
 } // CHECK: Returns int: 2
+
+// CHECK-LABEL: @interpretBuiltinMultiplication
+sil @interpretBuiltinMultiplication : $@convention(thin) () -> Builtin.Int64 {
+bb0:
+%0 = integer_literal $Builtin.Int64, 10
+%1 = integer_literal $Builtin.Int64, 11
+%2 = builtin "mul_Int64"(%0 : $Builtin.Int64, %1 : $Builtin.Int64) : $(Builtin.Int64)
+return %2 : $(Builtin.Int64)
+} // CHECK: Returns int: 110
+
+// CHECK-LABEL: @interpretBuiltinDivision
+sil @interpretBuiltinDivision : $@convention(thin) () -> Builtin.Int16 {
+bb0:
+  %0 = integer_literal $Builtin.Int16, 10
+  %1 = integer_literal $Builtin.Int16, 11
+  %2 = builtin "sdiv_Int16"(%1 : $Builtin.Int16, %0 : $Builtin.Int16) : $(Builtin.Int16)
+  return %2 : $(Builtin.Int16)
+} // CHECK: Returns int: 1
+
+// CHECK-LABEL: @interpretBuiltinModulo
+sil @interpretBuiltinModulo : $@convention(thin) () -> Builtin.Int16 {
+bb0:
+  %0 = integer_literal $Builtin.Int16, 23
+  %1 = integer_literal $Builtin.Int16, 6
+  %2 = builtin "srem_Int16"(%0 : $Builtin.Int16, %1 : $Builtin.Int16) : $(Builtin.Int16)
+  return %2 : $(Builtin.Int16)
+} // CHECK: Returns int: 5
+
+// CHECK-LABEL: @interpretBuiltinLeftShift
+sil @interpretBuiltinLeftShift : $@convention(thin) () -> Builtin.Int8 {
+bb0:
+  %0 = integer_literal $Builtin.Int8, 10
+  %1 = integer_literal $Builtin.Int8, 2
+  %2 = builtin "shl_Int8"(%0 : $Builtin.Int8, %1: $Builtin.Int8) : $(Builtin.Int8)
+  return %2 : $(Builtin.Int8)
+} // CHECK: Returns int: 40
+
+// CHECK-LABEL: @interpretBuiltinRightShift
+sil @interpretBuiltinRightShift : $@convention(thin) () -> Builtin.Int8 {
+bb0:
+  %0 = integer_literal $Builtin.Int8, 10
+  %1 = integer_literal $Builtin.Int8, 2
+  %2 = builtin "ashr_Int8"(%0 : $Builtin.Int8, %1: $Builtin.Int8) : $(Builtin.Int8)
+  return %2 : $(Builtin.Int8)
+} // CHECK: Returns int: 2
+
+// CHECK-LABEL: @interpretBuiltinBitWiseAnd
+sil @interpretBuiltinBitWiseAnd : $@convention(thin) () -> Builtin.Int8 {
+bb0:
+  %0 = integer_literal $Builtin.Int8, 10
+  %1 = integer_literal $Builtin.Int8, 8
+  %2 = builtin "and_Int8"(%0 : $Builtin.Int8, %1: $Builtin.Int8) : $(Builtin.Int8)
+  return %2 : $(Builtin.Int8)
+} // CHECK: Returns int: 8
+
+// CHECK-LABEL: @interpretBuiltinBitWiseOr
+sil @interpretBuiltinBitWiseOr : $@convention(thin) () -> Builtin.Int8 {
+bb0:
+  %0 = integer_literal $Builtin.Int8, 10
+  %1 = integer_literal $Builtin.Int8, 8
+  %2 = builtin "or_Int8"(%0 : $Builtin.Int8, %1: $Builtin.Int8) : $(Builtin.Int8)
+  return %2 : $(Builtin.Int8)
+} // CHECK: Returns int: 10
+
+// Test if-then-else.
+
+// Test standard integers.
+
+// Test structs.
+
+// Test structs with mutation.
+
+// Test diagnostics.
 
 // CHECK-LABEL: @interpretAndDiagnoseNonConstantVars
 sil hidden @interpretAndDiagnoseNonConstantVars : $@convention(thin) (Int) -> () {
@@ -72,3 +146,9 @@ bb3:
   %10 = tuple ()
   return %10 : $()
 }
+
+// Test strings.
+
+// Test enums and optionals.
+
+// TODO: add tests for generics.
