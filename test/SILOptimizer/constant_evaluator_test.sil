@@ -1,4 +1,4 @@
-// RUN: %target-sil-opt -test-constant-evaluator %s 2>&1 | %FileCheck %s -v
+// RUN: %target-sil-opt -test-constant-evaluator %s 2>&1 | %FileCheck %s
 
 /// Tests for the constant evaluator in stepwise evaluation mode (also referred
 /// to as flow-sensitive mode) in which instructions are evaluated following
@@ -170,9 +170,12 @@ bb0:
 } // CHECK: Returns int: 255
 
 // Test overflow diagnostics.
-// FIXME: we should not preemptively generate errors when seeing these builtins.
-// If an error should be generated the code will explicitly trap, with a
-// fatalError
+// FIXME: Imprecision:  the following builtin operations return a tuple where
+// the second element indicate whether an overflow happened or not.
+// The interpreter currently makes the entire tuple unknown in the case of
+// overflow. This should be replaced by the correct semantics of the builtin
+// which produces a trucated value for the first element and sets the overflow
+// bit.
 
 // CHECK-LABEL: @interpretSignedTruncationError
 sil @interpretSignedTruncationError : $@convention(thin) () -> Builtin.Int8 {
@@ -194,6 +197,73 @@ bb0:
     // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: integer overflow detected
   %4 = tuple_extract %3 : $(Builtin.Int8, Builtin.Int1), 0
   return %4 : $(Builtin.Int8)
+}
+
+// Test function calls
+
+sil hidden @identity : $@convention(thin) (Builtin.Int64) -> Builtin.Int64 {
+bb0(%0 : $Builtin.Int64):
+  return %0 : $Builtin.Int64
+}
+
+// CHECK-LABEL: @interpretCallTest
+sil hidden @interpretCallTest : $@convention(thin) () -> Builtin.Int64 {
+bb0:
+  %0 = integer_literal $Builtin.Int64, 10
+  %2 = function_ref @identity : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %3 = apply %2(%0) : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  return %3 : $Builtin.Int64
+} // CHECK: Returns int: 10
+
+// A function that computes factorial of a Builtin.Int64 and traps on overflow.
+sil hidden @factorial : $@convention(thin) (Builtin.Int64) -> Builtin.Int64 {
+bb0(%0 : $Builtin.Int64):
+  %2 = integer_literal $Builtin.Int64, 0
+  %4 = builtin "cmp_eq_Int64"(%0 : $Builtin.Int64, %2 : $Builtin.Int64) : $Builtin.Int1
+  cond_br %4, bb1, bb2
+
+bb1:
+  %8 = integer_literal $Builtin.Int64, 1
+  br bb3(%8 : $Builtin.Int64)
+
+bb2:
+  %11 = integer_literal $Builtin.Int64, 1
+  %13 = integer_literal $Builtin.Int1, -1
+  %14 = builtin "usub_with_overflow_Int64"(%0 : $Builtin.Int64, %11 : $Builtin.Int64, %13 : $Builtin.Int1) : $(Builtin.Int64, Builtin.Int1)
+  %15 = tuple_extract %14 : $(Builtin.Int64, Builtin.Int1), 0
+  %16 = tuple_extract %14 : $(Builtin.Int64, Builtin.Int1), 1
+  cond_fail %16 : $Builtin.Int1
+  %19 = function_ref @factorial : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %20 = apply %19(%15) : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %23 = integer_literal $Builtin.Int1, -1
+  %24 = builtin "umul_with_overflow_Int64"(%0 : $Builtin.Int64, %20 : $Builtin.Int64, %23 : $Builtin.Int1) : $(Builtin.Int64, Builtin.Int1)
+  %25 = tuple_extract %24 : $(Builtin.Int64, Builtin.Int1), 0
+  %26 = tuple_extract %24 : $(Builtin.Int64, Builtin.Int1), 1
+  cond_fail %26 : $Builtin.Int1
+  br bb3(%25 : $Builtin.Int64)
+
+bb3(%30 : $Builtin.Int64):
+  return %30 : $Builtin.Int64
+}
+
+// CHECK-LABEL: @interpretFactorialCall
+sil hidden @interpretFactorialCall : $@convention(thin) () -> Builtin.Int64 {
+bb0:
+  %0 = integer_literal $Builtin.Int64, 5
+  %2 = function_ref @factorial : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %3 = apply %2(%0) : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  return %3 : $Builtin.Int64
+} // CHECK: Returns int: 120
+
+// CHECK-LABEL: @interpretAndDignoseLongRecursion
+sil hidden @interpretAndDignoseLongRecursion : $@convention(thin) () -> Builtin.Int64 {
+bb0:
+  %0 = integer_literal $Builtin.Int64, -5
+  %2 = function_ref @factorial : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+  %3 = apply %2(%0) : $@convention(thin) (Builtin.Int64) -> Builtin.Int64
+    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: exceeded instruction limit: 512 when evaluating the expression at compile time
+    // CHECK: {{.*}}: note: limit exceeded here
+  return %3 : $Builtin.Int64
 }
 
 // Test standard integers.
@@ -223,7 +293,7 @@ bb0:
   // function_ref readLine(strippingNewline:)
   %2 = function_ref @$ss8readLine16strippingNewlineSSSgSb_tF : $@convention(thin) (Bool) -> @owned Optional<String>
   %3 = apply %2(%1) : $@convention(thin) (Bool) -> @owned Optional<String>
-    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: could not fold operation
+    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: expression not evaluable as constant here
   release_value %3 : $Optional<String>
   %5 = tuple ()
   return %5 : $()
@@ -245,7 +315,7 @@ bb1:
 
 bb2:
   br bb1
-    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: control flow loop found
+    // CHECK: {{.*}}:[[@LINE-1]]:{{.*}}: note: control-flow loop found during evaluation 
 
 bb3:
   %10 = tuple ()
