@@ -740,4 +740,245 @@ bb3(%30 : $Builtin.Int64):
     return %30 : $Builtin.Int64
 } // CHECK: Returns int: 100
 
+// Test calling conventions.
+
+// Test struct with a string property. The struct will be passed and returned
+// @guaranteed when its methods are called.
+
+struct S {
+  var prop: String
+}
+
+sil hidden @initS : $@convention(thin) () -> @owned S {
+bb0:
+  %2 = string_literal utf8 "something"
+  %3 = integer_literal $Builtin.Word, 9
+  %4 = integer_literal $Builtin.Int1, -1
+  %5 = metatype $@thin String.Type
+  // String.init(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)
+  %6 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %7 = apply %6(%2, %3, %4, %5) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %12 = struct $S (%7 : $String)
+  retain_value %12 : $S
+  return %12 : $S
+}
+
+sil @getProp : $@convention(method) (@guaranteed S) -> @owned String {
+bb0(%0 : $S):
+  %2 = struct_extract %0 : $S, #S.prop
+  retain_value %2 : $String
+  return %2 : $String
+}
+
+// CHECK: @interpretGuaranteedConvention
+sil @interpretGuaranteedConvention : $@convention(thin) () -> @owned String {
+bb0:
+  %1 = function_ref @initS : $@convention(thin) () -> @owned S
+  %2 = apply %1() : $@convention(thin) () -> @owned S
+  %4 = function_ref @getProp : $@convention(method) (@guaranteed S) -> @owned String
+  %5 = apply %4(%2) : $@convention(method) (@guaranteed S) -> @owned String
+  release_value %2 : $S
+  return %5 : $String
+} // CHECK: Returns string: "something"
+
+
 // TODO: add tests for generic functions, generic structs and generic enums.
+
+// A composite test that mimics the format specifier construction used by
+// os log APIs.
+
+enum IntFormat {
+  case decimal
+  case hex
+  case octal
+}
+
+// getIntegerFormatSpecifier(IntFormat:isPrivate:bitWidth:isSigned:)
+sil @getIntegerFormatSpecifier : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String {
+bb0(%0 : $IntFormat, %1 : $Bool, %2 : $Int, %3 : $Bool):
+  %10 = alloc_stack $String, var, name "formatSpecifier"
+  %11 = struct_extract %1 : $Bool, #Bool._value
+  cond_br %11, bb1, bb2
+
+bb1:
+  %13 = string_literal utf8 "%{private}"
+  %14 = integer_literal $Builtin.Word, 10
+  %15 = integer_literal $Builtin.Int1, -1
+  %16 = metatype $@thin String.Type
+  %17 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %18 = apply %17(%13, %14, %15, %16) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  br bb3(%18 : $String)
+
+bb2:
+  %20 = string_literal utf8 "%{public}"
+  %21 = integer_literal $Builtin.Word, 9
+  %22 = integer_literal $Builtin.Int1, -1
+  %23 = metatype $@thin String.Type
+  %24 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %25 = apply %24(%20, %21, %22, %23) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  br bb3(%25 : $String)
+
+bb3(%27 : $String):
+  store %27 to %10 : $*String
+  %29 = integer_literal $Builtin.Int64, 64
+  %30 = struct_extract %2 : $Int, #Int._value
+  %31 = builtin "cmp_eq_Int64"(%30 : $Builtin.Int64, %29 : $Builtin.Int64) : $Builtin.Int1
+  %32 = struct $Bool (%31 : $Builtin.Int1)
+  %33 = struct_extract %32 : $Bool, #Bool._value
+  cond_br %33, bb4, bb5
+
+bb4:
+  %35 = metatype $@thin String.Type
+  %36 = string_literal utf8 "ll"
+  %37 = integer_literal $Builtin.Word, 2
+  %38 = integer_literal $Builtin.Int1, -1
+  %39 = metatype $@thin String.Type
+  %40 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %41 = apply %40(%36, %37, %38, %39) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %42 = begin_access [modify] [static] %10 : $*String
+  %43 = function_ref @$sSS2peoiyySSz_SStFZ : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  %44 = apply %43(%42, %41, %35) : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  end_access %42 : $*String
+  release_value %41 : $String
+  br bb6
+
+bb5:
+  br bb6
+
+bb6:
+  switch_enum %0 : $IntFormat, case #IntFormat.hex!enumelt: bb7, case #IntFormat.octal!enumelt: bb8, default bb9
+
+bb7:
+  %50 = metatype $@thin String.Type
+  %51 = string_literal utf8 "x"
+  %52 = integer_literal $Builtin.Word, 1
+  %53 = integer_literal $Builtin.Int1, -1
+  %54 = metatype $@thin String.Type
+  %55 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %56 = apply %55(%51, %52, %53, %54) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %57 = begin_access [modify] [static] %10 : $*String
+  %58 = function_ref @$sSS2peoiyySSz_SStFZ : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  %59 = apply %58(%57, %56, %50) : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  end_access %57 : $*String
+  release_value %56 : $String
+  br bb13
+
+bb8:
+  %63 = metatype $@thin String.Type
+  %64 = string_literal utf8 "o"
+  %65 = integer_literal $Builtin.Word, 1
+  %66 = integer_literal $Builtin.Int1, -1
+  %67 = metatype $@thin String.Type
+  %68 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %69 = apply %68(%64, %65, %66, %67) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %70 = begin_access [modify] [static] %10 : $*String
+  %71 = function_ref @$sSS2peoiyySSz_SStFZ : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  %72 = apply %71(%70, %69, %63) : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  end_access %70 : $*String
+  release_value %69 : $String
+  br bb13
+
+bb9:
+  %76 = metatype $@thin String.Type
+  %77 = struct_extract %3 : $Bool, #Bool._value
+  cond_br %77, bb10, bb11
+
+bb10:
+  %79 = string_literal utf8 "d"
+  %80 = integer_literal $Builtin.Word, 1
+  %81 = integer_literal $Builtin.Int1, -1
+  %82 = metatype $@thin String.Type
+  %83 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %84 = apply %83(%79, %80, %81, %82) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  br bb12(%84 : $String)
+
+bb11:
+  %86 = string_literal utf8 "u"
+  %87 = integer_literal $Builtin.Word, 1
+  %88 = integer_literal $Builtin.Int1, -1
+  %89 = metatype $@thin String.Type
+  %90 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %91 = apply %90(%86, %87, %88, %89) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  br bb12(%91 : $String)
+
+bb12(%93 : $String):
+  %94 = begin_access [modify] [static] %10 : $*String
+  %95 = function_ref @$sSS2peoiyySSz_SStFZ : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  %96 = apply %95(%94, %93, %76) : $@convention(method) (@inout String, @guaranteed String, @thin String.Type) -> ()
+  end_access %94 : $*String
+  release_value %93 : $String
+  br bb13
+
+bb13:
+  %100 = begin_access [read] [static] %10 : $*String
+  %101 = load %100 : $*String
+  retain_value %101 : $String
+  end_access %100 : $*String
+  destroy_addr %10 : $*String
+  dealloc_stack %10 : $*String
+  return %101 : $String
+}
+
+// CHECK-LABEL: @interpretGetPrivateInt64FormatString
+sil @interpretGetPrivateInt64FormatString : $@convention(thin) () -> @owned String {
+bb0:
+  %2 = metatype $@thin IntFormat.Type
+  %3 = enum $IntFormat, #IntFormat.decimal!enumelt
+  %4 = integer_literal $Builtin.Int1, -1
+  %5 = struct $Bool (%4 : $Builtin.Int1)
+  %6 = integer_literal $Builtin.Int64, 64
+  %7 = struct $Int (%6 : $Builtin.Int64)
+  %8 = integer_literal $Builtin.Int1, -1
+  %9 = struct $Bool (%8 : $Builtin.Int1)
+  %10 = function_ref @getIntegerFormatSpecifier : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  %11 = apply %10(%3, %5, %7, %9) : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  return %11 : $String
+} // CHECK: Returns string: "%{private}lld"
+
+// CHECK-LABEL: @interpretGetPrivateHexInt64FormatString
+sil @interpretGetPrivateHexInt64FormatString : $@convention(thin) () -> @owned String {
+bb0:
+  %2 = metatype $@thin IntFormat.Type
+  %3 = enum $IntFormat, #IntFormat.hex!enumelt
+  %4 = integer_literal $Builtin.Int1, -1
+  %5 = struct $Bool (%4 : $Builtin.Int1)
+  %6 = integer_literal $Builtin.Int64, 64
+  %7 = struct $Int (%6 : $Builtin.Int64)
+  %8 = integer_literal $Builtin.Int1, -1
+  %9 = struct $Bool (%8 : $Builtin.Int1)
+  %10 = function_ref @getIntegerFormatSpecifier : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  %11 = apply %10(%3, %5, %7, %9) : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  return %11 : $String
+} // CHECK: Returns string: "%{private}llx"
+
+// CHECK-LABEL: @interpretGetPublicOctalInt32FormatString
+sil @interpretGetPublicOctalInt32FormatString : $@convention(thin) () -> @owned String {
+bb0:
+  %2 = metatype $@thin IntFormat.Type
+  %3 = enum $IntFormat, #IntFormat.octal!enumelt
+  %4 = integer_literal $Builtin.Int1, 0
+  %5 = struct $Bool (%4 : $Builtin.Int1)
+  %6 = integer_literal $Builtin.Int64, 32
+  %7 = struct $Int (%6 : $Builtin.Int64)
+  %8 = integer_literal $Builtin.Int1, -1
+  %9 = struct $Bool (%8 : $Builtin.Int1)
+  %10 = function_ref @getIntegerFormatSpecifier : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  %11 = apply %10(%3, %5, %7, %9) : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  return %11 : $String
+} // CHECK: Returns string: "%{public}o"
+
+// CHECK-LABEL: @interpretGetUInt64FormatString
+sil @interpretGetUInt64FormatString : $@convention(thin) () -> @owned String {
+bb0:
+  %2 = metatype $@thin IntFormat.Type
+  %3 = enum $IntFormat, #IntFormat.decimal!enumelt
+  %4 = integer_literal $Builtin.Int1, 0
+  %5 = struct $Bool (%4 : $Builtin.Int1)
+  %6 = integer_literal $Builtin.Int64, 64
+  %7 = struct $Int (%6 : $Builtin.Int64)
+  %8 = integer_literal $Builtin.Int1, 0
+  %9 = struct $Bool (%8 : $Builtin.Int1)
+  %10 = function_ref @getIntegerFormatSpecifier : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  %11 = apply %10(%3, %5, %7, %9) : $@convention(thin) (IntFormat, Bool, Int, Bool) -> @owned String
+  return %11 : $String
+} // CHECK: Returns string: "%{public}llu"
