@@ -696,6 +696,48 @@ bb0:
   return %21 : $String
 } // CHECK: Returns string: "🇺🇸"
 
-// Test enums and optionals.
+// Test Enums.
 
-// TODO: add tests for generics.
+public enum Shape {
+  case square(Int64)
+  case rectangle(Int64, Int64)
+}
+
+// CHECK-LABEL: @interpretShapeArea
+sil @interpretShapeArea : $@convention(thin) () -> Builtin.Int64 {
+bb0:
+  %1 = integer_literal $Builtin.Int64, 10
+  %2 = struct $Int64 (%1 : $Builtin.Int64)
+  %3 = enum $Shape, #Shape.square!enumelt.1, %2 : $Int64
+  switch_enum %3 : $Shape, case #Shape.square!enumelt.1: bb1, case #Shape.rectangle!enumelt.1: bb2
+
+bb1(%4 : $Int64):
+  debug_value %4 : $Int64, let, name "side"
+  %5 = struct_extract %4 : $Int64, #Int64._value
+  %6 = struct_extract %4 : $Int64, #Int64._value
+  %7 = integer_literal $Builtin.Int1, -1
+  %8 = builtin "smul_with_overflow_Int64"(%5 : $Builtin.Int64, %6 : $Builtin.Int64, %7 : $Builtin.Int1) : $(Builtin.Int64, Builtin.Int1)
+  %9 = tuple_extract %8 : $(Builtin.Int64, Builtin.Int1), 0
+  %10 = tuple_extract %8 : $(Builtin.Int64, Builtin.Int1), 1
+  cond_fail %10 : $Builtin.Int1
+  br bb3(%9 : $Builtin.Int64)
+
+bb2(%15 : $(Int64, Int64)):
+  %16 = tuple_extract %15 : $(Int64, Int64), 0
+  %17 = tuple_extract %15 : $(Int64, Int64), 1
+  debug_value %16 : $Int64, let, name "length"
+  debug_value %17 : $Int64, let, name "width"
+  %20 = struct_extract %16 : $Int64, #Int64._value // user: %23
+  %21 = struct_extract %17 : $Int64, #Int64._value // user: %23
+  %22 = integer_literal $Builtin.Int1, -1
+  %23 = builtin "smul_with_overflow_Int64"(%20 : $Builtin.Int64, %21 : $Builtin.Int64, %22 : $Builtin.Int1) :             $(Builtin.Int64, Builtin.Int1)
+  %24 = tuple_extract %23 : $(Builtin.Int64, Builtin.Int1), 0
+  %25 = tuple_extract %23 : $(Builtin.Int64, Builtin.Int1), 1
+  cond_fail %25 : $Builtin.Int1
+  br bb3(%24 : $Builtin.Int64)
+
+bb3(%30 : $Builtin.Int64):
+    return %30 : $Builtin.Int64
+} // CHECK: Returns int: 100
+
+// TODO: add tests for generic functions, generic structs and generic enums.
