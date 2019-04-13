@@ -1412,9 +1412,9 @@ static llvm::Optional<SymbolicValue> evaluateAndCacheCall(
     LLVM_DEBUG(llvm::dbgs() << "ConstExpr interpret: "; inst->dump());
 
     // Make sure we haven't exceeded our interpreter iteration cap.
-    if (++numInstEvaluated > ConstExprLimit)
-      return SymbolicValue::getUnknown(inst, UnknownReason::TooManyInstructions,
-                                       {}, evaluator.getAllocator());
+    if (++numInstEvaluated > ConstExprLimit) {
+      return evaluator.getUnknown(inst, UnknownReason::TooManyInstructions);
+    }
 
     if (isa<ReturnInst>(inst)) {
       auto val = state.getConstantValue(inst->getOperand(0));
