@@ -18,6 +18,7 @@
 
 @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
 public struct Logger {
+  @usableFromInline
   internal let logObject: OSLog
 
   /// Create a custom OS log object.
@@ -32,6 +33,8 @@ public struct Logger {
 
   /// Log a string interpolation at a given level. The level is `default` if
   /// it is not specified.
+  @inlinable
+  @_semantics("oslog.log")
   public func log(level: OSLogType = .default, _ message: OSLogMessage) {
     osLog(logObject, level, message)
   }
@@ -44,11 +47,17 @@ public struct Logger {
 /// extract the format string, serialize the arguments to a byte buffer,
 /// and pass them to the OS logging system.
 @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
+@usableFromInline
+@_transparent
 internal func osLog(
   _ logObject: OSLog,
   _ logLevel: OSLogType,
   _ message: OSLogMessage
 ) {
+  // Compute static constants first so that they can be folded.
+  let formatString = message.formatString
+
+  // The following code will be executed at run time.
   guard logObject.isEnabled(type: logLevel) else { return }
 
   let bufferSize = message.bufferSize
@@ -57,7 +66,7 @@ internal func osLog(
 
   message.serializeArguments(into: &builder)
 
-  message.formatString.withCString { cFormatString in
+  formatString.withCString { cFormatString in
     ___os_log_impl(UnsafeMutableRawPointer(mutating: #dsohandle),
                    logObject,
                    logLevel,
