@@ -85,6 +85,8 @@ public:
 
 /// A constant-expression evaluator that can be used to step through a control
 /// flow graph (SILFunction body) by evaluating one instruction at a time.
+/// This evaluator can also "skip" instructions and only track constant values
+/// of variables whose values could be computed.
 class ConstExprStepEvaluator {
 private:
   ConstExprEvaluator evaluator;
@@ -124,6 +126,43 @@ public:
   std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
   evaluate(SILBasicBlock::iterator instI,
            bool includeInInstructionLimit = true);
+
+  /// Skip the instruction without evaluating it and conservatively account for
+  /// the effects of the instruction on the internal state. This operation
+  /// resets to an unknown symbolic value any portion of a
+  /// SymbolicValueMemoryObject that could possibly be mutated by the skipped
+  /// instruction. This function preserves the soundness of the interpretation.
+  /// \param instI instruction to be skipped.
+  /// \returns a pair where the first and second elements are defined as
+  /// follows:
+  ///   The first element, if is not None, is the iterator to the next
+  ///   instruction from the where the evaluation must continue.
+  ///   The first element is None if the next instruction from where the
+  ///   evaluation must continue cannot be determined when the instruction is
+  ///   skipped. This would be the case if `instI` is a branch like a `condbr`.
+  ///
+  ///   Second element is None if skipping the instruction is successful.
+  ///   Otherwise, it is an unknown symbolic value containing the error.
+  std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+  skip(SILBasicBlock::iterator instI, bool includeInInstructionLimit = true);
+
+  /// Try evaluating an instruction and if the evaluation fails, try skipping
+  /// the instruction and continue evaluation. Note that it may not always be
+  /// possible to skip an instruction whose evaluation failed and
+  /// continue evalution (e.g. a conditional branch).
+  /// See `evaluate` and `skip` functions for their semantics.
+  /// \param instI instruction to be evaluated in the current interpreter state.
+  /// \returns a pair where the first and second elements are defined as
+  /// follows:
+  ///   The first element, if is not None, is the iterator to the next
+  ///   instruction from the where the evaluation must continue.
+  ///   The first element is None iff both `evaluate` and `skip` functions
+  ///   failed to determine the next instruction to continue evaluation from.
+  ///
+  ///   Second element is None if the evaluation is successful.
+  ///   Otherwise, it is an unknown symbolic value containing the error.
+  std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
+  tryEvaluateOrElseSkip(SILBasicBlock::iterator instI);
 
   Optional<SymbolicValue> lookupConstValue(SILValue value);
 

@@ -567,6 +567,12 @@ SymbolicValue SymbolicValue::lookThroughSingleElementAggregates() const {
   }
 }
 
+bool SymbolicValue::isUnknownDueToSkippedInstructions() {
+  auto unknownReason = getUnknownReason();
+  return (unknownReason == UnknownReason::ReturnedBySkippedInstruction ||
+          unknownReason == UnknownReason::MutatedBySkippedInstruction);
+}
+
 /// Emits an explanatory note if there is useful information to note or if there
 /// is an interesting SourceLoc to point at.
 /// Returns true if a diagnostic was emitted.
@@ -604,6 +610,12 @@ static bool emitNoteDiagnostic(SILInstruction *badInst, UnknownReason reason,
   case UnknownReason::Trap:
     diagnose(ctx, sourceLoc, diag::constexpr_trap)
         .highlight(loc.getSourceRange());
+    break;
+  case UnknownReason::ReturnedBySkippedInstruction:
+    diagnose(ctx, sourceLoc, diag::constexpr_returned_by_skip);
+    break;
+  case UnknownReason::MutatedBySkippedInstruction:
+    diagnose(ctx, sourceLoc, diag::constexpr_mutated_by_skip);
     break;
   }
   return true;

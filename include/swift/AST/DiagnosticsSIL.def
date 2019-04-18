@@ -350,6 +350,13 @@ NOTE(constexpr_called_from,none, "when called from here", ())
 NOTE(constexpr_not_evaluable,none,
      "expression not evaluable as constant here", ())
 
+NOTE(constexpr_unknown_control_flow_due_to_skip,none,
+    "branch depends on non-constant value obtained by skipping instructions",())
+NOTE(constexpr_returned_by_skip,none, "return value of a skipped instruction "
+     "is not a constant", ())
+NOTE(constexpr_mutated_by_skip,none, "value mutatable by a skipped instruction "
+    "is not a constant", ())
+
 ERROR(non_physical_addressof,none,
       "addressof only works with purely physical lvalues; "
       "use `withUnsafePointer` or `withUnsafeBytes` unless you're implementing "
