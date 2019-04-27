@@ -99,10 +99,6 @@ private:
   /// evaluation.
   SmallPtrSet<SILBasicBlock *, 8> visitedBlocks;
 
-  Optional<SymbolicValue>
-  incrementStepsAndCheckLimit(SILInstruction *inst,
-                              bool includeInInstructionLimit);
-
   ConstExprStepEvaluator(const ConstExprEvaluator &) = delete;
   void operator=(const ConstExprEvaluator &) = delete;
 
@@ -124,8 +120,7 @@ public:
   ///   Second element is None, if the evaluation is successful.
   ///   Otherwise, is an unknown symbolic value that contains the error.
   std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
-  evaluate(SILBasicBlock::iterator instI,
-           bool includeInInstructionLimit = true);
+  evaluate(SILBasicBlock::iterator instI);
 
   /// Skip the instruction without evaluating it and conservatively account for
   /// the effects of the instruction on the internal state. This operation
@@ -144,7 +139,7 @@ public:
   ///   Second element is None if skipping the instruction is successful.
   ///   Otherwise, it is an unknown symbolic value containing the error.
   std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
-  skip(SILBasicBlock::iterator instI, bool includeInInstructionLimit = true);
+  skip(SILBasicBlock::iterator instI);
 
   /// Try evaluating an instruction and if the evaluation fails, try skipping
   /// the instruction and continue evaluation. Note that it may not always be
@@ -167,6 +162,17 @@ public:
   Optional<SymbolicValue> lookupConstValue(SILValue value);
 
   bool isKnownFunction(SILFunction *fun);
+
+  /// Returns true if and only if `errorVal` denotes an error that requires
+  /// aborting interpretation and returning the error. Skipping an instruction
+  /// that produces such errors is not a valid behavior.
+  bool isFailStopError(SymbolicValue errorVal);
+
+  /// Return the number of instructions evaluated for the last `evaluate`
+  /// operation. This could be used by the clients to limit the number of
+  /// instructions that should be evaluated by the step-wise evaluator.
+  /// Note that skipping an instruction is not considered as an evaluation.
+  unsigned instructionsEvaluatedByLastEvaluation() { return stepsEvaluated; }
 };
 
 } // end namespace swift

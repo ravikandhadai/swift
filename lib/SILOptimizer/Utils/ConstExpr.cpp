@@ -46,7 +46,9 @@ enum class WellKnownFunction {
   // static String.+= infix(_: inout String, _: String)
   StringAppend,
   // static String.== infix(_: String)
-  StringEquals
+  StringEquals,
+  // String.percentEscapedString.getter
+  StringEscapePercent
 };
 
 static llvm::Optional<WellKnownFunction> classifyFunction(SILFunction *fn) {
@@ -61,6 +63,8 @@ static llvm::Optional<WellKnownFunction> classifyFunction(SILFunction *fn) {
     return WellKnownFunction::StringAppend;
   if (fn->hasSemanticsAttr("string.equals"))
     return WellKnownFunction::StringEquals;
+  if (fn->hasSemanticsAttr("string.escapePercent.get"))
+    return WellKnownFunction::StringEscapePercent;
   return None;
 }
 
@@ -730,6 +734,38 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
     auto result = SymbolicValue::getAggregate(ArrayRef<SymbolicValue>(intVal),
                                               evaluator.getAllocator());
     setValue(apply, result);
+    return None;
+  }
+  case WellKnownFunction::StringEscapePercent: {
+    // String.percentEscapedString.getter
+    assert(conventions.getNumDirectSILResults() == 1 &&
+           conventions.getNumIndirectSILResults() == 0 &&
+           conventions.getNumParameters() == 1 &&
+           "unexpected String.percentEscapedString signature");
+
+    auto stringArgument = getConstantValue(apply->getOperand(1));
+    if (!stringArgument.isConstant()) {
+      return stringArgument;
+    }
+
+    if (stringArgument.getKind() != SymbolicValue::String) {
+      return evaluator.getUnknown((SILInstruction *)apply,
+                                  UnknownReason::InvalidOperandValue);
+    }
+
+    // Replace all precent symbol (%) in the string with double percents (%%)
+    StringRef stringVal = stringArgument.getStringValue();
+    SmallString<4> percentEscapedString;
+    for (auto charElem : stringVal) {
+      percentEscapedString.push_back(charElem);
+      if (charElem == '%') {
+        percentEscapedString.push_back('%');
+      }
+    }
+
+    auto resultVal = SymbolicValue::getString(percentEscapedString.str(),
+                                              evaluator.getAllocator());
+    setValue(apply, resultVal);
     return None;
   }
   }
@@ -1529,44 +1565,18 @@ ConstExprStepEvaluator::ConstExprStepEvaluator(SymbolicValueAllocator &alloc,
 
 ConstExprStepEvaluator::~ConstExprStepEvaluator() { delete internalState; }
 
-Optional<SymbolicValue> ConstExprStepEvaluator::incrementStepsAndCheckLimit(
-    SILInstruction *inst, bool includeInInstructionLimit) {
-  if (includeInInstructionLimit && ++stepsEvaluated > ConstExprLimit) {
-    // Note that there is no call stack to associate with the unknown value
-    // as the interpreter is at the top-level here.
-    return SymbolicValue::getUnknown(inst, UnknownReason::TooManyInstructions,
-                                     {}, evaluator.getAllocator());
-  }
-  return None;
-}
-
 std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
-ConstExprStepEvaluator::evaluate(SILBasicBlock::iterator instI,
-                                 bool includeInInstructionLimit) {
-  // Diagnose whether evaluating this instruction exceeds the instruction
-  // limit, unless asked to not include this instruction in the limit.
-  auto limitError =
-      incrementStepsAndCheckLimit(&(*instI), includeInInstructionLimit);
-  if (limitError) {
-    return {None, limitError.getValue()};
-  }
+ConstExprStepEvaluator::evaluate(SILBasicBlock::iterator instI) {
+  // Reset `stepsEvaluated` to zero.
+  stepsEvaluated = 0;
   return internalState->evaluateInstructionAndGetNext(instI, visitedBlocks);
 }
 
 std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
-ConstExprStepEvaluator::skip(SILBasicBlock::iterator instI,
-                             bool includeInInstructionLimit) {
+ConstExprStepEvaluator::skip(SILBasicBlock::iterator instI) {
   SILInstruction *inst = &(*instI);
 
-  // Diagnose whether evaluating this instruction exceeds the instruction
-  // limit, unless asked to not include this instruction in the limit.
-  auto limitError =
-      incrementStepsAndCheckLimit(inst, includeInInstructionLimit);
-  if (limitError) {
-    return {None, limitError.getValue()};
-  }
-
-  // Reset all constant state that could be mutated by the instruction
+  // Set all constant state that could be mutated by the instruction
   // to an unknown symbolic value.
   for (auto &operand : inst->getAllOperands()) {
     auto constValOpt = lookupConstValue(operand.get());
@@ -1611,10 +1621,7 @@ ConstExprStepEvaluator::skip(SILBasicBlock::iterator instI,
   return {None, None};
 }
 
-/// Returns true if and only if `errorVal` denotes an error that requires
-/// aborting interpretation and returning the error. Skipping an instruction
-/// that produces such errors is not a valid behavior.
-static bool isFailStopError(SymbolicValue errorVal) {
+bool ConstExprStepEvaluator::isFailStopError(SymbolicValue errorVal) {
   assert(errorVal.isUnknown());
 
   switch (errorVal.getUnknownReason()) {
@@ -1653,7 +1660,7 @@ ConstExprStepEvaluator::tryEvaluateOrElseSkip(SILBasicBlock::iterator instI) {
   // Since the evaluation has failed, skip this instruction. This instruction
   // must be excluded from the instruction limit as we have already accounted
   // for it in the call to `evaluate`.
-  auto skipResult = skip(instI, /*includeInInstructionLimit*/ false);
+  auto skipResult = skip(instI);
   return {skipResult.first, errorVal};
 }
 
