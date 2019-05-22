@@ -58,7 +58,7 @@
 ///
 /// The function 'OSLogOptimization::run' implements the overall driver for
 /// steps 1 to 4. The function 'beginOfInterpolation' implements step 1. It
-/// computes the instruction from which start the evaluation. The function
+/// computes the instruction from which the evaluation must start. The function
 /// 'constantFold' is a driver for the  steps 2 to 4. Step 2 is implemented by
 /// the function 'collectConstants', step 3 by 'detectAndDiagnoseErrors', and
 /// step 4 by 'substituteConstants' and 'emitCodeForSymbolicValue'.
@@ -170,19 +170,19 @@ public:
   StringSILInfo stringInfo;
 
 private:
-  /// Single-valued instructions that were found to be constants during
+  /// SIL values that were found to be constants during
   /// constant evaluation.
-  SmallVector<SingleValueInstruction *, 4> constantValuedInstructions;
+  SmallVector<SILValue, 4> constantSILValues;
 
 public:
   FoldState(SILFunction *fun) : constantEvaluator(allocator, fun) {}
 
-  void addConstantInstruction(SingleValueInstruction *value) {
-    constantValuedInstructions.push_back(value);
+  void addConstantSILValue(SILValue value) {
+    constantSILValues.push_back(value);
   }
 
-  ArrayRef<SingleValueInstruction *> getConstantInstructions() {
-    return ArrayRef<SingleValueInstruction *>(constantValuedInstructions);
+  ArrayRef<SILValue> getConstantSILValues() {
+    return ArrayRef<SILValue>(constantSILValues);
   }
 };
 
@@ -266,17 +266,54 @@ evaluateOrSkip(ConstExprStepEvaluator &stepEval,
 ///     used only on string literals.
 ///   - StructInst cannot be folded. We can only fold its arguments and not the
 ///     instruction itself.
-static bool isInstructionFoldable(SingleValueInstruction *inst) {
-  ASTContext &astContext = inst->getFunction()->getASTContext();
-  SILType silType = inst->getType();
+static bool isSILValueFoldable(SILValue value) {
+  SILInstruction *definingInst = value->getDefiningInstruction();
+  if (!definingInst)
+    return false;
 
-  return (!silType.isAddress() && !isa<LiteralInst>(inst) &&
-          !isa<StructInst>(inst) && !getStringMakeUTF8Init(inst) &&
+  ASTContext &astContext = definingInst->getFunction()->getASTContext();
+  SILType silType = value->getType();
+
+  return (!silType.isAddress() && !isa<LiteralInst>(definingInst) &&
+          !isa<StructInst>(definingInst) &&
+          !getStringMakeUTF8Init(definingInst) &&
           isIntegerOrStringType(silType, astContext));
 }
 
+/// Return true if and only if the given SIL instruction 'inst' marks the end of
+/// lifetime of the given SILValue 'value'.
+static bool isLifetimeEndInstructionOfSILValue(SILInstruction *inst,
+                                               SILValue value) {
+  if (auto *releaseValueInst = dyn_cast<ReleaseValueInst>(inst)) {
+    return releaseValueInst->getOperand() == value;
+  }
+
+  if (auto *destroyValueInst = dyn_cast<DestroyValueInst>(inst)) {
+    SILValue operand = destroyValueInst->getOperand();
+    if (operand == value) {
+      return true;
+    }
+
+    // Here, the look through copy_value instructions to see if we are actually
+    // destroying the given 'value'.
+    SILInstruction *currOperandInst = operand->getDefiningInstruction();
+    while (currOperandInst && isa<CopyValueInst>(currOperandInst)) {
+      auto *copyValueInst = cast<CopyValueInst>(currOperandInst);
+      SILValue nextOperand = copyValueInst->getOperand();
+      if (nextOperand == value) {
+        return true;
+      }
+      currOperandInst = nextOperand->getDefiningInstruction();
+    }
+    // We couldn't reach the given 'value' by looking through copy_value
+    // instructions.
+    return false;
+  }
+  return false;
+}
+
 /// Constant evaluate the instructions from 'start' to the end of the function
-/// or until oslogMessage is released. Add foldable, constant-valued
+/// or until oslogMessage's lifetime ends. Add foldable, constant-valued
 /// instructions discovered during the evaluation to the 'foldState' passed in.
 /// \returns error information for emitting diagnostics if the evaluation
 /// failed.
@@ -292,13 +329,8 @@ collectConstants(SILInstruction *start, SingleValueInstruction *oslogMessage,
   while (true) {
     SILInstruction *currInst = &(*currI);
 
-    // Break if currInst is a release_value of 'oslogMessage'.
-    if (auto *releaseValueInst = dyn_cast<ReleaseValueInst>(currInst)) {
-      if (releaseValueInst->getOperand()->getDefiningInstruction() ==
-          oslogMessage) {
-        break;
-      }
-    }
+    if (isLifetimeEndInstructionOfSILValue(currInst, oslogMessage))
+      break;
 
     // Initialize string info from this instruction if possible.
     foldState.stringInfo.extractStringInfoFromInstruction(currInst);
@@ -313,17 +345,17 @@ collectConstants(SILInstruction *start, SingleValueInstruction *oslogMessage,
     // Set the next instruction to continue evaluation from.
     currI = nextI.getValue();
 
-    // If the instruction is foldable and if we found a constant value for
-    // the result of the instruction, record it.
-    auto *singleValInst = dyn_cast<SingleValueInstruction>(currInst);
-    if (!singleValInst || !isInstructionFoldable(singleValInst)) {
-      continue;
-    }
+    // If the instruction results are foldable and if we found a constant value
+    // for the results, record it.
+    for (SILValue instructionResult : currInst->getResults()) {
+      if (!isSILValueFoldable(instructionResult))
+        continue;
 
-    Optional<SymbolicValue> constantVal =
-        constantEvaluator.lookupConstValue(singleValInst);
-    if (constantVal.hasValue()) {
-      foldState.addConstantInstruction(singleValInst);
+      Optional<SymbolicValue> constantVal =
+          constantEvaluator.lookupConstValue(instructionResult);
+      if (constantVal.hasValue()) {
+        foldState.addConstantSILValue(instructionResult);
+      }
     }
   }
   return None; // No error.
@@ -417,19 +449,25 @@ static void substituteConstants(FoldState &foldState) {
   ConstExprStepEvaluator &evaluator = foldState.constantEvaluator;
 
   SmallVector<SILInstruction *, 4> deletedInsts;
-  for (SingleValueInstruction *constantInst :
-       foldState.getConstantInstructions()) {
-    SymbolicValue constantVal =
-        evaluator.lookupConstValue(constantInst).getValue();
+  for (SILValue constantSILValue : foldState.getConstantSILValues()) {
+    SymbolicValue constantSymbolicVal =
+        evaluator.lookupConstValue(constantSILValue).getValue();
 
-    SILBuilderWithScope builder(constantInst);
-    SILLocation loc = constantInst->getLoc();
-    SILType instType = constantInst->getType();
+    SILInstruction *definingInst = constantSILValue->getDefiningInstruction();
+    assert(definingInst);
+
+    SILBuilderWithScope builder(definingInst);
+    SILLocation loc = definingInst->getLoc();
+    SILType instType = constantSILValue->getType();
     SILValue foldedSILVal = emitCodeForSymbolicValue(
-        constantVal, instType, builder, loc, foldState.stringInfo);
+        constantSymbolicVal, instType, builder, loc, foldState.stringInfo);
 
-    constantInst->replaceAllUsesWith(foldedSILVal);
-    deletedInsts.push_back(constantInst);
+    constantSILValue->replaceAllUsesWith(foldedSILVal);
+
+    if (isa<SingleValueInstruction>(definingInst)) {
+      deletedInsts.push_back(definingInst);
+    } // Otherwise, be conservative and do not delete the instruction as other
+    // results of the instruction could be used.
   }
 
   recursivelyDeleteTriviallyDeadInstructions(deletedInsts, true,
