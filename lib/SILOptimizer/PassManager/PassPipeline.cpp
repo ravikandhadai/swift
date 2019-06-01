@@ -131,7 +131,7 @@ static void addMandatoryOptPipeline(SILPassPipelinePlan &P) {
 
   // This phase performs optimizations necessary for correct interoperation of
   // Swift os log APIs with C os_log ABIs.
-  P.addOSLogOptimization();
+  //P.addOSLogOptimization();
 
   // Canonical swift requires all non cond_br critical edges to be split.
   P.addSplitNonCondBrCriticalEdges();
