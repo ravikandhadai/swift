@@ -169,13 +169,25 @@ public:
   /// Information needed for folding strings.
   StringSILInfo stringInfo;
 
+  /// Instruction from where folding must begin.
+  SILInstruction *beginInstruction;
+
+  /// Instructions that mark the end points of folding. No folded SIL value must
+  /// be usable beyond these instructions (in the control-flow order). These
+  /// instructions are also used to emit destory instructions for non-trivial,
+  /// SIL values emitted during folding.
+  SmallSetVector<SILInstruction *, 2> endInstructions;
+
 private:
   /// SIL values that were found to be constants during
   /// constant evaluation.
   SmallVector<SILValue, 4> constantSILValues;
 
 public:
-  FoldState(SILFunction *fun) : constantEvaluator(allocator, fun) {}
+  FoldState(SILFunction *fun, SILInstruction *beginInst,
+            ArrayRef<SILInstruction *> endInsts)
+      : constantEvaluator(allocator, fun), beginInstruction(beginInst),
+        endInstructions(endInsts.begin(), endInsts.end()) {}
 
   void addConstantSILValue(SILValue value) {
     constantSILValues.push_back(value);
@@ -280,56 +292,25 @@ static bool isSILValueFoldable(SILValue value) {
           isIntegerOrStringType(silType, astContext));
 }
 
-/// Return true if and only if the given SIL instruction 'inst' marks the end of
-/// lifetime of the given SILValue 'value'.
-static bool isLifetimeEndInstructionOfSILValue(SILInstruction *inst,
-                                               SILValue value) {
-  if (auto *releaseValueInst = dyn_cast<ReleaseValueInst>(inst)) {
-    return releaseValueInst->getOperand() == value;
-  }
-
-  if (auto *destroyValueInst = dyn_cast<DestroyValueInst>(inst)) {
-    SILValue operand = destroyValueInst->getOperand();
-    if (operand == value) {
-      return true;
-    }
-
-    // Here, the look through copy_value instructions to see if we are actually
-    // destroying the given 'value'.
-    SILInstruction *currOperandInst = operand->getDefiningInstruction();
-    while (currOperandInst && isa<CopyValueInst>(currOperandInst)) {
-      auto *copyValueInst = cast<CopyValueInst>(currOperandInst);
-      SILValue nextOperand = copyValueInst->getOperand();
-      if (nextOperand == value) {
-        return true;
-      }
-      currOperandInst = nextOperand->getDefiningInstruction();
-    }
-    // We couldn't reach the given 'value' by looking through copy_value
-    // instructions.
-    return false;
-  }
-  return false;
-}
-
-/// Constant evaluate the instructions from 'start' to the end of the function
-/// or until oslogMessage's lifetime ends. Add foldable, constant-valued
-/// instructions discovered during the evaluation to the 'foldState' passed in.
+/// Given a 'foldState', constant evaluate instructions from
+/// 'foldState.beginInstruction' until an instruction in
+/// 'foldState.endInstructions' is seen. Add foldable, constant-valued
+/// instructions discovered during the evaluation to
+/// 'foldState.constantSILValues'.
 /// \returns error information for emitting diagnostics if the evaluation
 /// failed.
-static Optional<SymbolicValue>
-collectConstants(SILInstruction *start, SingleValueInstruction *oslogMessage,
-                 FoldState &foldState) {
+static Optional<SymbolicValue> collectConstants(FoldState &foldState) {
 
   ConstExprStepEvaluator &constantEvaluator = foldState.constantEvaluator;
-  SILBasicBlock::iterator currI = start->getIterator();
+  SILBasicBlock::iterator currI = foldState.beginInstruction->getIterator();
+  auto &endInstructions = foldState.endInstructions;
 
-  // The loop will return when it sees a return instruction or a release value
-  // of oslogMessage.
+  // The loop will break when it sees a return instruction or an instruction in
+  // endInstructions.
   while (true) {
     SILInstruction *currInst = &(*currI);
 
-    if (isLifetimeEndInstructionOfSILValue(currInst, oslogMessage))
+    if (endInstructions.count(currInst))
       break;
 
     // Initialize string info from this instruction if possible.
@@ -441,14 +422,94 @@ static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
   }
 }
 
+/// Collect the end-of-lifetime instructions of the given SILValue. These are
+/// either release_value or destroy_value instructions.
+/// \param value the SIL value whose end-of-lifetime instructions must be
+/// collect. \param lifetimeEndInsts the buffer for storing the found
+/// end-of-lifetime instructions of 'value'.
+static void getLifetimeEndInstructionsOfSILValue(
+    SILValue value, SmallVectorImpl<SILInstruction *> &lifetimeEndInsts) {
+
+  bool continueLifetimeEndInstructionSearch = true;
+  SILValue currValue = value;
+
+  while (continueLifetimeEndInstructionSearch) {
+    continueLifetimeEndInstructionSearch = false;
+
+    for (Operand *use : currValue->getUses()) {
+      SILInstruction *user = use->getUser();
+
+      if (isa<ReleaseValueInst>(user) || isa<DestroyValueInst>(user)) {
+        lifetimeEndInsts.push_back(user);
+        continue;
+      }
+
+      if (isa<CopyValueInst>(user)) {
+        auto *copyValueInst = cast<CopyValueInst>(user);
+        // Continue looking for the end-of-lifetime instruction for the
+        // result of copy_value.
+        currValue = copyValueInst;
+        continueLifetimeEndInstructionSearch = true;
+      }
+    }
+  }
+}
+
+/// Emit instructions to destroy the folded value at the end of its use, if
+/// required. Since this pass folds only integers or strings and since the
+/// former is a trivial type, we only have to destroy strings tha that are folded.
+/// For string constants, a release_value (or a destory_value instruction in
+/// ownership SIL) have to be emitted if it is not already present.
+static void
+destroyFoldedValueAtEndOfUse(SILValue foldedVal, SILValue originalVal,
+                             ArrayRef<SILInstruction *> endOfUseInsts,
+                             SILFunction *fun) {
+  // Folded value should have either trivial or owned ownership as it is an
+  // integer or string constant.
+  assert(foldedVal.getOwnershipKind() == ValueOwnershipKind::Any ||
+         foldedVal.getOwnershipKind() == ValueOwnershipKind::Owned);
+
+  // If the ownership kinds of folded and original values are both either
+  // owned or trivial, there is nothing to do.
+  if (foldedVal.getOwnershipKind() == originalVal.getOwnershipKind()) {
+    return;
+  }
+  assert(originalVal.getOwnershipKind() == ValueOwnershipKind::Guaranteed);
+
+  // Here, the original value may be at +0 and hence may not be released.
+  // However, the folded value should always be released.
+  SmallVector<SILInstruction *, 2> lifeTimeEndInstsOfOriginal;
+  getLifetimeEndInstructionsOfSILValue(originalVal, lifeTimeEndInstsOfOriginal);
+
+  if (!lifeTimeEndInstsOfOriginal.empty()) {
+    // Here, the original value is released, and so would be the folded value.
+    return;
+  }
+
+  // Here, the original value is not released. Release the folded value at the
+  // 'endOfUse' instructions passed as parameter.
+  bool hasOwnership = fun->hasOwnership();
+  for (SILInstruction *endInst : endOfUseInsts) {
+    SILBuilderWithScope builder(endInst);
+    if (hasOwnership) {
+      builder.createDestroyValue(endInst->getLoc(), foldedVal);
+    } else {
+      builder.createReleaseValue(endInst->getLoc(), foldedVal,
+                                 builder.getDefaultAtomicity());
+    }
+  }
+}
+
 /// Given a fold state with constant-valued instructions, substitute the
 /// instructions with the constant values. The constant values could be strings
 /// or Stdlib integer-struct values or builtin integers.
 static void substituteConstants(FoldState &foldState) {
 
   ConstExprStepEvaluator &evaluator = foldState.constantEvaluator;
-
   SmallVector<SILInstruction *, 4> deletedInsts;
+  auto endOfUseInsts = ArrayRef<SILInstruction *>(
+      foldState.endInstructions.begin(), foldState.endInstructions.end());
+
   for (SILValue constantSILValue : foldState.getConstantSILValues()) {
     SymbolicValue constantSymbolicVal =
         evaluator.lookupConstValue(constantSILValue).getValue();
@@ -461,6 +522,10 @@ static void substituteConstants(FoldState &foldState) {
     SILType instType = constantSILValue->getType();
     SILValue foldedSILVal = emitCodeForSymbolicValue(
         constantSymbolicVal, instType, builder, loc, foldState.stringInfo);
+
+    // Add an instruction to end the lifetime of the foldedSILVal, if necessary.
+    destroyFoldedValueAtEndOfUse(foldedSILVal, constantSILValue, endOfUseInsts,
+                                 definingInst->getFunction());
 
     constantSILValue->replaceAllUsesWith(foldedSILVal);
 
@@ -563,9 +628,12 @@ static void constantFold(SILInstruction *start,
                          SingleValueInstruction *oslogMessage) {
 
   // Initialize fold state.
-  FoldState state(start->getFunction());
+  SmallVector<SILInstruction *, 2> lifetimeEndInsts;
+  getLifetimeEndInstructionsOfSILValue(oslogMessage, lifetimeEndInsts);
 
-  auto errorInfo = collectConstants(start, oslogMessage, state);
+  FoldState state(start->getFunction(), start, lifetimeEndInsts);
+
+  auto errorInfo = collectConstants(state);
 
   // At this point, the `OSLogMessage` instance should be mapped to a symbolic
   // value in the interpreter state. Furthermore, its format string and
