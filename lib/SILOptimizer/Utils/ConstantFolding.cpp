@@ -1462,6 +1462,29 @@ bool ConstantFolder::constantFoldStringConcatenation(ApplyInst *AI) {
   return true;
 }
 
+/// Given a buitin instruction calling globalStringTablePointer, check whether
+/// the string passed to the builtin is constructed from a literal and if so,
+/// replace the uses of the builtin instruction with the string_literal inst.
+static bool constantFoldGlobalStringTablePointerBuiltin(BuiltinInst *bi) {
+  // Look through string initializer to extract the string_literal instruction.
+  ApplyInst *apply = dyn_cast<ApplyInst>(bi->getOperand(0));
+  if (!apply || !apply->getCalleeFunction() ||
+      !apply->getCalleeFunction()->hasSemanticsAttr("string.makeUTF8")) {
+    // Don't emit diagnostics here as the function containing this builtin
+    // could be inlined in a caller which could make the argument of this
+    // builtin a literal. Use a runtime trap to catch incorrect uses.
+    return false;
+  }
+
+  // Replace the builtin by the first argument of the "string.makeUTF8"
+  // initializer which must be a string_literal instruction.
+  SILValue stringLiteral = apply->getArgument(0);
+  assert(isa<StringLiteralInst>(stringLiteral));
+
+  bi->replaceAllUsesWith(stringLiteral);
+  return true;
+}
+
 /// Initialize the worklist to all of the constant instructions.
 void ConstantFolder::initializeWorklist(SILFunction &F) {
   for (auto &BB : F) {
@@ -1486,11 +1509,16 @@ void ConstantFolder::initializeWorklist(SILFunction &F) {
         continue;
       }
 
-      // Should we replace calls to assert_configuration by the assert
-      // configuration.
+      // - Should we replace calls to assert_configuration by the assert
+      // configuration and fold calls to any cond_unreachable.
       if (AssertConfiguration != SILOptions::DisableReplacement &&
           (isApplyOfBuiltin(I, BuiltinValueKind::AssertConf) ||
            isApplyOfBuiltin(I, BuiltinValueKind::CondUnreachable))) {
+        WorkList.insert(&I);
+        continue;
+      }
+
+      if (isApplyOfBuiltin(I, BuiltinValueKind::GlobalStringTablePointer)) {
         WorkList.insert(&I);
         continue;
       }
@@ -1638,6 +1666,18 @@ ConstantFolder::processWorkList() {
             isa<UnconditionalCheckedCastInst>(Result) ||
             isa<UnconditionalCheckedCastAddrInst>(Result))
           WorkList.insert(Result);
+      }
+      continue;
+    }
+
+    // Constant fold uses of globalStringTablePointer builtin.
+    if (isApplyOfBuiltin(*I, BuiltinValueKind::GlobalStringTablePointer)) {
+      if (constantFoldGlobalStringTablePointerBuiltin(cast<BuiltinInst>(I))) {
+        // Here, the bulitin instruction got folded, so clean it up.
+        recursivelyDeleteTriviallyDeadInstructions(
+            I, /*force*/ true,
+            [&](SILInstruction *DeadI) { WorkList.remove(DeadI); });
+        InvalidateInstructions = true;
       }
       continue;
     }
