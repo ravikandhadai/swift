@@ -60,7 +60,7 @@ internal var logBitsPerByte: Int { return 3 }
 /// when you pass a string interpolation to the log APIs.
 /// Extend this type with more `appendInterpolation` overloads to enable
 /// interpolating additional types.
-@_fixed_layout
+@frozen
 public struct OSLogInterpolation : StringInterpolationProtocol {
   /// A format string constructed from the given string interpolation to be
   /// passed to the os_log ABI.
@@ -223,11 +223,17 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   ) {
     guard argumentCount < maxOSLogArgumentCount else { return }
 
-    addIntHeadersAndFormatSpecifier(
+    let isPrivateArgument = isPrivate(privacy)
+    
+    formatString += getIntegerFormatSpecifier(
       format,
-      isPrivate: isPrivate(privacy),
+      isPrivate: isPrivateArgument,
       bitWidth: Int.bitWidth,
       isSigned: true)
+    
+    let argumentByteCount = OSLogSerializationInfo.sizeForEncoding(Int.self)
+    addIntHeaders(isPrivateArgument, argumentByteCount)
+
     arguments.append(number)
     argumentCount += 1
   }
@@ -236,31 +242,18 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   /// interpolation.
   @_transparent
   @_optimize(none)
-  public mutating func addIntHeadersAndFormatSpecifier(
-    _ format: IntFormat,
-    isPrivate: Bool,
-    bitWidth: Int,
-    isSigned: Bool
-  ) {
-    formatString += getIntegerFormatSpecifier(
-      format,
-      isPrivate: isPrivate,
-      bitWidth: bitWidth,
-      isSigned: isSigned)
-
+  public mutating func addIntHeaders(_ isPrivate: Bool, _ byteCount: Int) {
     // Append argument header.
-    let argumentHeader =
-      getArgumentHeader(isPrivate: isPrivate, bitWidth: bitWidth, type: .scalar)
+    let argumentHeader = getArgumentHeader(isPrivate: isPrivate, type: .scalar)
     arguments.append(argumentHeader)
 
     // Append number of bytes needed to serialize the argument.
-    let argumentByteCount = OSLogSerializationInfo.sizeForEncoding(Int.self)
-    arguments.append(UInt8(argumentByteCount))
+    arguments.append(UInt8(byteCount))
 
     // Increment total byte size by the number of bytes needed for this
     // argument, which is the sum of the byte size of the argument and
     // two bytes needed for the headers.
-    totalBytesForSerializingArguments += argumentByteCount + 2
+    totalBytesForSerializingArguments += byteCount + 2
 
     preamble = getUpdatedPreamble(isPrivate: isPrivate)
   }
@@ -290,7 +283,6 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   @_optimize(none)
   internal func getArgumentHeader(
     isPrivate: Bool,
-    bitWidth: Int,
     type: ArgumentType
   ) -> UInt8 {
     let flag: ArgumentFlag = isPrivate ? .privateFlag : .publicFlag
@@ -360,7 +352,7 @@ extension String {
   }
 }
 
-@_fixed_layout
+@frozen
 public struct OSLogMessage :
   ExpressibleByStringInterpolation, ExpressibleByStringLiteral
 {
@@ -402,7 +394,7 @@ public struct OSLogMessage :
 /// are captured within closures and stored in an array. The closures accept an
 /// instance of `OSLogByteBufferBuilder`, and when invoked, serialize the
 /// argument using the passed `OSLogByteBufferBuilder` instance.
-@_fixed_layout
+@frozen
 @usableFromInline
 internal struct OSLogArguments {
   /// An array of closures that captures arguments of possibly different types.

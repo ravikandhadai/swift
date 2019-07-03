@@ -355,7 +355,7 @@ if (Builtin.ID == BuiltinValueKind::id) { \
 #include "swift/AST/Builtins.def"
 
   if (Builtin.ID == BuiltinValueKind::GlobalStringTablePointer) {
-    // This builtin is should be used only on strings constructed from a
+    // This builtin should be used only on strings constructed from a
     // string literal. If we ever get to the point of executing this builtin
     // at run time, it implies an incorrect use of the builtin and must result
     // in a trap.
