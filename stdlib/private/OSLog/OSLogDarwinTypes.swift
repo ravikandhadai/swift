@@ -14,7 +14,8 @@ import Darwin
 // These are formats specific to Darwin for 32 bit signed integers.s
 public enum DarwinInt32Format {
   case darwinErrno
-  //case ipv4addr, darwin.signal, filemode, time, bitrate ...
+  case ipaddr
+  //case darwin.signal, filemode, time, bitrate ...
 }
 
 extension OSLogInterpolation {
@@ -47,8 +48,10 @@ extension OSLogInterpolation {
     var formatSpecifier: String = isPrivate ? "%{private," : "%{public,"
     
     switch (format) {
-    default:
-      formatSpecifier += "darwin.errno"
+      case .darwinErrno:
+        formatSpecifier += "darwin.errno"
+      default:
+        formatSpecifier += "network:in_addr"
     }
   
     formatSpecifier += "}d"

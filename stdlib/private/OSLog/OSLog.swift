@@ -38,6 +38,21 @@ public struct Logger {
 
   /// Log a string interpolation at a given level. The level is `default` if
   /// it is not specified.
+  ///
+  /// The API is meant to be called with a string interpolation:
+  ///   ```
+  ///     h.log("Leaked object at address \(address, .hex) ")
+  ///   ```
+  /// The compiler would create an instance of `OSLogMessage` from the interpolation
+  /// by creating an instance of the type and invoking a sequence of methods on it.
+  ///
+  ///   ```
+  ///     let $interpolation = OSLogInterpolation(literalCapacity: 25, interpolationCount: 1)
+  ///     $interpolation.appendLiteral("Leaked object at address ")
+  ///     $interpolation.appendInterpolation(address, .hex)
+  ///     let message = OSLogMessage(stringInterpolation: $interpolation)
+  ///     h.log(message)
+  ///   ```
   @_transparent
   @_optimize(none)
   public func log(level: OSLogType = .default, _ message: OSLogMessage) {

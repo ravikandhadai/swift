@@ -166,24 +166,6 @@ if #available(macOS 10.13, *) {
 
     dumpLogs(subsystem, startTime)
   }
-  
-  OSLogTestSuite.test("log messages using the new APIs and check logs (future)") {
-    // Record the time before logging. This is used to filter the logs.
-    let startTime = Int64(Date().timeIntervalSince1970)
-    
-    // Create a logger with a specific subsystem and category.
-    let subsystem = "com.apple.oslog.prototype.future"
-    let h = Logger(subsystem: subsystem, category: "LogCheck")
-    
-    h.log("Minimum integer value: \(Int32.min, format: .hex)")
-      // CHECK: Minimum integer value: 80000000
-    
-    let errNo: Int32 = 32
-    h.log("Error number: \(errNo, format: .darwinErrno)")
-      // CHECK: Error number: [32: Broken pipe]
-
-    dumpLogs(subsystem, startTime)
-  }
 
   /// Print the messages logged by the current process to the given `subsystem`
   /// that have a timestamp greater than `startTime`. This function creates a
@@ -204,5 +186,26 @@ if #available(macOS 10.13, *) {
     } catch let error {
       expectUnreachableCatch(error)
     }
+  }
+  
+  OSLogTestSuite.test("log messages using the new APIs and check logs (future)") {
+    // Record the time before logging. This is used to filter the logs.
+    let startTime = Int64(Date().timeIntervalSince1970)
+
+    // Create a logger with a specific subsystem and category.
+    let subsystem = "com.apple.oslog.prototype.future"
+    let h = Logger(subsystem: subsystem, category: "LogCheck")
+
+    h.log("Minimum integer value: \(Int32.min, format: .hex)")
+    // CHECK: Minimum integer value: 80000000
+
+    let errNo: Int32 = 32
+    h.log("Error number: \(errNo, format: .darwinErrno)")
+    // CHECK: Error number: [32: Broken pipe]
+    
+    h.log("IPv4 address: \(0x0100007f, format: .ipaddr)")
+    // CHECK: IPv4 address: 127.0.0.1
+
+    dumpLogs(subsystem, startTime)
   }
 }
