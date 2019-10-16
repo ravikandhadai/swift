@@ -833,3 +833,30 @@ func testAutoClosure(_ x: @escaping @autoclosure () -> Int) -> () -> Int {
 func interpretAutoClosure(_ x: Int) -> () -> Int {
   return testAutoClosure(x)
 }
+
+// Test closures and arrays combination. This tests the design used by the
+// OSLog overlay.
+
+typealias ClosureArray = [(inout UnsafeMutablePointer<UInt8>,
+                            inout [AnyObject]) -> ()]
+
+@usableFromInline
+@_alwaysEmitIntoClient
+func serialize(_ byte: UInt8, at bufferPosition: inout UnsafeMutablePointer<UInt8>) {
+}
+
+// CHECK-LABEL: @testArrayOfClosures
+// CHECK-NOT: error:
+@_semantics("constant_evaluable")
+func testArrayOfClosures(_ byte: @escaping () -> UInt8) -> ClosureArray {
+  var closureArray: ClosureArray = []
+  closureArray.append({ (position, _) in
+    serialize(byte(), at: &position)
+  })
+  return closureArray
+}
+
+@_semantics("test_driver")
+func interpretArrayOfClosures() -> ClosureArray {
+  return testArrayOfClosures({ 10 })
+}
