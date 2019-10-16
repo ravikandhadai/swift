@@ -327,6 +327,8 @@ static Optional<SymbolicValue> collectConstants(FoldState &foldState) {
 
     std::tie(nextI, errorInfo) = evaluateOrSkip(constantEvaluator, currI);
     if (!nextI) {
+      assert(!constantEvaluator.isFailStopError(errorInfo.getValue()) &&
+             "encountered a fail stop error during evaluation");
       return errorInfo;
     }
     // Set the next instruction to continue evaluation from.

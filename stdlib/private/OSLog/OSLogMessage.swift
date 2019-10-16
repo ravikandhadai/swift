@@ -180,7 +180,8 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
   // constant evaluation and folding. Note that these methods will be inlined,
   // constant evaluated/folded and optimized in the context of a caller.
 
-  @_transparent
+  @_semantics("constant_evaluable")
+  @inlinable
   @_optimize(none)
   public init(literalCapacity: Int, interpolationCount: Int) {
     // Since the format string is fully constructed at compile time,
@@ -194,8 +195,8 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
 
   /// An internal initializer that should be used only when there are no
   /// interpolated expressions. This function must be constant evaluable.
-  @inlinable
   @_semantics("constant_evaluable")
+  @inlinable
   @_optimize(none)
   internal init() {
     formatString = ""
@@ -205,6 +206,8 @@ public struct OSLogInterpolation : StringInterpolationProtocol {
     totalBytesForSerializingArguments = 0
   }
 
+//  @_semantics("constant_evaluable")
+//  @inlinable
   @_transparent
   @_optimize(none)
   public mutating func appendLiteral(_ literal: String) {
@@ -348,15 +351,18 @@ internal struct OSLogArguments {
     argumentClosures = []
   }
 
-  @usableFromInline
+  @_semantics("constant_evaluable")
+  @inlinable
+  @_optimize(none)
   internal init(capacity: Int) {
     argumentClosures = []
-    argumentClosures.reserveCapacity(capacity)
   }
 
   /// Append a byte-sized header, constructed by
   /// `OSLogMessage.appendInterpolation`, to the tracked array of closures.
-  @usableFromInline
+  @_semantics("constant_evaluable")
+  @inlinable
+  @_optimize(none)
   internal mutating func append(_ header: UInt8) {
     argumentClosures.append({ (position, _) in
       serialize(header, at: &position)
