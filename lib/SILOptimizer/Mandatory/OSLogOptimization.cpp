@@ -89,6 +89,7 @@
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILLocation.h"
 #include "swift/SIL/SILModule.h"
+#include "swift/SIL/TypeLowering.h"
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "swift/SILOptimizer/Utils/CFGOptUtils.h"
@@ -101,6 +102,7 @@
 #include "llvm/ADT/MapVector.h"
 
 using namespace swift;
+using namespace Lowering;
 
 template <typename... T, typename... U>
 static void diagnose(ASTContext &Context, SourceLoc loc, Diag<T...> diag,
@@ -223,20 +225,26 @@ static bool isStdlibIntegerOrBoolDecl(NominalTypeDecl *numberDecl,
           numberDecl == astCtx.getBoolDecl());
 }
 
-/// Return true if and only if the given SIL type represents a String or
-/// a Stdlib or builtin integer type.
-static bool isIntegerOrStringType(SILType silType, ASTContext &astContext) {
+/// Return true if and only if the given SIL type represents a Stdlib or builtin
+/// integer type or a Bool type.
+static bool isIntegerOrBoolType(SILType silType, ASTContext &astContext) {
   if (silType.is<BuiltinIntegerType>()) {
     return true;
   }
-
   NominalTypeDecl *nominalDecl = silType.getNominalOrBoundGenericNominal();
-  if (!nominalDecl) {
-    return false;
-  }
+  return nominalDecl && isStdlibIntegerOrBoolDecl(nominalDecl, astContext);
+}
 
-  return (nominalDecl == astContext.getStringDecl()) ||
-         isStdlibIntegerOrBoolDecl(nominalDecl, astContext);
+/// Return true if and only if the given SIL type represents a String type.
+static bool isStringType(SILType silType, ASTContext &astContext) {
+  NominalTypeDecl *nominalDecl = silType.getNominalOrBoundGenericNominal();
+  return nominalDecl && nominalDecl == astContext.getStringDecl();
+}
+
+/// Return true if and only if the given SIL type represents an Array type.
+static bool isArrayType(SILType silType, ASTContext &astContext) {
+  NominalTypeDecl *nominalDecl = silType.getNominalOrBoundGenericNominal();
+  return nominalDecl && nominalDecl == astContext.getArrayDecl();
 }
 
 /// Decide if the given instruction (which could possibly be a call) should
@@ -297,7 +305,9 @@ static bool isSILValueFoldable(SILValue value) {
           !isa<BeginBorrowInst>(definingInst) &&
           !isa<CopyValueInst>(definingInst) && !isa<StructInst>(definingInst) &&
           !getStringMakeUTF8Init(definingInst) &&
-          isIntegerOrStringType(silType, astContext));
+          (isIntegerOrBoolType(silType, astContext) ||
+           isStringType(silType, astContext) ||
+           isArrayType(silType, astContext)));
 }
 
 /// Diagnose failure during evaluation of a call to a constant-evaluable
@@ -439,6 +449,107 @@ static Optional<SymbolicValue> collectConstants(FoldState &foldState) {
   return None; // No error.
 }
 
+/// Generate SIL code to create an array of constant size from the given
+/// SILValues \p elements. This function creates the same sequence of SIL
+/// instructions that would be generated for initializing an array from an array
+/// literal of the form [element1, element2, ..., elementn].
+///
+/// \param elements Array of SILValues of the elements the array should contain
+/// \param arraySILType the SIL type of the array that must be created.
+/// \param builder SILBuilder that provides the context for emitting the code
+/// for the array.
+/// \param loc SILLocation to use in the emitted instructions.
+static SILValue emitCodeForConstantArray(ArrayRef<SILValue> elements,
+                                         SILType &arraySILType,
+                                         SILBuilder &builder,
+                                         SILLocation &loc) {
+  SILModule &module = builder.getModule();
+  SILFunction &fun = builder.getFunction();
+  ASTContext &astContext = builder.getASTContext();
+
+  // Create a SILValue for the number of elements.
+  unsigned numElements = elements.size();
+  SILValue numElementsSIL = builder.createIntegerLiteral(
+      loc, SILType::getBuiltinWordType(astContext), numElements);
+
+  // Find the SILFunction that corresponds to _allocateUninitializedArray.
+  FuncDecl *arrayAllocateDecl = astContext.getAllocateUninitializedArray();
+  assert(arrayAllocateDecl);
+  std::string allocatorMangledName =
+      SILDeclRef(arrayAllocateDecl, SILDeclRef::Kind::Func).mangle();
+  SILFunction *arrayAllocateFun =
+      module.findFunction(allocatorMangledName, SILLinkage::PublicExternal);
+  assert(arrayAllocateFun);
+
+  // Call the _allocateUninitializedArray function with numElementsSIL. The
+  // call returns a two-element tuple, where the first element is the newly
+  // created array and the second element is a pointer to the internal storage
+  // of the array.
+  CanType arrayType = arraySILType.getASTType();
+  SubstitutionMap subMap = arrayType->getContextSubstitutionMap(
+      module.getSwiftModule(), astContext.getArrayDecl());
+  FunctionRefInst *arrayAllocateRef =
+      builder.createFunctionRef(loc, arrayAllocateFun);
+  ApplyInst *applyInst = builder.createApply(
+      loc, arrayAllocateRef, subMap, ArrayRef<SILValue>(numElementsSIL), false);
+
+  // Extract the elements of the tuple returned by the call to the allocator.
+  SILValue arraySIL;
+  SILValue storagePointerSIL;
+  if (fun.hasOwnership()) {
+    DestructureTupleInst *destructureInst =
+        builder.createDestructureTuple(loc, applyInst);
+    arraySIL = destructureInst->getResults()[0];
+    storagePointerSIL = destructureInst->getResults()[1];
+  } else {
+    arraySIL = builder.createTupleExtract(loc, applyInst, 0, arraySILType);
+    storagePointerSIL = builder.createTupleExtract(
+        loc, applyInst, 1, SILType::getRawPointerType(astContext));
+  }
+
+  if (elements.empty()) {
+    // Nothing more to be done if we are creating an empty array.
+    return arraySIL;
+  }
+
+  // Convert the pointer to the storage to an address. The elements will be
+  // stored into offsets from this address.
+  SILType elementSILType = elements[0]->getType();
+  PointerToAddressInst *storageAddr = builder.createPointerToAddress(
+      loc, storagePointerSIL, elementSILType.getAddressType(),
+      /*isStrict*/ true,
+      /*isInvariant*/ false);
+
+  // Iterate over the elements and store them into the storage address
+  // after offsetting it appropriately.
+
+  // Create a TypeLowering for emitting stores. Note that TypeLowering
+  // provides a utility for emitting stores for storing trivial and
+  // non-trivial values, and also handles OSSA and non-OSSA.
+  const TypeLowering &elementTypeLowering =
+      builder.getTypeLowering(elementSILType);
+
+  unsigned elementIndex = 0;
+  for (SILValue elementSIL : elements) {
+    // Compute the address where the element must be stored.
+    SILValue currentStorageAddr;
+    if (elementIndex != 0) {
+      SILValue indexSIL = builder.createIntegerLiteral(
+          loc, SILType::getBuiltinWordType(astContext), elementIndex);
+      currentStorageAddr = builder.createIndexAddr(loc, storageAddr, indexSIL);
+    } else {
+      currentStorageAddr = storageAddr;
+    }
+    // Store the generated element into the currentStorageAddr. This is an
+    // initializing store and therefore there is no need to free any existing
+    // element.
+    elementTypeLowering.emitStore(builder, loc, elementSIL, currentStorageAddr,
+                                  StoreOwnershipQualifier::Init);
+    elementIndex++;
+  }
+  return arraySIL;
+}
+
 /// Generate SIL code that computes the constant given by the symbolic value
 /// `symVal`. Note that strings and struct-typed constant values will require
 /// multiple instructions to be emitted.
@@ -513,7 +624,35 @@ static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
         loc, expectedType, ArrayRef<SILValue>(newPropertySIL));
     return newStructInst;
   }
+  case SymbolicValue::Array: {
+    assert(astContext.getArrayDecl() ==
+           expectedType.getNominalOrBoundGenericNominal());
+    CanType arrayType = symVal.getArrayType()->getCanonicalType();
+    assert(expectedType.getASTType() == arrayType);
+
+    CanType elementType;
+    ArrayRef<SymbolicValue> arrayElements =
+        symVal.getStorageOfArray().getStoredElements(elementType);
+    // Compute the expected SILType of the array elements. Since the elements
+    // will be constructed recursively from symbolic values, they will not be
+    // addresses, as this function doesn't fold address values. Therefore,
+    // elementSILType must be an object type and not an address type.
+    SILType elementSILType = SILType::getPrimitiveObjectType(elementType);
+    SmallVector<SILValue, 8> elementSILValues;
+    for (SymbolicValue elementSymVal : arrayElements) {
+      SILValue elementSIL = emitCodeForSymbolicValue(
+          elementSymVal, elementSILType, builder, loc, stringInfo);
+      // Assert that the generated element matches the lowered type we
+      // expect.
+      assert(elementSIL->getType() == elementSILType);
+      elementSILValues.push_back(elementSIL);
+    }
+    SILValue arraySIL =
+        emitCodeForConstantArray(elementSILValues, expectedType, builder, loc);
+    return arraySIL;
+  }
   default: {
+    // llvm::errs() << "Symbolic value: " << symVal << "\n";
     llvm_unreachable("Symbolic value kind is not supported");
   }
   }
