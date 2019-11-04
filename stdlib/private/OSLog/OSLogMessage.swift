@@ -358,13 +358,13 @@ internal struct OSLogArguments {
   ///   - storageObjects: An array to store references to objects representing
   ///   auxiliary storage created during serialization. This is only used while
   ///   serializing strings.
-  @usableFromInline
-  internal func serializeAt(
-    _ bufferPosition: inout ByteBufferPointer,
-    using storageObjects: inout StorageObjects
-  ) {
-    argumentClosures.forEach { $0(&bufferPosition, &storageObjects) }
-  }
+//  @usableFromInline
+//  internal func serializeAt(
+//    _ bufferPosition: inout ByteBufferPointer,
+//    using storageObjects: inout StorageObjects
+//  ) {
+//    argumentClosures.forEach { $0(&bufferPosition, &storageObjects) }
+//  }
 }
 
 /// Serialize a UInt8 value at the buffer location pointed to by `bufferPosition`,

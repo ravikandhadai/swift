@@ -247,7 +247,10 @@ SymbolicValue::cloneInto(SymbolicValueAllocator &allocator) const {
   case RK_Closure: {
     SymbolicClosure *clo = getClosure();
     ArrayRef<SymbolicClosureArgument> closureArgs = clo->getCaptures();
-    return SymbolicValue::makeClosure(clo->getTarget(), closureArgs, allocator);
+    return SymbolicValue::makeClosure(clo->getTarget(), closureArgs,
+                                      clo->getCallSubstitutionMap(),
+                                      clo->getClosureType(),
+                                      allocator);
   }
   }
   llvm_unreachable("covered switch");
@@ -744,8 +747,11 @@ Type SymbolicValue::getArrayType() const {
 
 SymbolicValue SymbolicValue::makeClosure(SILFunction *target,
                                          ArrayRef<SymbolicClosureArgument> args,
+                                         SubstitutionMap substMap,
+                                         SILType closureType,
                                          SymbolicValueAllocator &allocator) {
-  auto clo = SymbolicClosure::create(target, args, allocator);
+  auto clo = SymbolicClosure::create(target, args, substMap, closureType,
+                                     allocator);
   SymbolicValue result;
   result.representationKind = RK_Closure;
   result.value.closure = clo;
@@ -754,6 +760,8 @@ SymbolicValue SymbolicValue::makeClosure(SILFunction *target,
 
 SymbolicClosure *SymbolicClosure::create(SILFunction *target,
                                          ArrayRef<SymbolicClosureArgument> args,
+                                         SubstitutionMap substMap,
+                                         SILType closureType,
                                          SymbolicValueAllocator &allocator) {
   // Determine whether there are captured arguments without a symbolic value.
   bool hasNonConstantCapture = false;
@@ -769,7 +777,8 @@ SymbolicClosure *SymbolicClosure::create(SILFunction *target,
   auto rawMem = allocator.allocate(byteSizeOfArgs, alignof(SymbolicClosure));
   //  Placement initialize the object.
   auto closure = ::new (rawMem)
-      SymbolicClosure(target, args.size(), hasNonConstantCapture);
+      SymbolicClosure(target, args.size(), substMap, closureType,
+                      hasNonConstantCapture);
   std::uninitialized_copy(
       args.begin(), args.end(),
       closure->getTrailingObjects<SymbolicClosureArgument>());

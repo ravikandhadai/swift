@@ -280,34 +280,79 @@ evaluateOrSkip(ConstExprStepEvaluator &stepEval,
   return stepEval.skipByMakingEffectsNonConstant(instI);
 }
 
-/// Check whether a single-valued instruction is foldable. String or integer
-/// valued instructions are foldable with the exceptions:
-///   - Addresses-valued instructions cannot be folded.
-///   - Literal instruction need not be folded.
-///   - "String.makeUTF8" instrinsic initializer need not be folded as it is
-///     used only on string literals.
-///   - StructInst cannot be folded. We can only fold its arguments and not the
-///     instruction itself.
+/// Return true iff the given value is a stdlib Int or Bool and it not a direct
+/// construction of Int or Bool.
+static bool isFoldableIntOrBool(SILValue value, SILInstruction *definingInst,
+                                ASTContext &astContext) {
+  assert(definingInst);
+  return !isa<StructInst>(definingInst) &&
+         isIntegerOrBoolType(value->getType(), astContext);
+}
+
+/// Return true iff the given value is a string and is not an initialization
+/// of an string from a string literal.
+static bool isFoldableString(SILValue value, SILInstruction *definingInst,
+                             ASTContext &astContext) {
+  assert(definingInst);
+  return isStringType(value->getType(), astContext) &&
+         !getStringMakeUTF8Init(definingInst);
+}
+
+/// Return true iff the given value is an array and is not an initialization
+/// of an array from an array literal.
+static bool isFoldableArray(SILValue value, SILInstruction *definingInst,
+                            ASTContext &astContext) {
+  assert(definingInst);
+  if (!isArrayType(value->getType(), astContext))
+    return false;
+
+  // Check if this is not an initialization of an array from a literal.
+  SILInstruction *constructorInst = definingInst;
+  if (isa<DestructureTupleInst>(definingInst) ||
+      isa<TupleExtractInst>(definingInst)) {
+    constructorInst = definingInst->getOperand(0)->getDefiningInstruction();
+  }
+  ApplyInst *apply = dyn_cast<ApplyInst>(definingInst);
+  if (!apply)
+    return true;
+  SILFunction *callee = apply->getCalleeFunction();
+  return !callee || !callee->hasSemanticsAttr("array.init.empty") ||
+         !callee->hasSemanticsAttr("array.uninitialized_intrinsic");
+}
+
+/// Return true iff the given value is a closure but is not a creation of a
+/// closure e.g., through partial_apply or thin_to_thick_function or
+/// convert_function.
+static bool isFoldableClosure(SILValue value, SILInstruction *definingInst) {
+  assert(definingInst);
+  return value->getType().is<SILFunctionType>() &&
+         (!isa<FunctionRefInst>(definingInst) ||
+          !isa<PartialApplyInst>(definingInst) ||
+          !isa<ThinToThickFunctionInst>(definingInst) ||
+          !isa<ConvertFunctionInst>(definingInst));
+}
+
+/// Check whether a SILValue is foldable. String, integer, array and
+/// function values are foldable with the following exceptions:
+///   - Addresses cannot be folded.
+///   - Literals need not be folded.
+///   - Results of ownership instructions like load_borrow/copy_value need not
+///   be folded
+///   - Constructors such as `struct Int` or `string.init()` need not be folded.
 static bool isSILValueFoldable(SILValue value) {
   SILInstruction *definingInst = value->getDefiningInstruction();
   if (!definingInst)
     return false;
-
   ASTContext &astContext = definingInst->getFunction()->getASTContext();
   SILType silType = value->getType();
-
-  // Fold only SIL values of integer or string type that are not one of the
-  // following: addresses, literals, instructions marking ownership access and
-  // scope, copy_value (as its operand will be folded), struct creations, or
-  // call to string literal initializer.
   return (!silType.isAddress() && !isa<LiteralInst>(definingInst) &&
           !isa<LoadBorrowInst>(definingInst) &&
           !isa<BeginBorrowInst>(definingInst) &&
-          !isa<CopyValueInst>(definingInst) && !isa<StructInst>(definingInst) &&
-          !getStringMakeUTF8Init(definingInst) &&
-          (isIntegerOrBoolType(silType, astContext) ||
-           isStringType(silType, astContext) ||
-           isArrayType(silType, astContext)));
+          !isa<CopyValueInst>(definingInst) &&
+          (isFoldableIntOrBool(value, definingInst, astContext) ||
+           isFoldableString(value, definingInst, astContext) ||
+           isFoldableArray(value, definingInst, astContext) ||
+           isFoldableClosure(value, definingInst)));
 }
 
 /// Diagnose failure during evaluation of a call to a constant-evaluable
@@ -455,17 +500,18 @@ static Optional<SymbolicValue> collectConstants(FoldState &foldState) {
 /// literal of the form [element1, element2, ..., elementn].
 ///
 /// \param elements Array of SILValues of the elements the array should contain
-/// \param arraySILType the SIL type of the array that must be created.
+/// \param arrayType the type of the array that must be created.
 /// \param builder SILBuilder that provides the context for emitting the code
 /// for the array.
 /// \param loc SILLocation to use in the emitted instructions.
 static SILValue emitCodeForConstantArray(ArrayRef<SILValue> elements,
-                                         SILType &arraySILType,
-                                         SILBuilder &builder,
-                                         SILLocation &loc) {
+                                         CanType arrayType, SILBuilder &builder,
+                                         SILLocation loc) {
+  ASTContext &astContext = builder.getASTContext();
+  assert(astContext.getArrayDecl() ==
+         arrayType->getNominalOrBoundGenericNominal());
   SILModule &module = builder.getModule();
   SILFunction &fun = builder.getFunction();
-  ASTContext &astContext = builder.getASTContext();
 
   // Create a SILValue for the number of elements.
   unsigned numElements = elements.size();
@@ -485,7 +531,6 @@ static SILValue emitCodeForConstantArray(ArrayRef<SILValue> elements,
   // call returns a two-element tuple, where the first element is the newly
   // created array and the second element is a pointer to the internal storage
   // of the array.
-  CanType arrayType = arraySILType.getASTType();
   SubstitutionMap subMap = arrayType->getContextSubstitutionMap(
       module.getSwiftModule(), astContext.getArrayDecl());
   FunctionRefInst *arrayAllocateRef =
@@ -502,6 +547,7 @@ static SILValue emitCodeForConstantArray(ArrayRef<SILValue> elements,
     arraySIL = destructureInst->getResults()[0];
     storagePointerSIL = destructureInst->getResults()[1];
   } else {
+    SILType arraySILType = SILType::getPrimitiveObjectType(arrayType);
     arraySIL = builder.createTupleExtract(loc, applyInst, 0, arraySILType);
     storagePointerSIL = builder.createTupleExtract(
         loc, applyInst, 1, SILType::getRawPointerType(astContext));
@@ -550,6 +596,31 @@ static SILValue emitCodeForConstantArray(ArrayRef<SILValue> elements,
   return arraySIL;
 }
 
+SILInstruction *getInstructionFollowingValueDefinition(SILValue value) {
+  SILInstruction *definingInst = value->getDefiningInstruction();
+  if (definingInst) {
+    return &*std::next(definingInst->getIterator());
+  }
+  // Here value must be a basic block argument.
+  SILBasicBlock *bb = value->getParentBlock();
+  return &*bb->begin();
+}
+
+SILValue makeOwnedCopyOfSILValue(SILValue value, SILFunction &fun) {
+  SILType type = value->getType();
+  if (type.isTrivial(fun))
+    return value;
+  assert(!type.isAddress() && "cannot make owned copy of addresses");
+
+  SILInstruction *instAfterValueDefinition =
+      getInstructionFollowingValueDefinition(value);
+  SILLocation copyLoc = instAfterValueDefinition->getLoc();
+  SILBuilderWithScope builder(instAfterValueDefinition);
+  const TypeLowering &typeLowering = builder.getTypeLowering(type);
+  SILValue copy = typeLowering.emitCopyValue(builder, copyLoc, value);
+  return copy;
+}
+
 /// Generate SIL code that computes the constant given by the symbolic value
 /// `symVal`. Note that strings and struct-typed constant values will require
 /// multiple instructions to be emitted.
@@ -564,15 +635,15 @@ static SILValue emitCodeForConstantArray(ArrayRef<SILValue> elements,
 /// \param stringInfo String.init and metatype information for generating code
 /// for string literals.
 static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
-                                         SILType &expectedType,
-                                         SILBuilder &builder, SILLocation &loc,
+                                         Type expectedType, SILBuilder &builder,
+                                         SILLocation &loc,
                                          StringSILInfo &stringInfo) {
-  ASTContext &astContext = expectedType.getASTContext();
+  ASTContext &astContext = expectedType->getASTContext();
 
   switch (symVal.getKind()) {
   case SymbolicValue::String: {
     assert(astContext.getStringDecl() ==
-           expectedType.getNominalOrBoundGenericNominal());
+           expectedType->getNominalOrBoundGenericNominal());
 
     StringRef stringVal = symVal.getStringValue();
     StringLiteralInst *stringLitInst = builder.createStringLiteral(
@@ -602,57 +673,109 @@ static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
   }
   case SymbolicValue::Integer: { // Builtin integer types.
     APInt resInt = symVal.getIntegerValue();
-    assert(expectedType.is<BuiltinIntegerType>());
+    assert(expectedType->is<BuiltinIntegerType>());
 
+    SILType builtinIntType =
+        SILType::getPrimitiveObjectType(expectedType->getCanonicalType());
     IntegerLiteralInst *intLiteralInst =
-        builder.createIntegerLiteral(loc, expectedType, resInt);
+        builder.createIntegerLiteral(loc, builtinIntType, resInt);
     return intLiteralInst;
   }
   case SymbolicValue::Aggregate: {
     // Support only stdlib integer or bool structs.
-    StructDecl *structDecl = expectedType.getStructOrBoundGenericStruct();
+    StructDecl *structDecl = expectedType->getStructOrBoundGenericStruct();
     assert(structDecl);
     assert(isStdlibIntegerOrBoolDecl(structDecl, astContext));
+    assert(symVal.getAggregateType()->isEqual(expectedType) &&
+           "aggregate symbolic value's type and expected type do not match");
 
     VarDecl *propertyDecl = structDecl->getStoredProperties().front();
-    SILType propertyType =
-        expectedType.getFieldType(propertyDecl, builder.getModule());
+    Type propertyType = expectedType->getTypeOfMember(
+        propertyDecl->getModuleContext(), propertyDecl);
     SymbolicValue propertyVal = symVal.lookThroughSingleElementAggregates();
     SILValue newPropertySIL = emitCodeForSymbolicValue(
         propertyVal, propertyType, builder, loc, stringInfo);
+    // The lowered SIL type of an integer/bool type is just the primitive
+    // object type containing the Swift type.
+    SILType aggregateType =
+        SILType::getPrimitiveObjectType(expectedType->getCanonicalType());
     StructInst *newStructInst = builder.createStruct(
-        loc, expectedType, ArrayRef<SILValue>(newPropertySIL));
+        loc, aggregateType, ArrayRef<SILValue>(newPropertySIL));
     return newStructInst;
   }
   case SymbolicValue::Array: {
-    assert(astContext.getArrayDecl() ==
-           expectedType.getNominalOrBoundGenericNominal());
-    CanType arrayType = symVal.getArrayType()->getCanonicalType();
-    assert(expectedType.getASTType() == arrayType);
-
+    assert(expectedType->isEqual(symVal.getArrayType()));
     CanType elementType;
     ArrayRef<SymbolicValue> arrayElements =
         symVal.getStorageOfArray().getStoredElements(elementType);
-    // Compute the expected SILType of the array elements. Since the elements
-    // will be constructed recursively from symbolic values, they will not be
-    // addresses, as this function doesn't fold address values. Therefore,
-    // elementSILType must be an object type and not an address type.
-    SILType elementSILType = SILType::getPrimitiveObjectType(elementType);
+
+    // Emit code for the symbolic values corresponding to the array elements.
     SmallVector<SILValue, 8> elementSILValues;
     for (SymbolicValue elementSymVal : arrayElements) {
-      SILValue elementSIL = emitCodeForSymbolicValue(
-          elementSymVal, elementSILType, builder, loc, stringInfo);
-      // Assert that the generated element matches the lowered type we
-      // expect.
-      assert(elementSIL->getType() == elementSILType);
+      SILValue elementSIL = emitCodeForSymbolicValue(elementSymVal, elementType,
+                                                     builder, loc, stringInfo);
       elementSILValues.push_back(elementSIL);
     }
-    SILValue arraySIL =
-        emitCodeForConstantArray(elementSILValues, expectedType, builder, loc);
+    SILValue arraySIL = emitCodeForConstantArray(
+        elementSILValues, expectedType->getCanonicalType(), builder, loc);
     return arraySIL;
   }
+  case SymbolicValue::Closure: {
+    assert(expectedType->is<AnyFunctionType>() ||
+           expectedType->is<SILFunctionType>());
+
+    SymbolicClosure *closure = symVal.getClosure();
+    SubstitutionMap callSubstMap = closure->getCallSubstitutionMap();
+    SILModule &module = builder.getModule();
+    ArrayRef<SymbolicClosureArgument> captures = closure->getCaptures();
+
+    // Recursively emit code for all captured values that are mapped to a
+    // symbolic value. If there is a captured value that is not mapped
+    // to a symbolic value, use the captured value as such.
+    SmallVector<SILValue, 4> capturedSILVals;
+    for (SymbolicClosureArgument capture : captures) {
+      SILValue captureOperand = capture.first;
+      Optional<SymbolicValue> captureSymVal = capture.second;
+      if (!captureSymVal) {
+        SILFunction &fun = builder.getFunction();
+        assert(captureOperand->getFunction() == &fun &&
+               "non-constant captured arugment not defined in this function");
+        // If the captureOperand is a non-trivial value, it should be copied
+        // as it now used in a new folded closure.
+        SILValue captureCopy = makeOwnedCopyOfSILValue(captureOperand, fun);
+        capturedSILVals.push_back(captureCopy);
+        continue;
+      }
+      // Here, we have a symbolic value for the capture. Therefore, use it to
+      // create a new constant at this point. However, note that the captured
+      // operand type may have generic parameters which has to be substituted
+      // with the substitution map that was inferred by the constant evaluator
+      // at the partial-apply site.
+      SILType operandType = captureOperand->getType();
+      SILType captureType = operandType.subst(module, callSubstMap);
+      SILValue captureSILVal = emitCodeForSymbolicValue(
+          captureSymVal.getValue(), captureType.getASTType(), builder, loc,
+          stringInfo);
+      capturedSILVals.push_back(captureSILVal);
+    }
+
+    FunctionRefInst *functionRef =
+        builder.createFunctionRef(loc, closure->getTarget());
+    SILType closureType = closure->getClosureType();
+    ParameterConvention convention =
+        closureType.getAs<SILFunctionType>()->getCalleeConvention();
+    PartialApplyInst *papply =
+      builder.createPartialApply(loc, functionRef, callSubstMap, capturedSILVals,
+                               convention);
+    // The type of the created closure must be a lowering of the expected type.
+    SILType resultType = papply->getType();
+    CanType expectedCanType = expectedType->getCanonicalType();
+    assert(expectedType->is<SILFunctionType>()
+               ? resultType.getASTType() == expectedCanType
+               : resultType.isLoweringOf(module, expectedCanType));
+    return papply;
+  }
   default: {
-    // llvm::errs() << "Symbolic value: " << symVal << "\n";
     llvm_unreachable("Symbolic value kind is not supported");
   }
   }
@@ -751,12 +874,10 @@ static void replaceAllUsesAndFixLifetimes(SILValue foldedVal,
          "cannot constant fold a terminator instruction");
   assert(foldedInst && "constant value does not have a defining instruction");
 
-  // First, replace all uses of originalVal by foldedVal, and then adjust their
-  // lifetimes if necessary.
-  originalVal->replaceAllUsesWith(foldedVal);
-
   if (originalVal->getType().isTrivial(*fun)) {
     assert(foldedVal->getType().isTrivial(*fun));
+    // Just replace originalVal by foldedVal.
+    originalVal->replaceAllUsesWith(foldedVal);
     return;
   }
   assert(!foldedVal->getType().isTrivial(*fun));
@@ -764,12 +885,34 @@ static void replaceAllUsesAndFixLifetimes(SILValue foldedVal,
   if (!fun->hasOwnership()) {
     // In non-ownership SIL, handle only folding of struct_extract instruction,
     // which is the only important instruction that should be folded by this
-    // pass. Note that folding an arbitrary instruction in non-ownership SIL
-    // makes updating reference counts of the original value much harder and
-    // error prone.
+    // pass. The logic used here is not correct in general and overfits a
+    // specific form of SIL. This code should be removed once OSSA is enabled
+    // for this pass.
     // TODO: this code can be safely removed once ownership SIL becomes the
     // default SIL this pass works on.
-    assert(isa<StructExtractInst>(originalInst));
+    assert(isa<StructExtractInst>(originalInst) &&
+           !originalVal->getType().isAddress());
+    
+    // First, replace all uses of originalVal by foldedVal, and then adjust
+    // their lifetimes if necessary.
+    originalVal->replaceAllUsesWith(foldedVal);
+
+    unsigned retainCount = 0;
+    unsigned consumeCount = 0;
+    for (Operand *use : foldedVal->getUses()) {
+      SILInstruction *user = use->getUser();
+      if (isa<ReleaseValueInst>(user) || isa<StoreInst>(user))
+        consumeCount++;
+      if (isa<RetainValueInst>(user))
+        retainCount++;
+      // Note that there could other consuming operations but they are not
+      // handled here as this code should be phased out soon.
+    }
+    if (consumeCount > retainCount) {
+      // The original value was at +1 and therefore consumed at the end. Since
+      // the foldedVal is also at +1 there is nothing to be done.
+      return;
+    }
     cleanupAtEndOfLifetime(foldedInst, [&](SILInstruction *lifetimeEndInst) {
       SILBuilderWithScope builder(lifetimeEndInst);
       builder.emitReleaseValue(lifetimeEndInst->getLoc(), foldedVal);
@@ -781,6 +924,7 @@ static void replaceAllUsesAndFixLifetimes(SILValue foldedVal,
          "constant value must have owned ownership kind");
 
   if (originalVal.getOwnershipKind() == ValueOwnershipKind::Owned) {
+    originalVal->replaceAllUsesWith(foldedVal);
     // Destroy originalVal, which is now unused, immediately after its
     // definition. Note that originalVal's destorys are now transferred to
     // foldedVal.
@@ -791,10 +935,20 @@ static void replaceAllUsesAndFixLifetimes(SILValue foldedVal,
     return;
   }
 
-  // Here, originalVal is not owned. Hence, destroy foldedVal at the end of its
+  // Here, originalVal is not owned. Hence, borrow form foldedVal and use the
+  // borrow in place of originalVal. Also, destroy foldedVal at the end of its
   // lifetime.
-  cleanupAtEndOfLifetime(foldedInst, [&](SILInstruction *lifetimeEndInst) {
+  assert(originalVal.getOwnershipKind() == ValueOwnershipKind::Guaranteed);
+  
+  SILBuilderWithScope builder(&*std::next(foldedInst->getIterator()));
+  BeginBorrowInst *borrow =
+    builder.createBeginBorrow(foldedInst->getLoc(), foldedVal);
+  
+  originalVal->replaceAllUsesWith(borrow);
+  
+  cleanupAtEndOfLifetime(borrow, [&](SILInstruction *lifetimeEndInst) {
     SILBuilderWithScope builder(lifetimeEndInst);
+    builder.createEndBorrow(lifetimeEndInst->getLoc(), borrow);
     builder.emitDestroyValueOperation(lifetimeEndInst->getLoc(), foldedVal);
   });
   return;
@@ -823,7 +977,7 @@ static void substituteConstants(FoldState &foldState) {
 
     SILBuilderWithScope builder(definingInst);
     SILLocation loc = definingInst->getLoc();
-    SILType instType = constantSILValue->getType();
+    CanType instType = constantSILValue->getType().getASTType();
     SILValue foldedSILVal = emitCodeForSymbolicValue(
         constantSymbolicVal, instType, builder, loc, foldState.stringInfo);
 
