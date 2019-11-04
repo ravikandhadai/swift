@@ -28,6 +28,7 @@ class SILValue;
 class SILBuilder;
 class SerializedSILLoader;
 
+struct AggregateSymbolicValue;
 struct SymbolicArrayStorage;
 struct DerivedAddressValue;
 struct EnumWithPayloadSymbolicValue;
@@ -307,8 +308,8 @@ private:
     const char *string;
 
     /// When this SymbolicValue is of "Aggregate" kind, this pointer stores
-    /// information about the array elements and count.
-    const SymbolicValue *aggregate;
+    /// information about the aggregate elements, its type and count.
+    const AggregateSymbolicValue *aggregate;
 
     /// When this SymbolicValue is of "Enum" kind, this pointer stores
     /// information about the enum case type.
@@ -365,9 +366,6 @@ private:
 
     /// This is the number of bytes for an RK_String representation.
     unsigned stringNumBytes;
-
-    /// This is the number of elements for an RK_Aggregate representation.
-    unsigned aggregateNumElements;
   } auxInfo;
 
 public:
@@ -488,11 +486,15 @@ public:
   StringRef getStringValue() const;
 
   /// This returns an aggregate value with the specified elements in it.  This
-  /// copies the elements into the specified Allocator.
-  static SymbolicValue getAggregate(ArrayRef<SymbolicValue> elements,
+  /// copies the member values into the specified Allocator.
+  static SymbolicValue getAggregate(ArrayRef<SymbolicValue> members,
+                                    SILType aggregateType,
                                     SymbolicValueAllocator &allocator);
 
-  ArrayRef<SymbolicValue> getAggregateValue() const;
+  ArrayRef<SymbolicValue> getAggregateMembers() const;
+
+  /// Return the type of this aggregate symbolic value.
+  SILType getAggregateType() const;
 
   /// This returns a constant Symbolic value for the enum case in `decl`, which
   /// must not have an associated value.
@@ -614,13 +616,18 @@ inline llvm::raw_ostream &operator<<(llvm::raw_ostream &os, SymbolicValue val) {
 /// Memory objects may be mutated over their lifetime, but their overall type
 /// remains the same.
 struct SymbolicValueMemoryObject {
-  Type getType() const { return type; }
+  SILType getType() const { return type; }
 
   SymbolicValue getValue() const { return value; }
-  void setValue(SymbolicValue newValue) { value = newValue; }
+  void setValue(SymbolicValue newValue) {
+    assert((newValue.getKind() != SymbolicValue::Aggregate ||
+            newValue.getAggregateType() == type) &&
+           "Memory object type does not match the type of the symbolic value");
+    value = newValue;
+  }
 
   /// Create a new memory object whose overall type is as specified.
-  static SymbolicValueMemoryObject *create(Type type, SymbolicValue value,
+  static SymbolicValueMemoryObject *create(SILType type, SymbolicValue value,
                                            SymbolicValueAllocator &allocator);
 
   /// Given that this memory object contains an aggregate value like
@@ -643,10 +650,10 @@ struct SymbolicValueMemoryObject {
                          SymbolicValueAllocator &allocator);
 
 private:
-  const Type type;
+  const SILType type;
   SymbolicValue value;
 
-  SymbolicValueMemoryObject(Type type, SymbolicValue value)
+  SymbolicValueMemoryObject(SILType type, SymbolicValue value)
       : type(type), value(value) {}
   SymbolicValueMemoryObject(const SymbolicValueMemoryObject &) = delete;
   void operator=(const SymbolicValueMemoryObject &) = delete;

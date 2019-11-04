@@ -282,7 +282,7 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
     auto val = getConstantValue(tei->getOperand());
     if (!val.isConstant())
       return val;
-    return val.getAggregateValue()[tei->getFieldNo()];
+    return val.getAggregateMembers()[tei->getFieldNo()];
   }
 
   // If this is a struct extract from a fragile type, then we can return the
@@ -294,7 +294,7 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
       return val;
     }
     assert(val.getKind() == SymbolicValue::Aggregate);
-    return val.getAggregateValue()[sei->getFieldNo()];
+    return val.getAggregateMembers()[sei->getFieldNo()];
   }
 
   // If this is an unchecked_enum_data from a fragile type, then we can return
@@ -319,7 +319,7 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
     auto val = getConstantValue(aggValue);
     if (val.isConstant()) {
       assert(val.getKind() == SymbolicValue::Aggregate);
-      return val.getAggregateValue()[result->getIndex()];
+      return val.getAggregateMembers()[result->getIndex()];
     }
     // Not a const.
     return val;
@@ -342,7 +342,8 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
       elts.push_back(val);
     }
 
-    return SymbolicValue::getAggregate(elts, evaluator.getAllocator());
+    return SymbolicValue::getAggregate(elts, value->getType().getASTType(),
+                                       evaluator.getAllocator());
   }
 
   // If this is a struct or tuple element addressor, compute a more derived
@@ -767,7 +768,7 @@ static Optional<StringRef>
 extractStaticStringValue(SymbolicValue staticString) {
   if (staticString.getKind() != SymbolicValue::Aggregate)
     return None;
-  ArrayRef<SymbolicValue> staticStringProps = staticString.getAggregateValue();
+  ArrayRef<SymbolicValue> staticStringProps = staticString.getAggregateMembers();
   if (staticStringProps.empty() ||
       staticStringProps[0].getKind() != SymbolicValue::String)
     return None;
@@ -862,7 +863,7 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
 
     // Allocating uninitialized arrays is supported only in flow-sensitive mode.
     // TODO: the top-level mode in the interpreter should be phased out.
-    if (!fn)
+    if (recursivelyComputeValueIfNotInState)
       return getUnknown(evaluator, (SILInstruction *)apply,
                         UnknownReason::Default);
 
@@ -1286,7 +1287,7 @@ ConstExprFunctionState::initializeAddressFromSingleWriter(SILValue addr) {
   auto checkAggregateInitialized = [&]() -> bool {
     auto memoryValue = getMemoryValue();
     return memoryValue.getKind() != SymbolicValue::UninitMemory &&
-           llvm::all_of(memoryValue.getAggregateValue(),
+           llvm::all_of(memoryValue.getAggregateMembers(),
                         [](SymbolicValue v) { return v.isConstant(); });
   };
 
@@ -1531,7 +1532,7 @@ SymbolicValue ConstExprFunctionState::loadAddrValue(SILValue addr,
   // Try digging through the aggregate to get to our value.
   unsigned idx = 0, end = accessPath.size();
   while (idx != end && objectVal.getKind() == SymbolicValue::Aggregate) {
-    objectVal = objectVal.getAggregateValue()[accessPath[idx]];
+    objectVal = objectVal.getAggregateMembers()[accessPath[idx]];
     ++idx;
   }
 
@@ -1628,11 +1629,12 @@ ConstExprFunctionState::evaluateFlowSensitive(SILInstruction *inst) {
   if (auto asi = dyn_cast<AllocStackInst>(inst)) {
     // If a struct with no stored properties is created, no initialization is
     // needed. Hence, create a empty aggregate as the initial value.
-    StructDecl *structDecl =
-        asi->getElementType().getStructOrBoundGenericStruct();
+    SILType structType = asi->getElementType()
+    StructDecl *structDecl = structType.getStructOrBoundGenericStruct();
     if (structDecl && structDecl->getStoredProperties().empty()) {
       createMemoryObject(asi,
                          SymbolicValue::getAggregate(ArrayRef<SymbolicValue>(),
+                                                     structType.getASTType(),
                                                      evaluator.getAllocator()));
       return None;
     }
@@ -1712,7 +1714,7 @@ ConstExprFunctionState::evaluateFlowSensitive(SILInstruction *inst) {
     }
     assert(aggVal.getKind() == SymbolicValue::Aggregate);
 
-    ArrayRef<SymbolicValue> aggElems = aggVal.getAggregateValue();
+    ArrayRef<SymbolicValue> aggElems = aggVal.getAggregateMembers();
     assert(aggElems.size() == mvi->getNumResults());
 
     for (unsigned i = 0; i < mvi->getNumResults(); ++i) {
