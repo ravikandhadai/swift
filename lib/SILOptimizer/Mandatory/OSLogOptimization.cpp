@@ -651,6 +651,47 @@ static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
         emitCodeForConstantArray(elementSILValues, expectedType, builder, loc);
     return arraySIL;
   }
+  case SymbolicValue::Closure: {
+    llvm::errs() << "expected type: " << expectedType << "\n";
+    
+    assert(expectedType.is<SILFunctionType>());  
+
+    SymbolicClosure *closure = symVal.getClosure();
+    SubstitutionMap callSubstMap = closure->getCallSubstitutionMap();
+
+    // Recursively emit code for all captured values that are symbolic values.
+    // If there is a captured value that is not mapped to a symbolic value,
+    // use the captured value as such.
+    SmallVector<SILValue, 4> capturedSILVals;
+    for (SymbolicClosureArgument capture : closure->getCaptures()) {
+      SILValue captureOperand = capture.first;
+      Optional<SymbolicValue> captureSymVal = capture.second;
+      if (!captureSymVal) {
+        assert(captureOperand->getFunction() == &builder.getFunction() &&
+               "non-constant captured arugment not defined in this function");
+        capturedSILVals.push_back(captureOperand);
+        continue;
+      }
+      // Here, we have a symbolic value for the capture. Therefore, use it to
+      // create a new constant at this point.
+      SILType operandSILType = captureOperand->getType();
+      SILType captureSILType =
+          callSubstMap.empty()
+              ? operandSILType
+              : operandSILType.subst(builder.getModule(), callSubstMap);
+      SILValue captureSILVal = emitCodeForSymbolicValue(
+          captureSymVal.getValue(), captureSILType, builder, loc, stringInfo);
+      capturedSILVals.push_back(captureSILVal);
+    }
+    FunctionRefInst *functionRef =
+        builder.createFunctionRef(loc, closure->getTarget());
+    ParameterConvention convention =
+        expectedType.getAs<SILFunctionType>()->getCalleeConvention();
+    PartialApplyInst *papply =
+      builder.createPartialApply(loc, functionRef, callSubstMap, capturedSILVals,
+                               convention);
+    return papply;
+  }
   default: {
     // llvm::errs() << "Symbolic value: " << symVal << "\n";
     llvm_unreachable("Symbolic value kind is not supported");

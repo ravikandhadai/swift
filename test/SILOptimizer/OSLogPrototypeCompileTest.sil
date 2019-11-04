@@ -657,3 +657,67 @@ bb0:
     // CHECK: destroy_value [[ARRAY]] : $Array<String>
 }
 
+// Check folding of closures by the OSLogOptimization pass.
+
+/// A simplified stub for OSLogInterpolation type for testing closure folding.
+struct OSLogInterpolationClosureStub {
+  var closure: [() -> Int32]
+}
+
+/// A simplified stub for OSLogMessage for testing closure folding.
+struct OSLogMessageClosureStub {
+  var interpolation: OSLogInterpolationClosureStub
+}
+
+sil private @closure1 : $@convention(thin) (Int32) -> Int32 {
+bb0(%0 : $Int32):
+  return %0 : $Int32
+}
+
+/// A stub for OSLogMessage.init. The optimization is driven by this function.
+/// This function must take at least one argument which is required by the pass.
+sil [Onone] [_semantics "constant_evaluable"] [_semantics "oslog.message.init_stub"] @oslogMessageClosureStubInit : $@convention(thin) (Builtin.Int1) -> @owned OSLogMessageClosureStub {
+bb0(%0 : $Builtin.Int1):
+  %1 = integer_literal $Builtin.Word, 1
+  // function_ref _allocateUninitializedArray<A>(_:)
+  %2 = function_ref @$ss27_allocateUninitializedArrayySayxG_BptBwlF : $@convention(thin) <τ_0_0> (Builtin.Word) -> (@owned Array<τ_0_0>, Builtin.RawPointer)
+  %3 = apply %2<() -> Int32>(%1) : $@convention(thin) <τ_0_0> (Builtin.Word) -> (@owned Array<τ_0_0>, Builtin.RawPointer)
+  %4 = tuple_extract %3 : $(Array<() -> Int32>, Builtin.RawPointer), 0
+  %5 = tuple_extract %3 : $(Array<() -> Int32>, Builtin.RawPointer), 1
+  %6 = pointer_to_address %5 : $Builtin.RawPointer to [strict] $*@callee_guaranteed () -> Int32
+  %7 = integer_literal $Builtin.Int32, 81
+  %8 = struct $Int32 (%7 : $Builtin.Int32)
+  %9 = function_ref @closure1 : $@convention(thin) (Int32) -> Int32
+  %10 = partial_apply [callee_guaranteed] %9(%8) : $@convention(thin) (Int32) -> Int32
+  store %10 to %6 : $*@callee_guaranteed () -> Int32
+
+  // Create an instance of OSLogMessageArrayStub using the above closure.
+  %20 = struct $OSLogInterpolationClosureStub(%4 : $Array<() -> Int32>)
+  %21 = struct $OSLogMessageClosureStub(%20 : $OSLogInterpolationClosureStub)
+  return %21 : $OSLogMessageClosureStub
+}
+
+/// A function that models the use of a closure.
+sil @useClosure: $@convention(thin) (@guaranteed Array<() -> Int32>) -> ()
+
+// CHECK-LABEL: @testConstantFoldingOfClosure
+sil [ossa] @testConstantFoldingOfClosure : $@convention(thin) () -> () {
+bb0:
+  // Construct an OSLogMessageClosureStub instance.
+  %0 = integer_literal $Builtin.Int1, 1
+  %1 = function_ref @oslogMessageClosureStubInit : $@convention(thin) (Builtin.Int1) -> @owned OSLogMessageClosureStub
+  %2 = apply %1(%0) : $@convention(thin) (Builtin.Int1) -> @owned OSLogMessageClosureStub
+
+  // Use the arguments property of OSLogMessageClosureStub which will be constant
+  // folded by the OSLogOptimization pass, as checked below.
+  %3 = begin_borrow %2 : $OSLogMessageClosureStub
+  %4 = struct_extract %3 : $OSLogMessageClosureStub, #OSLogMessageClosureStub.interpolation
+  %5 = struct_extract %4 : $OSLogInterpolationClosureStub, #OSLogInterpolationClosureStub.closure
+  %6 = function_ref @useClosure : $@convention(thin) (@guaranteed Array<() -> Int32>) -> ()
+  %7 = apply %6(%5) : $@convention(thin) (@guaranteed Array<() -> Int32>) -> ()
+  end_borrow %3 : $OSLogMessageClosureStub
+  destroy_value %2 : $OSLogMessageClosureStub
+  %8 = tuple ()
+  return %8 : $()
+}
+

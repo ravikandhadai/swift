@@ -1582,6 +1582,10 @@ llvm::Optional<SymbolicValue> ConstExprFunctionState::evaluateClosureCreation(
 
   SmallVector<SymbolicClosureArgument, 4> captures;
 
+  // Map generic parameters of the target to the generic arguments passed to the
+  // call.
+  SubstitutionMap callSubstMap;
+
   // If this is a partial-apply instruction, arguments to this partial-apply
   // instruction are the captures of the closure.
   if (PartialApplyInst *papply = dyn_cast<PartialApplyInst>(closureInst)) {
@@ -1593,10 +1597,11 @@ llvm::Optional<SymbolicValue> ConstExprFunctionState::evaluateClosureCreation(
       }
       captures.push_back({capturedSILValue, capturedSymbolicValue});
     }
+    callSubstMap = papply->getSubstitutionMap().subst(this->substitutionMap);
   }
 
-  auto closureVal =
-      SymbolicValue::makeClosure(target, captures, evaluator.getAllocator());
+  auto closureVal = SymbolicValue::makeClosure(target, captures, callSubstMap,
+                                               evaluator.getAllocator());
   setValue(closureInst, closureVal);
   return None;
 }

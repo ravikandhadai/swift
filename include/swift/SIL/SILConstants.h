@@ -18,9 +18,9 @@
 #ifndef SWIFT_SIL_CONSTANTS_H
 #define SWIFT_SIL_CONSTANTS_H
 
+#include "swift/AST/SubstitutionMap.h"
 #include "swift/SIL/SILValue.h"
 #include "llvm/Support/CommandLine.h"
-
 
 namespace swift {
 class SingleValueInstruction;
@@ -570,7 +570,7 @@ public:
   static SymbolicValue makeClosure(
       SILFunction *target,
       ArrayRef<std::pair<SILValue, Optional<SymbolicValue>>> capturedArguments,
-      SymbolicValueAllocator &allocator);
+      SubstitutionMap substMap, SymbolicValueAllocator &allocator);
 
   SymbolicClosure *getClosure() const {
     assert(getKind() == Closure);
@@ -673,19 +673,26 @@ private:
   // The number of SIL values captured by the closure.
   unsigned numCaptures;
 
-  // True iff there exists captured arguments whose constant value is not known.
+  // True iff there exists a captured argument whose constant value is not
+  // known.
   bool hasNonConstantCaptures = true;
+
+  // A substitution map that partially maps the generic paramters of the
+  // applied function to the generic arguments of passed to the call.
+  SubstitutionMap substitutionMap;
 
   SymbolicClosure() = delete;
   SymbolicClosure(const SymbolicClosure &) = delete;
   SymbolicClosure(SILFunction *callee, unsigned numArguments,
-                  bool nonConstantCaptures)
+                  SubstitutionMap substMap, bool nonConstantCaptures)
       : target(callee), numCaptures(numArguments),
-        hasNonConstantCaptures(nonConstantCaptures) {}
+        hasNonConstantCaptures(nonConstantCaptures), substitutionMap(substMap) {
+  }
 
 public:
   static SymbolicClosure *create(SILFunction *callee,
                                  ArrayRef<SymbolicClosureArgument> args,
+                                 SubstitutionMap substMap,
                                  SymbolicValueAllocator &allocator);
 
   ArrayRef<SymbolicClosureArgument> getCaptures() const {
@@ -700,6 +707,8 @@ public:
   SILFunction *getTarget() {
     return target;
   }
+
+  SubstitutionMap getCallSubstitutionMap() { return substitutionMap; }
 };
 
 } // end namespace swift
