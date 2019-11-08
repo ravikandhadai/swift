@@ -47,6 +47,9 @@ public struct Logger {
     osLog(logObject, level, message)
   }
   
+  // The following overloads for logging at specific levels: debug, info, notice,
+  // error, fault area based on the Swift forum "logging-levels" discussion.
+  
   @_transparent
   @_optimize(none)
   public func trace(_ message: OSLogMessage) {
