@@ -43,6 +43,13 @@ public struct Logger {
   public func log(level: OSLogType = .default, _ message: OSLogMessage) {
     osLog(logObject, level, message)
   }
+  
+  //  log("message \(x)")
+  //  var interpolation = OSLogInterpolation()
+  //  interpolation.appendLiteral("message")
+  //  interpolation.appendInterpolation(x)
+  //  let message = OSLogMessage(interpolation)
+  //  log(message)
 
   // TODO: define overloads for logging at specific levels: debug, info, notice,
   // error, fault based on the Swift forum "logging-levels" discussion.
@@ -84,7 +91,6 @@ internal func osLog(
   var currentBufferPosition = bufferMemory
   serialize(preamble, at: &currentBufferPosition)
   serialize(argumentCount, at: &currentBufferPosition)
-  //arguments.serializeAt(&currentBufferPosition, using: &stringStorageObjects)
   argumentClosures.forEach { $0(&currentBufferPosition, &stringStorageObjects) }
 
   ___os_log_impl(UnsafeMutableRawPointer(mutating: #dsohandle),
