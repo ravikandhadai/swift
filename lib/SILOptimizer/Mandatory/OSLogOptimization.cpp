@@ -788,20 +788,8 @@ static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
   }
 }
 
-/// Collect the end points of the instructions that are data dependent on \c
-/// value. A instruction is data dependent on \c value if its result may
-/// transitively depends on \c value. Note that data dependencies through
-/// addresses are not tracked by this function.
-///
-/// \param value SILValue that is not an address.
-/// \param fun SILFunction that defines \c value.
-/// \param endUsers buffer for storing the found end points of the data
-/// dependence chain.
-static void
-getEndPointsOfDataDependentChain(SILValue value, SILFunction *fun,
-                                 SmallVectorImpl<SILInstruction *> &endUsers) {
-  assert(!value->getType().isAddress());
-
+static void getTransitiveUsers(SILValue value,
+                               SmallVectorImpl<SILInstruction *> &users) {
   // Collect the instructions that are data dependent on the value using a
   // fix point iteration.
   SmallPtrSet<SILInstruction *, 16> visitedUsers;
@@ -818,17 +806,35 @@ getEndPointsOfDataDependentChain(SILValue value, SILFunction *fun,
       llvm::copy(user->getResults(), std::back_inserter(worklist));
     }
   }
-
   // At this point, visitedUsers have all the transitive, data-dependent uses.
-  // Compute the lifetime frontier of all the uses which are the instructions
-  // following the last uses. Every exit from the last uses will have a
-  // lifetime frontier.
+  users.append(visitedUsers.begin(), visitedUsers.end());
+}
+
+/// Collect the end points of the instructions that are data dependent on \c
+/// value. A instruction is data dependent on \c value if its result may
+/// transitively depends on \c value. Note that data dependencies through
+/// addresses are not tracked by this function.
+///
+/// \param value SILValue that is not an address.
+/// \param fun SILFunction that defines \c value.
+/// \param endUsers buffer for storing the found end points of the data
+/// dependence chain.
+static void
+getEndPointsOfDataDependentChain(SILValue value, SILFunction *fun,
+                                 SmallVectorImpl<SILInstruction *> &endUsers) {
+  assert(!value->getType().isAddress());
+
+  SmallVector<SILInstruction *, 16> transitiveUsers;
+  getTransitiveUsers(value, transitiveUsers);
+
+  // Compute the lifetime frontier of all the transitive uses which are the
+  // instructions following the last uses. Every exit from the last uses will
+  // have a lifetime frontier.
   SILInstruction *valueDefinition = value->getDefiningInstruction();
   SILInstruction *def =
       valueDefinition ? valueDefinition : &(value->getParentBlock()->front());
   ValueLifetimeAnalysis lifetimeAnalysis =
-      ValueLifetimeAnalysis(def, SmallVector<SILInstruction *, 16>(
-                                     visitedUsers.begin(), visitedUsers.end()));
+      ValueLifetimeAnalysis(def, transitiveUsers);
   ValueLifetimeAnalysis::Frontier frontier;
   bool hasCriticlEdges = lifetimeAnalysis.computeFrontier(
       frontier, ValueLifetimeAnalysis::DontModifyCFG);
@@ -967,7 +973,7 @@ static void replaceAllUsesAndFixLifetimes(SILValue foldedVal,
 static void substituteConstants(FoldState &foldState) {
   ConstExprStepEvaluator &evaluator = foldState.constantEvaluator;
   // Instructions that are possibly dead since their results are folded.
-  SmallVector<SILInstruction *, 4> possiblyDeadInsts;
+  SmallVector<SILInstruction *, 8> possiblyDeadInsts;
 
   for (SILValue constantSILValue : foldState.getConstantSILValues()) {
     SymbolicValue constantSymbolicVal =
@@ -1061,6 +1067,238 @@ static bool checkOSLogMessageIsConstant(SingleValueInstruction *osLogMessage,
   return errorDetected;
 }
 
+/// The conservative answer here is true.
+static bool
+mayHaveOtherSideEffects(FullApplySite applySite,
+                        const SmallPtrSetImpl<SILValue> &allowedEffects) {
+  assert(applySite);
+  // Bail out on anything other than a normal full-apply site.
+  if (applySite.getKind() != FullApplySiteKind::ApplyInst)
+    return true;
+  // If the call is not constant evaluable it can have effect on any memory
+  // location. Therefore, give up.
+  SILFunction *callee = applySite.getCalleeFunction();
+  if (!callee || (!isConstantEvaluable(callee) &&
+                  !isKnownConstantEvaluableFunction(callee)))
+    return true;
+  // Here all effects of the call are only on its indirect results.
+
+  if (applySite.getNumIndirectSILResults() == 0) {
+    return false;
+  }
+  for (SILValue indirectResult : applySite.getIndirectSILResults()) {
+    // Any effect outside of the allowedEffects?
+    if (!allowedEffects.count(indirectResult))
+      return true;
+  }
+  return false;
+}
+
+static bool
+isNonAddressValueDead(SILValue value,
+                      const SmallPtrSetImpl<SILInstruction *> &knownDeadInsts) {
+  // TODO: make this function iterative.
+  assert(!value->getType().isAddress());
+  for (Operand *use : value->getUses()) {
+    SILInstruction *user = use->getUser();
+    if (isa<ReleaseValueInst>(user) || isa<DestroyValueInst>(user) ||
+        isa<RetainValueInst>(user) || isa<EndBorrowInst>(user) ||
+        isa<StrongReleaseInst>(user) || isa<StrongRetainInst>(user) ||
+        knownDeadInsts.count(user))
+      continue;
+
+    if (isa<BeginBorrowInst>(user) || isa<CopyValueInst>(user)) {
+      auto *singleValueInst = dyn_cast<SingleValueInstruction>(user);
+      assert(singleValueInst);
+      if (isNonAddressValueDead(singleValueInst, knownDeadInsts))
+        continue;
+    }
+    // Every thing else is a valid use of value.
+    // llvm::errs() << "Found Live user of non-address:  " << *user << "\n";
+    return false;
+  }
+  return true;
+}
+
+static bool
+isAddressInstDead(SingleValueInstruction *addrInst,
+                  const SmallPtrSetImpl<SILInstruction *> &knownDeadInsts) {
+  // TODO: make this function iterative.
+  assert(addrInst->getType().isAddress());
+  for (Operand *use : addrInst->getUses()) {
+    SILInstruction *user = use->getUser();
+    if (isa<DestroyAddrInst>(user) || isa<EndAccessInst>(user) ||
+        isa<StoreInst>(user) || isa<AssignInst>(user) ||
+        isa<InjectEnumAddrInst>(user) || isa<DeallocStackInst>(user) ||
+        knownDeadInsts.count(user)) {
+      continue;
+    }
+    if (isa<BeginAccessInst>(user)) {
+      auto *beginAccessInst = cast<BeginAccessInst>(user);
+      if (isAddressInstDead(beginAccessInst, knownDeadInsts))
+        continue;
+      return false;
+    }
+    ApplyInst *applyInst = dyn_cast<ApplyInst>(user);
+    if (!applyInst) {
+      // llvm::errs() << "Found Live user of address:  " << *user << "\n";
+      return false;
+    }
+    // TODO: we can allow writes to known dead uses here as well, if necessary.
+    SmallPtrSet<SILValue, 1> allowedEffects;
+    allowedEffects.insert(addrInst);
+    if (mayHaveOtherSideEffects(FullApplySite(applyInst), allowedEffects) ||
+        !isNonAddressValueDead(applyInst, knownDeadInsts)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool
+isSILInstructionDead(SILInstruction *inst,
+                     const SmallPtrSetImpl<SILInstruction *> &knownDeadInsts) {
+  // llvm::errs() << "checking liveness of inst: " << *inst << "\n";
+  for (SILValue result : inst->getResults()) {
+    if (!result->getType().isAddress()) {
+      if (!isNonAddressValueDead(result, knownDeadInsts))
+        return false;
+      continue;
+    }
+    // We have any address value here. Only alloc-stack is supported in this
+    // case.
+    AllocStackInst *allocStack = dyn_cast<AllocStackInst>(inst);
+    if (!allocStack)
+      return false;
+    if (!isAddressInstDead(allocStack, knownDeadInsts))
+      return false;
+  }
+  return true;
+}
+
+static void eraseInstructionAndUses(SILInstruction *inst) {
+  if (!inst->getParent())
+    return; // This instruction is already deleted.
+
+  for (SILValue result : inst->getResults()) {
+    for (Operand *use : result->getUses()) {
+      SILInstruction *user = use->getUser();
+      eraseInstructionAndUses(user);
+    }
+  }
+  inst->eraseFromParent();
+}
+
+// Do a backward traversal of all the operands of oslogMessage and remove the
+// operand definitions if they are dead.
+static void eliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
+  SILFunction *fun = oslogMessage->getFunction();
+  //  llvm::errs() << "Eliminating OSLog Message from: "  << "\n";
+  //  fun->dump();
+  //  llvm::errs() << "\n";
+
+  // A queue of instructions that must be deleted. The instructions are ordered
+  // from their users to the definitions so that they can be deleted in that
+  // order.
+  SmallVector<SILInstruction *, 32> instrsToDelete;
+  SmallPtrSet<SILInstruction *, 32> instrsToDeleteSet;
+  SmallVector<SILInstruction *, 32> worklist;
+
+  std::function<void(SILInstruction *)> appendDeadInstruction =
+      [&](SILInstruction *inst) {
+        if (instrsToDeleteSet.insert(inst).second)
+          instrsToDelete.push_back(inst);
+      };
+  appendDeadInstruction(oslogMessage);
+  worklist.push_back(oslogMessage);
+
+  while (!worklist.empty()) {
+    auto frontIter = worklist.begin();
+    SILInstruction *inst = *frontIter;
+    worklist.erase(frontIter);
+    // llvm::errs() << "deleting inst: " << *inst << "\n";
+
+    for (Operand &operand : inst->getAllOperands()) {
+      SILInstruction *definingInst = operand.get().getDefiningInstruction();
+      if (!definingInst) {
+        // We cannot remove basic block parameters.
+        continue;
+      }
+      if (!isSILInstructionDead(definingInst, instrsToDeleteSet))
+        continue;
+      // If we are looking at a call, it must not have any side-effects.
+      // TODO: we can allow effects on dead addresses.
+      FullApplySite definingCall = FullApplySite::isa(definingInst);
+      SmallPtrSet<SILValue, 1> allowedEffects;
+      if (definingCall && mayHaveOtherSideEffects(definingCall, allowedEffects))
+        continue;
+
+      // If this is an an alloc-stack instruction, all its transitive users are
+      // also dead, therefore add them to the worklist. Otherwise, this alloc
+      // stack would not be considered dead.
+      if (auto *allocStack = dyn_cast<AllocStackInst>(definingInst)) {
+        SmallVector<SILInstruction *, 8> transitiveUsers;
+        getTransitiveUsers(allocStack, transitiveUsers);
+        for (SILInstruction *user : transitiveUsers) {
+          if (!instrsToDeleteSet.count(user)) {
+            appendDeadInstruction(user);
+            worklist.push_back(user);
+          }
+        }
+      }
+      if (!instrsToDeleteSet.count(definingInst)) {
+        appendDeadInstruction(definingInst);
+        worklist.push_back(definingInst);
+      }
+    }
+  }
+  // Destroy values that the instructions to be deleted may consume.
+  for (auto *inst : instrsToDelete) {
+    if (isa<CopyValueInst>(inst) || isa<BeginBorrowInst>(inst) ||
+        isa<DestroyValueInst>(inst) || isa<ReleaseValueInst>(inst) ||
+        isa<RetainValueInst>(inst))
+      continue;
+
+    for (Operand &operand : inst->getAllOperands()) {
+      SILValue operandValue = operand.get();
+      if (isa<PartialApplyInst>(operandValue)) {
+        // Every captured value here is owned.
+        PartialApplyInst *papply = cast<PartialApplyInst>(operandValue);
+        for (SILValue argument : papply->getArguments()) {
+          SILType argType = argument->getType();
+          if (argType.isAddress() || argType.isTrivial(*fun))
+            continue;
+          assert(!fun->hasOwnership() ||
+                 operandValue.getOwnershipKind() == ValueOwnershipKind::Owned);
+          SILBuilderWithScope builder(inst);
+          if (fun->hasOwnership())
+            builder.createDestroyValue(inst->getLoc(), operandValue);
+          else
+            builder.createReleaseValue(
+                inst->getLoc(), operandValue,
+                swift::RefCountingInst::Atomicity::Atomic);
+        }
+        continue;
+      }
+      // Handle only ownership SIL in every other case.
+      if (fun->hasOwnership()) {
+        if (operandValue.getOwnershipKind() == ValueOwnershipKind::Owned) {
+          SILBuilderWithScope builder(inst);
+          builder.createDestroyValue(inst->getLoc(), operandValue);
+        }
+      }
+    }
+  }
+
+  // TODO: use an already available utility.
+  for (auto *inst : instrsToDelete) {
+    eraseInstructionAndUses(inst);
+  }
+  //  recursivelyDeleteTriviallyDeadInstructions(instrsToDelete,
+  //                                             /*force*/ false,
+  //                                             [&](SILInstruction *DeadI) {});
+}
+
 /// Constant evaluate instructions starting from 'start' and fold the uses
 /// of the value 'oslogMessage'. Stop when oslogMessageValue is released.
 static void constantFold(SILInstruction *start,
@@ -1088,6 +1326,17 @@ static void constantFold(SILInstruction *start,
     return;
 
   substituteConstants(state);
+
+  // At this point, the OSLogMessage instance must be dead if the overlay
+  // implementation (or its extensions by users) is correct. Check this and
+  // remove the OSLogMessageInstance all code that is just meant for creating it.
+  SmallPtrSet<SILInstruction *, 2> emptyUses;
+  if (!isNonAddressValueDead(oslogMessage, emptyUses)) {
+    // TODO: check that this case doesn't happen and the backward compatability
+    // of the OSLog overlay in a separate pass.
+    return;
+  }
+  eliminateOSLogMessage(oslogMessage);
 }
 
 /// Given a call to the initializer of OSLogMessage, which conforms to

@@ -353,8 +353,9 @@ internal struct OSLogArguments {
 
 /// Serialize a UInt8 value at the buffer location pointed to by `bufferPosition`,
 /// and increment the `bufferPosition` with the byte size of the serialized value.
-@usableFromInline
+@inlinable
 @_alwaysEmitIntoClient
+@inline(__always)
 internal func serialize(
   _ value: UInt8,
   at bufferPosition: inout ByteBufferPointer)

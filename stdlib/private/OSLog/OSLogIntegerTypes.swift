@@ -155,10 +155,8 @@ extension OSLogArguments {
 
 /// Return the number of bytes needed for serializing an integer argument as
 /// specified by os_log. This function must be constant evaluable.
-@inlinable
-@_semantics("constant_evaluable")
-@_effects(readonly)
-@_optimize(none)
+@_transparent
+@usableFromInline
 internal func sizeForEncoding<T>(
   _ type: T.Type
 ) -> Int where T : FixedWidthInteger  {
@@ -167,8 +165,9 @@ internal func sizeForEncoding<T>(
 
 /// Serialize an integer at the buffer location that `position` points to and
 /// increment `position` by the byte size of `T`.
-@usableFromInline
+@inlinable
 @_alwaysEmitIntoClient
+@inline(__always)
 internal func serialize<T>(
   _ value: T,
   at bufferPosition: inout ByteBufferPointer
