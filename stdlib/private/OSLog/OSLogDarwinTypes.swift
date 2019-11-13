@@ -1,4 +1,4 @@
-//===----------------- OSLogIntegerTypes.swift ----------------------------===//
+//===----------------- OSLogDarwinTypes.swift ----------------------------===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -9,9 +9,6 @@
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 //===----------------------------------------------------------------------===//
-
-import Foundation
-import Network
 
 public enum DarwinInt32Format {
   case ipaddr
@@ -34,35 +31,6 @@ extension OSLogInterpolation {
     addIntHeaders(isPrivateArgument, sizeForEncoding(Int32.self))
     arguments.append(number)
     argumentCount += 1
-  }
-  
-  @_semantics("constant_evaluable")
-  @inlinable
-  @_optimize(none)
-  public mutating func appendInterpolation(
-    _ date: @autoclosure @escaping () -> Date,
-    privacy: Privacy = .public
-  ) {
-    appendInterpolation(
-      Int32(date().timeIntervalSince1970.rounded()),
-      format: .time_t,
-      privacy: privacy)
-  }
-  
-  @_semantics("constant_evaluable")
-  @inlinable
-  @_optimize(none)
-  @available(macOS 10.14, *)
-  public mutating func appendInterpolation(
-    _ ipaddr: @autoclosure @escaping () -> IPv4Address,
-    privacy: Privacy = .public
-  ) {
-    appendInterpolation(
-      ipaddr().rawValue.withUnsafeBytes {
-        $0.load(as: Int32.self)
-      },
-      format: .ipaddr,
-      privacy: privacy)
   }
 
   @inlinable
