@@ -46,9 +46,54 @@ public struct Logger {
   public func log(level: OSLogType = .default, _ message: OSLogMessage) {
     osLog(logObject, level, message)
   }
-
-  // TODO: define overloads for logging at specific levels: debug, info, notice,
-  // error, fault based on the Swift forum "logging-levels" discussion.
+  
+  @_transparent
+  @_optimize(none)
+  public func trace(_ message: OSLogMessage) {
+    osLog(logObject, .debug, message)
+  }
+  
+  @_transparent
+  @_optimize(none)
+  public func debug(_ message: OSLogMessage) {
+    osLog(logObject, .debug, message)
+  }
+  
+  @_transparent
+  @_optimize(none)
+  public func info(_ message: OSLogMessage) {
+    osLog(logObject, .info, message)
+  }
+  
+  @_transparent
+  @_optimize(none)
+  public func notice(_ message: OSLogMessage) {
+    osLog(logObject, .default, message)
+  }
+  
+  @_transparent
+  @_optimize(none)
+  public func warning(_ message: OSLogMessage) {
+    osLog(logObject, .error, message)
+  }
+  
+  @_transparent
+  @_optimize(none)
+  public func error(_ message: OSLogMessage) {
+    osLog(logObject, .error, message)
+  }
+  
+  @_transparent
+  @_optimize(none)
+  public func critical(_ message: OSLogMessage) {
+    osLog(logObject, .fault, message)
+  }
+  
+  @_transparent
+  @_optimize(none)
+  public func fault(_ message: OSLogMessage) {
+    osLog(logObject, .fault, message)
+  }
 }
 
 /// Given an instance of the custom string interpolation type: `OSLogMessage`,
