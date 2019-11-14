@@ -14,8 +14,6 @@
 // interpolations. This is a prototype meant for experimentation and testing.
 // Do not use it outside of tests.
 
-@_exported import os
-
 @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
 @frozen
 public struct Logger {

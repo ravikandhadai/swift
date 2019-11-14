@@ -15,7 +15,7 @@
 // format string passed to the C ABIs point to a string literal in the __cstring
 // section of compiled binary, is broken by the compiler.
 
-import OSLogPrototype
+import os
 import Foundation
 import StdlibUnittest
 

@@ -8,6 +8,12 @@ add_swift_target_library(swiftos ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SDK
   os_signpost.swift
   os_trace_blob.c
   thunks.mm
+  OSLog.swift
+  OSLogMessage.swift
+  OSLogIntegerTypes.swift
+  OSLogStringTypes.swift
+  OSLogDarwinTypes.swift
+  OSLogFloatingPointTypes.swift
 
   "${SWIFT_SOURCE_DIR}/stdlib/linker-support/magic-symbols-for-install-name.c"
 
