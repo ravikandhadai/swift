@@ -535,8 +535,7 @@ bb0:
   destroy_value %2 : $OSLogMessageStringArrayStub
   %8 = tuple ()
   return %8 : $()
-    // Skip the first instance of "ab".
-    // CHECK: [[LIT:%[0-9]+]] = string_literal utf8 "ab"
+    // The first instance of "ab" will be dead code eliminated.
     // CHECK: [[LIT:%[0-9]+]] = string_literal utf8 "ab"
     // CHECK: [[STRINGINIT:%[0-9]+]] = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC
     // CHECK: [[STRINGCONST:%[0-9]+]] = apply [[STRINGINIT]]([[LIT]], {{%.*}}, {{%.*}}, {{%.*}})
@@ -741,7 +740,7 @@ bb0(%0 : @guaranteed $String):
   destroy_value %6 : $OSLogMessageStringCapture
   %18 = tuple ()
   return %18 : $()
-    // CHECK: [[FUNREFORIG:%[0-9]+]] = function_ref @idString
+    // The first instance of function_ref @idString will be dead code eliminated.
     // CHECK: [[ORIGCAPTURE:%[0-9]+]] = copy_value %0 : $String
     // CHECK: [[NEWCAPTURE:%[0-9]+]] = copy_value [[ORIGCAPTURE]] : $String
     // CHECK: [[FUNREF:%[0-9]+]] = function_ref @idString
@@ -795,10 +794,9 @@ bb0:
   dealloc_stack %1 : $*Int64
   %18 = tuple ()
   return %18 : $()
-    // CHECK: [[FUNREFORIG:%[0-9]+]] = function_ref @genericFunction
-    // CHECK: [[CLOSUREORIG:%[0-9]+]] = partial_apply [callee_guaranteed] [[FUNREFORIG]]<Int64, Bool>([[CAPTURE1:%[0-9]+]], [[CAPTURE2:%[0-9]+]])
+    // The first instance of function_ref @genericFunction will be dead-code eliminated.
     // CHECK: [[FUNREF:%[0-9]+]] = function_ref @genericFunction
-    // CHECK: [[CLOSURE:%[0-9]+]] = partial_apply [callee_guaranteed] [[FUNREF]]<Int64, Bool>([[CAPTURE1]], [[CAPTURE2]])
+    // CHECK: [[CLOSURE:%[0-9]+]] = partial_apply [callee_guaranteed] [[FUNREF]]<Int64, Bool>([[CAPTURE1:%[0-9]+]], [[CAPTURE2:%[0-9]+]])
     // CHECK: [[BORROW:%[0-9]+]] = begin_borrow [[CLOSURE]] : $@callee_guaranteed () -> Int32
     // CHECK: [[USE:%[0-9]+]] = function_ref @useClosure
     // CHECK: apply [[USE]]([[BORROW]])
