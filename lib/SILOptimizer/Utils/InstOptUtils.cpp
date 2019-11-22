@@ -95,6 +95,24 @@ swift::createDecrementBefore(SILValue ptr, SILInstruction *insertPt) {
   return builder.createReleaseValue(loc, ptr, builder.getDefaultAtomicity());
 }
 
+/// Return true iff the \p applySite calls a constant evaluable function and if it
+/// is read-only which implies the following:
+///   (1) The call does not write into any memory location.
+///   (2) If the call takes owned paramters it may destory them. But it will not destory anything besides
+///     owned parameters.
+///   (3) The call does not throw or exit the program (modulo assertion failures).
+static bool isReadOnlyConstantEvaluableCall(FullApplySite applySite) {
+  assert(applySite);
+  SILFunction *callee = applySite.getCalleeFunction();
+  if (!callee || !isConstantEvaluable(callee)) {
+    return true;
+  }
+  // Here all effects of the call is restricted to its indirect results, which
+  // must have value semantics. If there are no indirect results, the call must
+  // be read-only.
+  return applySite.getNumIndirectSILResults() != 0;
+}
+
 /// Perform a fast local check to see if the instruction is dead.
 ///
 /// This routine only examines the state of the instruction at hand.
@@ -169,6 +187,53 @@ bool swift::isIntermediateRelease(SILInstruction *inst,
 
   // Failed to prove anything.
   return false;
+}
+
+static bool hasOnlyEndOfScopeOrDestroyUses(SingleValueInstruction *inst) {
+  for (Operand *use : result->getUses()) {
+    SILInstruction *user = use->getUser();
+    if (!isa<DestroyValueInst>(user) && !isEndOfScopeMarker(user))
+      return false;
+  }
+  return true;
+}
+
+static bool isNonTrivialValueDead(SingelValueInstruction *inst) {
+  // Only support ownership SIL for non-trival values.
+  if (!inst->getFunction()->hasOwnership()) {
+    return false;
+  }
+  // If the instruction has any use other than end of scope use or destroy_value
+  // use, bail out.
+  if (!hasOnlyEndOfScopeOrDestroyUses(inst)) {
+    return false;
+  }
+  // If inst is a copy or begin_borrow/access or mark_dependence inst and given
+  // that it is used only in a destroy_value or end_borrow/access, inst is dead.
+  if (getSingleValueCopyOrCast(inst))
+    return true;
+
+  switch (inst->getKind()) {
+  case SILInstructionKind::PartialApplyInst: {
+    // Partial applies that is only used in destroys cannot have any effect on
+    // the program state, provided the values they capture are explicitly
+    // destroyed.
+    return true;
+  }
+  case SILInstructionKind::ApplyInst: {
+    FullApplySite call = FullApplySite::isa(inst);
+    // A constant_evaluable call can only return a trivial type or a type with
+    // value semantics. The deinit of the returned type should be pure in the
+    // sense that it only affects self and nothing else. Therefore, it should
+    // be safe to remove the call along with any destroys of the returned value,
+    // if the call is a read-only call. However, every owned value passed to the
+    // call must be explicitly destroyed.
+    return isReadOnlyConstantEvaluableCall(definingCall);
+  }
+  default: {
+    return false;
+  }
+  }
 }
 
 namespace {
