@@ -12,8 +12,8 @@
 
 #include "swift/SILOptimizer/Utils/InstOptUtils.h"
 #include "swift/AST/GenericSignature.h"
-#include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/SemanticAttrs.h"
+#include "swift/AST/SubstitutionMap.h"
 #include "swift/SIL/BasicBlockUtils.h"
 #include "swift/SIL/DebugUtils.h"
 #include "swift/SIL/DynamicCasts.h"
@@ -27,6 +27,7 @@
 #include "swift/SILOptimizer/Analysis/Analysis.h"
 #include "swift/SILOptimizer/Analysis/DominanceAnalysis.h"
 #include "swift/SILOptimizer/Utils/CFGOptUtils.h"
+#include "swift/SILOptimizer/Utils/ConstExpr.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -95,22 +96,24 @@ swift::createDecrementBefore(SILValue ptr, SILInstruction *insertPt) {
   return builder.createReleaseValue(loc, ptr, builder.getDefaultAtomicity());
 }
 
-/// Return true iff the \p applySite calls a constant evaluable function and if it
-/// is read-only which implies the following:
+/// Return true iff the \p applySite calls a constant evaluable function and if
+/// it is read-only which implies the following:
 ///   (1) The call does not write into any memory location.
-///   (2) If the call takes owned paramters it may destory them. But it will not destory anything besides
+///   (2) If the call takes owned paramters it may destroy them. But it will not
+///   destroy anything besides
 ///     owned parameters.
-///   (3) The call does not throw or exit the program (modulo assertion failures).
+///   (3) The call does not throw or exit the program (modulo assertion
+///   failures).
 static bool isReadOnlyConstantEvaluableCall(FullApplySite applySite) {
   assert(applySite);
   SILFunction *callee = applySite.getCalleeFunction();
   if (!callee || !isConstantEvaluable(callee)) {
-    return true;
+    return false;
   }
   // Here all effects of the call is restricted to its indirect results, which
   // must have value semantics. If there are no indirect results, the call must
   // be read-only.
-  return applySite.getNumIndirectSILResults() != 0;
+  return applySite.getNumIndirectSILResults() == 0;
 }
 
 /// Perform a fast local check to see if the instruction is dead.
@@ -189,18 +192,25 @@ bool swift::isIntermediateRelease(SILInstruction *inst,
   return false;
 }
 
-static bool hasOnlyEndOfScopeOrDestroyUses(SingleValueInstruction *inst) {
-  for (Operand *use : result->getUses()) {
-    SILInstruction *user = use->getUser();
-    if (!isa<DestroyValueInst>(user) && !isEndOfScopeMarker(user))
-      return false;
+static bool hasOnlyEndOfScopeOrDestroyUses(SILInstruction *inst) {
+  for (SILValue result : inst->getResults()) {
+    for (Operand *use : result->getUses()) {
+      SILInstruction *user = use->getUser();
+      if (!isa<DestroyValueInst>(user) && !isEndOfScopeMarker(user))
+        return false;
+    }
   }
   return true;
 }
 
-static bool isNonTrivialValueDead(SingelValueInstruction *inst) {
-  // Only support ownership SIL for non-trival values.
-  if (!inst->getFunction()->hasOwnership()) {
+/// A non-trivial instruction is an instruction that has operands or results of
+/// non-trivial type. Dead-code eliminating such instruction may require fixing
+/// the lifetime of non-trivial operands and may require cleaning up the destroy
+/// or end-of-scope uses of non-trivial results.
+static bool isInstructionNonTrivialAndDead(SILInstruction *inst) {
+  SILFunction *fun = inst->getFunction();
+  // Only support ownership SIL for non-trival instruction.
+  if (!fun->hasOwnership()) {
     return false;
   }
   // If the instruction has any use other than end of scope use or destroy_value
@@ -208,27 +218,35 @@ static bool isNonTrivialValueDead(SingelValueInstruction *inst) {
   if (!hasOnlyEndOfScopeOrDestroyUses(inst)) {
     return false;
   }
-  // If inst is a copy or begin_borrow/access or mark_dependence inst and given
-  // that it is used only in a destroy_value or end_borrow/access, inst is dead.
+  // If inst is a copy or beginning of scope, inst is dead, since we know that
+  // it is used only in a destroy_value or end-of-scope instruction.
   if (getSingleValueCopyOrCast(inst))
     return true;
 
   switch (inst->getKind()) {
+  case SILInstructionKind::LoadInst: {
+    LoadOwnershipQualifier loadOwnershipQual =
+        cast<LoadInst>(inst)->getOwnershipQualifier();
+    // If the load creates a copy which is never used except in a destory_value,
+    // the load is dead.
+    return (loadOwnershipQual == LoadOwnershipQualifier::Copy ||
+            loadOwnershipQual == LoadOwnershipQualifier::Trivial);
+  }
   case SILInstructionKind::PartialApplyInst: {
-    // Partial applies that is only used in destroys cannot have any effect on
+    // Partial applies that are only used in destroys cannot have any effect on
     // the program state, provided the values they capture are explicitly
     // destroyed.
     return true;
   }
   case SILInstructionKind::ApplyInst: {
-    FullApplySite call = FullApplySite::isa(inst);
-    // A constant_evaluable call can only return a trivial type or a type with
-    // value semantics. The deinit of the returned type should be pure in the
-    // sense that it only affects self and nothing else. Therefore, it should
-    // be safe to remove the call along with any destroys of the returned value,
-    // if the call is a read-only call. However, every owned value passed to the
-    // call must be explicitly destroyed.
-    return isReadOnlyConstantEvaluableCall(definingCall);
+    FullApplySite call(cast<ApplyInst>(inst));
+    // A constant_evaluable call can only return a type with value semantics.
+    // The deinit of the returned type should be pure in the sense that it only
+    // affects its self and nothing else. Therefore, it should be safe to remove
+    // the call along with any destroys of the returned value, if the call is a
+    // read-only call. However, every owned value passed to the call must be
+    // explicitly destroyed.
+    return isReadOnlyConstantEvaluableCall(call);
   }
   default: {
     return false;
@@ -236,58 +254,124 @@ static bool isNonTrivialValueDead(SingelValueInstruction *inst) {
   }
 }
 
+static void addInstAndUsesIfDead(SILInstruction *inst,
+                                 SmallPtrSetImpl<SILInstruction *> &deadInsts) {
+
+  // llvm::errs() << "Looking at instruction: " << *inst << "\n";
+  if (isInstructionTriviallyDead(inst)) {
+    // llvm::errs() << " >> DEAD \n";
+    deadInsts.insert(inst);
+    return;
+  }
+  if (isInstructionNonTrivialAndDead(inst)) {
+    // llvm::errs() << " >> DEAD \n";
+    // Here the instruction and also its users, which must be only end-of-scope
+    // instruction like end_borrow or destroy_value instruction, are dead.
+    for (SILValue result : inst->getResults()) {
+      for (Operand *use : result->getUses()) {
+        // llvm::errs() << "DEAD Use: " << *(use->getUser()) << "\n";
+        deadInsts.insert(use->getUser());
+      }
+    }
+    deadInsts.insert(inst);
+  }
+}
+
 namespace {
 using CallbackTy = llvm::function_ref<void(SILInstruction *)>;
 } // end anonymous namespace
+
+static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
+  assert(operand.get() && operand.getUser());
+
+  SILInstruction *deadInst = operand.getUser();
+  SILFunction *fun = deadInst->getFunction();
+  SILValue operandValue = operand.get();
+  if (operandValue->getType().isTrivial(*fun))
+    return;
+
+  // Non-trivial values can be dead-code eliminated only in ownership SIL.
+  assert(fun->hasOwnership());
+  // We should not be removing a lifetime ending instruction, without removing
+  // the instruction defining its operand as well.
+  assert(!isEndOfScopeMarker(deadInst) && !isa<DestroyValueInst>(deadInst) &&
+         "lifetime ending instruction is deleted without its operand");
+
+  ValueOwnershipKind operandOwnershipKind = operandValue.getOwnershipKind();
+  UseLifetimeConstraint lifetimeConstraint =
+      operand.getOwnershipKindMap().getLifetimeConstraint(operandOwnershipKind);
+  if (lifetimeConstraint == UseLifetimeConstraint::MustBeInvalidated) {
+    // Since deadInst cannot be an end-of-scope instruction (checked above),
+    // this must be a consuming use of an owned value.
+    assert(operandOwnershipKind == ValueOwnershipKind::Owned);
+    SILBuilderWithScope builder(deadInst);
+    builder.emitDestroyValueOperation(deadInst->getLoc(), operandValue);
+  }
+}
 
 void swift::recursivelyDeleteTriviallyDeadInstructions(
     ArrayRef<SILInstruction *> ia, bool force, CallbackTy callback) {
   // Delete these instruction and others that become dead after it's deleted.
   llvm::SmallPtrSet<SILInstruction *, 8> deadInsts;
   for (auto *inst : ia) {
-    // If the instruction is not dead and force is false, do nothing.
-    if (force || isInstructionTriviallyDead(inst))
+    // If force is true, remove inst regardless of whether it is dead or not.
+    // Otherwise, add inst (and possibly its ref-count uses) iff it is dead.
+    if (force) {
       deadInsts.insert(inst);
+      continue;
+    }
+    addInstAndUsesIfDead(inst, deadInsts);
   }
   llvm::SmallPtrSet<SILInstruction *, 8> nextInsts;
   while (!deadInsts.empty()) {
     for (auto inst : deadInsts) {
-      // Call the callback before we mutate the to be deleted instruction in any
+      // Call the callback before we mutate the to-be-deleted instruction in any
       // way.
       callback(inst);
 
-      // Check if any of the operands will become dead as well.
-      MutableArrayRef<Operand> operands = inst->getAllOperands();
-      for (Operand &operand : operands) {
-        SILValue operandVal = operand.get();
-        if (!operandVal)
+      // Record all operand values of inst. These may become dead once inst is
+      // removed. Also, in case an operand is consumed by inst, emit necessary
+      // destroy_value instruction for the operand value.
+      SmallVector<SILInstruction *, 4> operandDefinitions;
+      for (Operand &operand : inst->getAllOperands()) {
+        SILValue operandValue = operand.get();
+        if (!operandValue)
           continue;
-
-        // Remove the reference from the instruction being deleted to this
-        // operand.
-        operand.drop();
-
-        // If the operand is an instruction that is only used by the instruction
-        // being deleted, delete it.
-        if (auto *operandValInst = operandVal->getDefiningInstruction())
-          if (!deadInsts.count(operandValInst)
-              && isInstructionTriviallyDead(operandValInst))
-            nextInsts.insert(operandValInst);
+        SILInstruction *defInst = operandValue->getDefiningInstruction();
+        // If the operand value itself will be deleted, we need not process
+        // it.
+        if (defInst && deadInsts.count(defInst))
+          continue;
+        // If the operand has a defining instruction, it could be potentially
+        // dead. Therefore, record the definition.
+        if (defInst)
+          operandDefinitions.push_back(defInst);
+        // If the operand is a non-trivial value, its lifetime may have to be
+        // adjusted since inst will be deleted.
+        fixLifetimeOfOperandOfDeadInst(operand);
       }
 
+      // Remove all operand and other references from the instruction being
+      // deleted.
+      inst->dropAllReferences();
+
+      // Check if any of the operands will become dead as well.
+      for (SILInstruction *operandValInst : operandDefinitions) {
+        addInstAndUsesIfDead(operandValInst, nextInsts);
+      }
       // If we have a function ref inst, we need to especially drop its function
       // argument so that it gets a proper ref decrement.
-      auto *fri = dyn_cast<FunctionRefInst>(inst);
-      if (fri && fri->getInitiallyReferencedFunction())
-        fri->dropReferencedFunction();
-
-      auto *dfri = dyn_cast<DynamicFunctionRefInst>(inst);
-      if (dfri && dfri->getInitiallyReferencedFunction())
-        dfri->dropReferencedFunction();
-
-      auto *pfri = dyn_cast<PreviousDynamicFunctionRefInst>(inst);
-      if (pfri && pfri->getInitiallyReferencedFunction())
-        pfri->dropReferencedFunction();
+      //      auto *fri = dyn_cast<FunctionRefInst>(inst);
+      //      if (fri && fri->getInitiallyReferencedFunction())
+      //        fri->dropReferencedFunction();
+      //
+      //      auto *dfri = dyn_cast<DynamicFunctionRefInst>(inst);
+      //      if (dfri && dfri->getInitiallyReferencedFunction())
+      //        dfri->dropReferencedFunction();
+      //
+      //      auto *pfri = dyn_cast<PreviousDynamicFunctionRefInst>(inst);
+      //      if (pfri && pfri->getInitiallyReferencedFunction())
+      //        pfri->dropReferencedFunction();
     }
 
     for (auto inst : deadInsts) {

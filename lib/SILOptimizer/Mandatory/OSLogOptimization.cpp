@@ -985,8 +985,6 @@ static void substituteConstants(FoldState &foldState) {
     replaceAllUsesAndFixLifetimes(foldedSILVal, constantSILValue, fun);
     possiblyDeadInsts.push_back(definingInst);
   }
-  recursivelyDeleteTriviallyDeadInstructions(possiblyDeadInsts, /*force*/ false,
-                                             [&](SILInstruction *DeadI) {});
 }
 
 /// Check whether OSLogMessage and OSLogInterpolation instances and all their
@@ -1262,65 +1260,79 @@ static void tryEliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
   SourceLoc oslogMessageLoc = oslogMessage->getLoc().getSourceLoc();
 
   // A worklist that contains instructions that are possibly dead.
-  SmallVector<SILInstruction *, 32> worklist;
-  // Set of all dead instructions discovered during the fixpoint iteration.
+  //  SmallVector<SILInstruction *, 32> worklist;
+  //  // Set of all dead instructions discovered during the fixpoint iteration.
   SmallPtrSet<SILInstruction *, 32> allDeadInstructions;
+  //
+  //  // Initialize the worklist with oslogMessage and all its transitive users.
+  //  worklist.push_back(oslogMessage);
 
-  // Initialize the worklist with oslogMessage and all its transitive users.
-  worklist.push_back(oslogMessage);
   SmallVector<SILInstruction *, 8> oslogMessageUsers;
   getTransitiveUsers(oslogMessage, oslogMessageUsers);
-  worklist.append(oslogMessageUsers.begin(), oslogMessageUsers.end());
 
-  // In the following iteration, the worklist could grow in size iff an
-  // instruction is found to be dead. An instruction that is found to be dead
-  // will never be added again to the worklist. So eventually the worklist will
-  // become empty.
-  while (!worklist.empty()) {
-    SILInstruction *candidateInst = worklist.pop_back_val();
-    // Bail out if it is already known to be dead and handled.
-    if (allDeadInstructions.count(candidateInst))
-      continue;
-    if (!isInstructionDead(candidateInst))
-      continue;
-    // If an instruction is dead, it means all its transitive users are also
-    // dead. The transitive users could be writes into memory allocated by
-    // the instruction (if inst is alloc_stack), or could be clean up of the
-    // reference counts e.g. destory_value or destroy_addr instructions.
-    SmallVector<SILInstruction *, 4> deadInsts;
-    for (SILValue result : candidateInst->getResults()) {
-      getTransitiveUsers(result, deadInsts);
-    }
-    deadInsts.push_back(candidateInst);
+  //  worklist.append(oslogMessageUsers.begin(), oslogMessageUsers.end());
+  //
+  //  // In the following iteration, the worklist could grow in size iff an
+  //  // instruction is found to be dead. An instruction that is found to be
+  //  dead
+  //  // will never be added again to the worklist. So eventually the worklist
+  //  will
+  //  // become empty.
+  //  while (!worklist.empty()) {
+  //    SILInstruction *candidateInst = worklist.pop_back_val();
+  //    // Bail out if it is already known to be dead and handled.
+  //    if (allDeadInstructions.count(candidateInst))
+  //      continue;
+  //    if (!isInstructionDead(candidateInst))
+  //      continue;
+  //    // If an instruction is dead, it means all its transitive users are also
+  //    // dead. The transitive users could be writes into memory allocated by
+  //    // the instruction (if inst is alloc_stack), or could be clean up of the
+  //    // reference counts e.g. destory_value or destroy_addr instructions.
+  //    SmallVector<SILInstruction *, 4> deadInsts;
+  //    for (SILValue result : candidateInst->getResults()) {
+  //      getTransitiveUsers(result, deadInsts);
+  //    }
+  //    deadInsts.push_back(candidateInst);
+  //
+  //    // Record the operands of deadInsts as they are now potentially dead.
+  //    SmallVector<SILValue, 8> potentiallyDeadValues;
+  //    for (SILInstruction *deadInst : deadInsts) {
+  //      for (Operand &operand : deadInst->getAllOperands()) {
+  //        potentiallyDeadValues.push_back(operand.get());
+  //      }
+  //    }
+  //    // Remove any references to operands from the deadInsts. Since deadInsts
+  //    // are transitively closed, all deadInsts must have no uses after this
+  //    step
+  //    // as all their users would have also dropped their operand references.
+  //    dropAllOperandsAndFixLifetimes(deadInsts);
+  //    for (SILInstruction *deadInst : deadInsts) {
+  //      assert(!deadInst->hasUsesOfAnyResult());
+  //    }
+  //    allDeadInstructions.insert(deadInsts.begin(), deadInsts.end());
+  //
+  //    // Add instructions defining potentially dead values to the worklist iff
+  //    // they are not in previously found dead instructions;
+  //    for (SILValue value : potentiallyDeadValues) {
+  //      SILInstruction *definingInst = value.getDefiningInstruction();
+  //      if (definingInst && !allDeadInstructions.count(definingInst))
+  //        worklist.push_back(definingInst);
+  //    }
+  //  }
+  //  recursivelyDeleteTriviallyDeadInstructions(
+  //      SmallVector<SILInstruction *, 32>(allDeadInstructions.begin(),
+  //                                        allDeadInstructions.end()),
+  //      /*force*/ true, [&](SILInstruction *DeadI) {});
 
-    // Record the operands of deadInsts as they are now potentially dead.
-    SmallVector<SILValue, 8> potentiallyDeadValues;
-    for (SILInstruction *deadInst : deadInsts) {
-      for (Operand &operand : deadInst->getAllOperands()) {
-        potentiallyDeadValues.push_back(operand.get());
-      }
-    }
-    // Remove any references to operands from the deadInsts. Since deadInsts
-    // are transitively closed, all deadInsts must have no uses after this step
-    // as all their users would have also dropped their operand references.
-    dropAllOperandsAndFixLifetimes(deadInsts);
-    for (SILInstruction *deadInst : deadInsts) {
-      assert(!deadInst->hasUsesOfAnyResult());
-    }
-    allDeadInstructions.insert(deadInsts.begin(), deadInsts.end());
-
-    // Add instructions defining potentially dead values to the worklist iff
-    // they are not in previously found dead instructions;
-    for (SILValue value : potentiallyDeadValues) {
-      SILInstruction *definingInst = value.getDefiningInstruction();
-      if (definingInst && !allDeadInstructions.count(definingInst))
-        worklist.push_back(definingInst);
-    }
-  }
   recursivelyDeleteTriviallyDeadInstructions(
-      SmallVector<SILInstruction *, 32>(allDeadInstructions.begin(),
-                                        allDeadInstructions.end()),
-      /*force*/ true, [&](SILInstruction *DeadI) {});
+      oslogMessageUsers,
+      /*force*/ false,
+      [&](SILInstruction *deadInst) { allDeadInstructions.insert(deadInst); });
+
+  llvm::errs() << "Deleted dead instructions!"
+               << "\n";
+
   // At this point, the OSLogMessage instance must be deleted if
   // the overlay implementation (or its extensions by users) is correct.
   if (!allDeadInstructions.count(oslogMessage)) {
