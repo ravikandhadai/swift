@@ -265,8 +265,9 @@ static bool isScopeAffectingInstructionDead(SILInstruction *inst) {
   }
 }
 
-static void addInstAndUsesIfDead(SILInstruction *inst,
-                                 SmallPtrSetImpl<SILInstruction *> &deadInsts) {
+static void addInstAndUsesIfDead(
+    SILInstruction *inst, SmallPtrSetImpl<SILInstruction *> &deadInsts,
+    SmallPtrSetImpl<SILInstruction *> &instsNeedingLifetimeFix) {
   if (isInstructionTriviallyDead(inst)) {
     deadInsts.insert(inst);
     return;
@@ -279,6 +280,7 @@ static void addInstAndUsesIfDead(SILInstruction *inst,
         deadInsts.insert(use->getUser());
       }
     }
+    instsNeedingLifetimeFix.insert(inst);
     deadInsts.insert(inst);
   }
 }
@@ -303,6 +305,14 @@ static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
     return;
   // We should not be removing a scope ending instruction, without removing
   // the instruction defining its operand as well.
+  if (auto defInst = operandValue->getDefiningInstruction()) {
+    if (isa<UncheckedRefCastInst>(defInst)) {
+      llvm::errs() << "dead inst operand is a unchecked ref cast: " << *deadInst
+                   << "\n";
+      fun->dump();
+    }
+  }
+
   assert(!isEndOfScopeMarker(deadInst) && !isa<DestroyValueInst>(deadInst) &&
          "lifetime ending instruction is deleted without its operand");
 
@@ -335,6 +345,8 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
   // instructions, the client is responsible for adding any compensating code
   // needed to end the scope of operands or results of the instruction.
   llvm::SmallPtrSet<SILInstruction *, 8> forceDeletedInsts;
+  /// needs lifetime fix.
+  llvm::SmallPtrSet<SILInstruction *, 8> instsNeedingLifetimeFix;
 
   // If force is true, remove inst regardless of whether it is dead or not. If
   // force is false, add inst (and possibly its end-of-scope uses) iff it is
@@ -344,13 +356,13 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
     forceDeletedInsts.insert(ia.begin(), ia.end());
   } else {
     for (auto *inst : ia) {
-      addInstAndUsesIfDead(inst, deadInsts);
+      addInstAndUsesIfDead(inst, deadInsts, instsNeedingLifetimeFix);
     }
   }
   llvm::SmallPtrSet<SILInstruction *, 8> nextInsts;
   while (!deadInsts.empty()) {
     for (auto *inst : deadInsts) {
-      //      /llvm::errs() << "deleting instruction: " << *inst << "\n";
+      // llvm::errs() << "deleting instruction: " << *inst << "\n";
 
       bool isForcedDeletedInst = forceDeletedInsts.count(inst);
       // Call the callback before we mutate the to-be-deleted instruction in any
@@ -363,7 +375,8 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
       SmallVector<SILInstruction *, 4> operandDefinitions;
       for (Operand &operand : inst->getAllOperands()) {
         SILValue operandValue = operand.get();
-        if (!operandValue)
+        if (!operandValue ||
+            operandValue->SILNode::getKind() == SILNodeKind::SILUndef)
           continue;
         SILInstruction *defInst = operandValue->getDefiningInstruction();
         // If the operand value itself will be deleted, we need not process it.
@@ -378,7 +391,7 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
         // once inst is deleted. Note that for force-deleted instructions this
         // should be left to the clients as they may specially handle the
         // operands.
-        if (!isForcedDeletedInst)
+        if (!isForcedDeletedInst && instsNeedingLifetimeFix.count(inst))
           fixLifetimeOfOperandOfDeadInst(operand);
       }
       // Remove all operands and other references from the instruction to be
@@ -396,7 +409,8 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
       }
       // Check if any of the operands will become dead as well.
       for (SILInstruction *operandValInst : operandDefinitions) {
-        addInstAndUsesIfDead(operandValInst, nextInsts);
+        addInstAndUsesIfDead(operandValInst, nextInsts,
+                             instsNeedingLifetimeFix);
       }
     }
 
