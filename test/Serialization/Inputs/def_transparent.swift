@@ -4,8 +4,12 @@
 
 @_transparent public func testBuiltin() -> Int32 {
   var y: Int32 = 300
-  var z = "foo"
   return y
+}
+
+@_transparent public func testStringLiteral() -> String {
+  var z = "foo"
+  return z
 }
 
 @_transparent public func standalone_function(x x: Int32, y: Int32) -> Int32 {

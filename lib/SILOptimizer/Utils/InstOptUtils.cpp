@@ -96,26 +96,6 @@ swift::createDecrementBefore(SILValue ptr, SILInstruction *insertPt) {
   return builder.createReleaseValue(loc, ptr, builder.getDefaultAtomicity());
 }
 
-/// Return true iff the \p applySite calls a constant evaluable function and if
-/// it is read-only which implies the following:
-///   (1) The call does not write into any memory location.
-///   (2) If the call takes owned paramters it may destroy them. But it will not
-///   destroy anything besides
-///     owned parameters.
-///   (3) The call does not throw or exit the program (modulo assertion
-///   failures).
-static bool isReadOnlyConstantEvaluableCall(FullApplySite applySite) {
-  assert(applySite);
-  SILFunction *callee = applySite.getCalleeFunction();
-  if (!callee || !isConstantEvaluable(callee)) {
-    return false;
-  }
-  // Here all effects of the call is restricted to its indirect results, which
-  // must have value semantics. If there are no indirect results, the call must
-  // be read-only.
-  return applySite.getNumIndirectSILResults() == 0;
-}
-
 /// Perform a fast local check to see if the instruction is dead.
 ///
 /// This routine only examines the state of the instruction at hand.
@@ -203,13 +183,38 @@ static bool hasOnlyEndOfScopeOrDestroyUses(SILInstruction *inst) {
   return true;
 }
 
-/// A non-trivial instruction is an instruction that has operands or results of
-/// non-trivial type. Dead-code eliminating such instruction may require fixing
-/// the lifetime of non-trivial operands and may require cleaning up the destroy
-/// or end-of-scope uses of non-trivial results.
-static bool isInstructionNonTrivialAndDead(SILInstruction *inst) {
+/// Return true iff the \p applySite calls a constant evaluable function and if
+/// it is read-only which implies the following:
+///   (1) The call does not write into any memory location.
+///   (2) If the call takes owned parameters it may destroy them. But it will
+///   not destroy anything besides owned parameters. (3) The call does not throw
+///   or exit the program (modulo assertion failures).
+static bool isReadOnlyConstantEvaluableCall(FullApplySite applySite) {
+  assert(applySite);
+  SILFunction *callee = applySite.getCalleeFunction();
+  if (!callee || !isConstantEvaluable(callee)) {
+    return false;
+  }
+  // Here all effects of the call is restricted to its indirect results, which
+  // must have value semantics. If there are no indirect results, the call must
+  // be read-only.
+  return applySite.getNumIndirectSILResults() == 0;
+}
+
+/// A scope-affecting instruction is an instruction which may end the scope of
+/// its operand or may produce scoped results that require cleaning up. E.g.
+/// begin_borrow, begin_access, copy_value, a call that produces a owned value
+/// are scoped instructions. The scope of the results of the first two
+/// instructions end with an end_borrow/acess instruction, while those of the
+/// latter two end with a destroy_value instruction. These instruction may also
+/// end the scope of its operand e.g. a call could consume owned arguments
+/// thereby ending its scope. Dead-code eliminating a scope-affecting
+/// instruction requires fixing the lifetime of the non-trivial operands of the
+/// instruction and requires cleaning up the end-of-scope uses of non-trivial
+/// results.
+static bool isScopeAffectingInstructionDead(SILInstruction *inst) {
   SILFunction *fun = inst->getFunction();
-  // Only support ownership SIL for non-trival instruction.
+  // Only support ownership SIL for scoped instructions.
   if (!fun->hasOwnership()) {
     return false;
   }
@@ -225,10 +230,15 @@ static bool isInstructionNonTrivialAndDead(SILInstruction *inst) {
 
   switch (inst->getKind()) {
   case SILInstructionKind::LoadInst: {
+    LoadInst *loadInst = cast<LoadInst>(inst);
+    // Bail out if we are loading a closure. Weirdly MandatoryInlining depends
+    // on loads from a closure to identify closures to remove.
+    if (loadInst->getType().is<SILFunctionType>())
+      return false;
     LoadOwnershipQualifier loadOwnershipQual =
-        cast<LoadInst>(inst)->getOwnershipQualifier();
-    // If the load creates a copy which is never used except in a destory_value,
-    // the load is dead.
+        loadInst->getOwnershipQualifier();
+    // If the load creates a copy, it is dead, since we know that if at all it
+    // is used, it is only in a destory_value instruction.0
     return (loadOwnershipQual == LoadOwnershipQualifier::Copy ||
             loadOwnershipQual == LoadOwnershipQualifier::Trivial);
   }
@@ -239,14 +249,15 @@ static bool isInstructionNonTrivialAndDead(SILInstruction *inst) {
     return true;
   }
   case SILInstructionKind::ApplyInst: {
-    FullApplySite call(cast<ApplyInst>(inst));
     // A constant_evaluable call can only return a type with value semantics.
     // The deinit of the returned type should be pure in the sense that it only
     // affects its self and nothing else. Therefore, it should be safe to remove
-    // the call along with any destroys of the returned value, if the call is a
-    // read-only call. However, every owned value passed to the call must be
-    // explicitly destroyed.
-    return isReadOnlyConstantEvaluableCall(call);
+    // the call along with any destroys of the returned value, if the call
+    // itself doesn't have any side-effects i.e., if it is a read-only call.
+    // Nonetheless, the call is allowed to consume (i.e., destroy) the owned
+    // values passed to the call.
+    return isReadOnlyConstantEvaluableCall(
+        FullApplySite(cast<ApplyInst>(inst)));
   }
   default: {
     return false;
@@ -256,20 +267,15 @@ static bool isInstructionNonTrivialAndDead(SILInstruction *inst) {
 
 static void addInstAndUsesIfDead(SILInstruction *inst,
                                  SmallPtrSetImpl<SILInstruction *> &deadInsts) {
-
-  // llvm::errs() << "Looking at instruction: " << *inst << "\n";
   if (isInstructionTriviallyDead(inst)) {
-    // llvm::errs() << " >> DEAD \n";
     deadInsts.insert(inst);
     return;
   }
-  if (isInstructionNonTrivialAndDead(inst)) {
-    // llvm::errs() << " >> DEAD \n";
+  if (isScopeAffectingInstructionDead(inst)) {
     // Here the instruction and also its users, which must be only end-of-scope
     // instruction like end_borrow or destroy_value instruction, are dead.
     for (SILValue result : inst->getResults()) {
       for (Operand *use : result->getUses()) {
-        // llvm::errs() << "DEAD Use: " << *(use->getUser()) << "\n";
         deadInsts.insert(use->getUser());
       }
     }
@@ -283,16 +289,19 @@ using CallbackTy = llvm::function_ref<void(SILInstruction *)>;
 
 static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
   assert(operand.get() && operand.getUser());
-
   SILInstruction *deadInst = operand.getUser();
   SILFunction *fun = deadInst->getFunction();
+  if (!fun->hasOwnership()) {
+    // Here, we cannot fix the lifetime of the operand. This case is possible
+    // only if the instruction was trivially dead (i.e.,
+    // isInstructionTriviallyDead was true), which implies that no adjustment
+    // to the lifetime of the operand is required.
+    return;
+  }
   SILValue operandValue = operand.get();
   if (operandValue->getType().isTrivial(*fun))
     return;
-
-  // Non-trivial values can be dead-code eliminated only in ownership SIL.
-  assert(fun->hasOwnership());
-  // We should not be removing a lifetime ending instruction, without removing
+  // We should not be removing a scope ending instruction, without removing
   // the instruction defining its operand as well.
   assert(!isEndOfScopeMarker(deadInst) && !isa<DestroyValueInst>(deadInst) &&
          "lifetime ending instruction is deleted without its operand");
@@ -301,7 +310,7 @@ static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
   UseLifetimeConstraint lifetimeConstraint =
       operand.getOwnershipKindMap().getLifetimeConstraint(operandOwnershipKind);
   if (lifetimeConstraint == UseLifetimeConstraint::MustBeInvalidated) {
-    // Since deadInst cannot be an end-of-scope instruction (checked above),
+    // Since deadInst cannot be an end-of-scope instruction (asserted above),
     // this must be a consuming use of an owned value.
     assert(operandOwnershipKind == ValueOwnershipKind::Owned);
     SILBuilderWithScope builder(deadInst);
@@ -309,22 +318,41 @@ static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
   }
 }
 
+/// Delete the instructions given by \p ia and others that become dead after it
+/// is deleted.
 void swift::recursivelyDeleteTriviallyDeadInstructions(
     ArrayRef<SILInstruction *> ia, bool force, CallbackTy callback) {
-  // Delete these instruction and others that become dead after it's deleted.
+  //  llvm::errs() << "Instruction array invoked on" << "\n";
+  //  for (auto *inst : ia)
+  //    llvm::errs() << " >> " << *inst  << "\n";
+  //  llvm::errs() << "Function before deleting: \n";
+  //  SILFunction *fun = ia[0]->getFunction();
+  //  fun->dump();
+  //  llvm::errs() << "\n";
+
   llvm::SmallPtrSet<SILInstruction *, 8> deadInsts;
-  for (auto *inst : ia) {
-    // If force is true, remove inst regardless of whether it is dead or not.
-    // Otherwise, add inst (and possibly its ref-count uses) iff it is dead.
-    if (force) {
-      deadInsts.insert(inst);
-      continue;
+  // Track instructions that are required to be force deleted. For such
+  // instructions, the client is responsible for adding any compensating code
+  // needed to end the scope of operands or results of the instruction.
+  llvm::SmallPtrSet<SILInstruction *, 8> forceDeletedInsts;
+
+  // If force is true, remove inst regardless of whether it is dead or not. If
+  // force is false, add inst (and possibly its end-of-scope uses) iff it is
+  // dead.
+  if (force) {
+    deadInsts.insert(ia.begin(), ia.end());
+    forceDeletedInsts.insert(ia.begin(), ia.end());
+  } else {
+    for (auto *inst : ia) {
+      addInstAndUsesIfDead(inst, deadInsts);
     }
-    addInstAndUsesIfDead(inst, deadInsts);
   }
   llvm::SmallPtrSet<SILInstruction *, 8> nextInsts;
   while (!deadInsts.empty()) {
-    for (auto inst : deadInsts) {
+    for (auto *inst : deadInsts) {
+      //      /llvm::errs() << "deleting instruction: " << *inst << "\n";
+
+      bool isForcedDeletedInst = forceDeletedInsts.count(inst);
       // Call the callback before we mutate the to-be-deleted instruction in any
       // way.
       callback(inst);
@@ -338,40 +366,38 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
         if (!operandValue)
           continue;
         SILInstruction *defInst = operandValue->getDefiningInstruction();
-        // If the operand value itself will be deleted, we need not process
-        // it.
+        // If the operand value itself will be deleted, we need not process it.
         if (defInst && deadInsts.count(defInst))
           continue;
         // If the operand has a defining instruction, it could be potentially
         // dead. Therefore, record the definition.
         if (defInst)
           operandDefinitions.push_back(defInst);
-        // If the operand is a non-trivial value, its lifetime may have to be
-        // adjusted since inst will be deleted.
-        fixLifetimeOfOperandOfDeadInst(operand);
+        // The scope of the operand could be ended by inst. Therefore, emit
+        // any compensating code needed to end the scope of the operand value
+        // once inst is deleted. Note that for force-deleted instructions this
+        // should be left to the clients as they may specially handle the
+        // operands.
+        if (!isForcedDeletedInst)
+          fixLifetimeOfOperandOfDeadInst(operand);
       }
-
-      // Remove all operand and other references from the instruction being
+      // Remove all operands and other references from the instruction to be
       // deleted.
       inst->dropAllReferences();
 
+      // Replace all uses of the instruction's results with undef. The
+      // instruction must have only scope-ending uses, unless it is force
+      // deleted. This is necessary to ensure that inst is not re-encountered
+      // while processing its dead uses. However, bail out if the instruction
+      // is force-deleted, as it may have legit uses and it is the
+      // responsibility of the client to handle them.
+      if (!isForcedDeletedInst) {
+        inst->replaceAllUsesOfAllResultsWithUndef();
+      }
       // Check if any of the operands will become dead as well.
       for (SILInstruction *operandValInst : operandDefinitions) {
         addInstAndUsesIfDead(operandValInst, nextInsts);
       }
-      // If we have a function ref inst, we need to especially drop its function
-      // argument so that it gets a proper ref decrement.
-      //      auto *fri = dyn_cast<FunctionRefInst>(inst);
-      //      if (fri && fri->getInitiallyReferencedFunction())
-      //        fri->dropReferencedFunction();
-      //
-      //      auto *dfri = dyn_cast<DynamicFunctionRefInst>(inst);
-      //      if (dfri && dfri->getInitiallyReferencedFunction())
-      //        dfri->dropReferencedFunction();
-      //
-      //      auto *pfri = dyn_cast<PreviousDynamicFunctionRefInst>(inst);
-      //      if (pfri && pfri->getInitiallyReferencedFunction())
-      //        pfri->dropReferencedFunction();
     }
 
     for (auto inst : deadInsts) {
@@ -382,6 +408,10 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
     nextInsts.swap(deadInsts);
     nextInsts.clear();
   }
+
+  //  llvm::errs() << "Function after deleting: \n";
+  //  fun->dump();
+  //  llvm::errs() << "\n";
 }
 
 /// If the given instruction is dead, delete it along with its dead

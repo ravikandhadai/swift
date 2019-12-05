@@ -1329,10 +1329,6 @@ static void tryEliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
       oslogMessageUsers,
       /*force*/ false,
       [&](SILInstruction *deadInst) { allDeadInstructions.insert(deadInst); });
-
-  llvm::errs() << "Deleted dead instructions!"
-               << "\n";
-
   // At this point, the OSLogMessage instance must be deleted if
   // the overlay implementation (or its extensions by users) is correct.
   if (!allDeadInstructions.count(oslogMessage)) {

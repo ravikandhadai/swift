@@ -21,6 +21,12 @@ var raw = testTransparent(x: false)
 // SIL: store [[INT]] to [[TMP]] : $*Int32
 var tmp = testBuiltin()
 
+// SIL: [[TMPSTR:%.+]] = global_addr @$s11transparent6tmpStrSSvp : $*String
+// SIL: [[LIT:%.+]] = string_literal utf8 "foo"
+// SIL: [[STR:%.+]] = apply {{%.+}}([[LIT]]
+// SIL: store [[STR]] to [[TMPSTR]] : $*String
+var tmpStr = testStringLiteral()
+
 // SIL-LABEL: sil public_external [transparent] [serialized] @$s15def_transparent15testTransparent1xS2b_tF : $@convention(thin) (Bool) -> Bool {
 // SIL: bb0(%0 : $Bool):
 // SIL: return %0 : $Bool
@@ -28,8 +34,12 @@ var tmp = testBuiltin()
 // SIL-LABEL: sil public_external [transparent] [serialized] @$s15def_transparent11testBuiltins5Int32VyF : $@convention(thin) () -> Int32 {
 // SIL: bb0:
 // SIL: integer_literal $Builtin.Int32, 300
-// SIL: string_literal utf8 "foo"
 // SIL: return %{{.*}} : $Int32
+
+// SIL-LABEL: sil public_external [transparent] [serialized] @$s15def_transparent17testStringLiteralSSyF : $@convention(thin) () -> @owned String {
+// SIL: bb0:
+// SIL: string_literal utf8 "foo"
+// SIL: return %{{.*}} : $String
 
 // SIL-LABEL: sil public_external [transparent] [serialized] @$s15def_transparent7test_bryyF : $@convention(thin) () -> () {
 // SIL: bb{{.*}}:
