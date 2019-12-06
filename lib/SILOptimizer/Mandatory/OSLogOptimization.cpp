@@ -1324,11 +1324,9 @@ static void tryEliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
   //      SmallVector<SILInstruction *, 32>(allDeadInstructions.begin(),
   //                                        allDeadInstructions.end()),
   //      /*force*/ true, [&](SILInstruction *DeadI) {});
-
-  recursivelyDeleteTriviallyDeadInstructions(
-      oslogMessageUsers,
-      /*force*/ false,
-      [&](SILInstruction *deadInst) { allDeadInstructions.insert(deadInst); });
+  eliminateDeadCode(oslogMessageUsers, [&](SILInstruction *deadInst) {
+    allDeadInstructions.insert(deadInst);
+  });
   // At this point, the OSLogMessage instance must be deleted if
   // the overlay implementation (or its extensions by users) is correct.
   if (!allDeadInstructions.count(oslogMessage)) {

@@ -1751,7 +1751,7 @@ ConstantFolder::processWorkList() {
           // Schedule users for constant folding.
           WorkList.insert(AssertConfInt);
           // Delete the call.
-          recursivelyDeleteTriviallyDeadInstructions(BI);
+          eliminateDeadCode(BI);
 
           InvalidateInstructions = true;
           continue;
@@ -1819,9 +1819,8 @@ ConstantFolder::processWorkList() {
       if (constantFoldGlobalStringTablePointerBuiltin(cast<BuiltinInst>(I),
                                                       EnableDiagnostics)) {
         // Here, the bulitin instruction got folded, so clean it up.
-        recursivelyDeleteTriviallyDeadInstructions(
-            I, /*force*/ true,
-            [&](SILInstruction *DeadI) { WorkList.remove(DeadI); });
+        eliminateDeadCode(
+            I, [&](SILInstruction *DeadI) { WorkList.remove(DeadI); });
         InvalidateInstructions = true;
       }
       continue;
@@ -2026,10 +2025,8 @@ ConstantFolder::processWorkList() {
       InvalidateInstructions = true;
     }
 
-    recursivelyDeleteTriviallyDeadInstructions(UserArray, false,
-                                               [&](SILInstruction *DeadI) {
-                                                 WorkList.remove(DeadI);
-                                               });
+    eliminateDeadCode(UserArray,
+                      [&](SILInstruction *DeadI) { WorkList.remove(DeadI); });
   }
 
   // TODO: refactor this code outside of the method. Passes should not merge

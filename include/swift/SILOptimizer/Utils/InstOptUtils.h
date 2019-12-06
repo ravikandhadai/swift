@@ -56,6 +56,16 @@ NullablePtr<SILInstruction> createIncrementBefore(SILValue ptr,
 NullablePtr<SILInstruction> createDecrementBefore(SILValue ptr,
                                                   SILInstruction *insertpt);
 
+void eliminateDeadCode(
+    ArrayRef<SILInstruction *> rootInstructions,
+    llvm::function_ref<void(SILInstruction *)> callback = [](SILInstruction *) {
+    });
+
+void eliminateDeadCode(
+    SILInstruction *rootInstruction,
+    llvm::function_ref<void(SILInstruction *)> callback = [](SILInstruction *) {
+    });
+
 /// For each of the given instructions, if they are dead delete them
 /// along with their dead operands.
 ///

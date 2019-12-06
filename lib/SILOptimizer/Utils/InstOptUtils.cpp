@@ -230,13 +230,8 @@ static bool isScopeAffectingInstructionDead(SILInstruction *inst) {
 
   switch (inst->getKind()) {
   case SILInstructionKind::LoadInst: {
-    LoadInst *loadInst = cast<LoadInst>(inst);
-    // Bail out if we are loading a closure. Weirdly MandatoryInlining depends
-    // on loads from a closure to identify closures to remove.
-    if (loadInst->getType().is<SILFunctionType>())
-      return false;
     LoadOwnershipQualifier loadOwnershipQual =
-        loadInst->getOwnershipQualifier();
+        cast<LoadInst>(inst)->getOwnershipQualifier();
     // If the load creates a copy, it is dead, since we know that if at all it
     // is used, it is only in a destory_value instruction.0
     return (loadOwnershipQual == LoadOwnershipQualifier::Copy ||
@@ -265,9 +260,9 @@ static bool isScopeAffectingInstructionDead(SILInstruction *inst) {
   }
 }
 
-static void addInstAndUsesIfDead(
-    SILInstruction *inst, SmallPtrSetImpl<SILInstruction *> &deadInsts,
-    SmallPtrSetImpl<SILInstruction *> &instsNeedingLifetimeFix) {
+static void
+addInstructionAndUsesIfDead(SILInstruction *inst,
+                            SmallPtrSetImpl<SILInstruction *> &deadInsts) {
   if (isInstructionTriviallyDead(inst)) {
     deadInsts.insert(inst);
     return;
@@ -280,7 +275,6 @@ static void addInstAndUsesIfDead(
         deadInsts.insert(use->getUser());
       }
     }
-    instsNeedingLifetimeFix.insert(inst);
     deadInsts.insert(inst);
   }
 }
@@ -305,14 +299,6 @@ static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
     return;
   // We should not be removing a scope ending instruction, without removing
   // the instruction defining its operand as well.
-  if (auto defInst = operandValue->getDefiningInstruction()) {
-    if (isa<UncheckedRefCastInst>(defInst)) {
-      llvm::errs() << "dead inst operand is a unchecked ref cast: " << *deadInst
-                   << "\n";
-      fun->dump();
-    }
-  }
-
   assert(!isEndOfScopeMarker(deadInst) && !isa<DestroyValueInst>(deadInst) &&
          "lifetime ending instruction is deleted without its operand");
 
@@ -330,49 +316,25 @@ static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
 
 /// Delete the instructions given by \p ia and others that become dead after it
 /// is deleted.
-void swift::recursivelyDeleteTriviallyDeadInstructions(
-    ArrayRef<SILInstruction *> ia, bool force, CallbackTy callback) {
-  //  llvm::errs() << "Instruction array invoked on" << "\n";
-  //  for (auto *inst : ia)
-  //    llvm::errs() << " >> " << *inst  << "\n";
-  //  llvm::errs() << "Function before deleting: \n";
-  //  SILFunction *fun = ia[0]->getFunction();
-  //  fun->dump();
-  //  llvm::errs() << "\n";
-
+void swift::eliminateDeadCode(ArrayRef<SILInstruction *> rootInstructions,
+                              CallbackTy callback) {
+  // A worlist of dead instructions that must be removed.
   llvm::SmallPtrSet<SILInstruction *, 8> deadInsts;
-  // Track instructions that are required to be force deleted. For such
-  // instructions, the client is responsible for adding any compensating code
-  // needed to end the scope of operands or results of the instruction.
-  llvm::SmallPtrSet<SILInstruction *, 8> forceDeletedInsts;
-  /// needs lifetime fix.
-  llvm::SmallPtrSet<SILInstruction *, 8> instsNeedingLifetimeFix;
-
-  // If force is true, remove inst regardless of whether it is dead or not. If
-  // force is false, add inst (and possibly its end-of-scope uses) iff it is
-  // dead.
-  if (force) {
-    deadInsts.insert(ia.begin(), ia.end());
-    forceDeletedInsts.insert(ia.begin(), ia.end());
-  } else {
-    for (auto *inst : ia) {
-      addInstAndUsesIfDead(inst, deadInsts, instsNeedingLifetimeFix);
-    }
+  for (auto *inst : rootInstructions) {
+    addInstructionAndUsesIfDead(inst, deadInsts);
   }
-  llvm::SmallPtrSet<SILInstruction *, 8> nextInsts;
   while (!deadInsts.empty()) {
+    // A list of all instructions defining operands of the deadInsts, which may
+    // become dead, once deadInsts are removed.
+    SmallVector<SILInstruction *, 4> operandDefinitions;
     for (auto *inst : deadInsts) {
-      // llvm::errs() << "deleting instruction: " << *inst << "\n";
-
-      bool isForcedDeletedInst = forceDeletedInsts.count(inst);
-      // Call the callback before we mutate the to-be-deleted instruction in any
-      // way.
+      // Call the callback before we mutate inst.
       callback(inst);
 
-      // Record all operand values of inst. These may become dead once inst is
-      // removed. Also, in case an operand is consumed by inst, emit necessary
-      // destroy_value instruction for the operand value.
-      SmallVector<SILInstruction *, 4> operandDefinitions;
+      // Record operand definitions that may possible become dead. Also, in
+      // case an operand is consumed by inst (and won't be deleted in this
+      // iteration), emit necessary destroy_value instruction for the operand
+      // value.
       for (Operand &operand : inst->getAllOperands()) {
         SILValue operandValue = operand.get();
         if (!operandValue ||
@@ -388,30 +350,91 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
           operandDefinitions.push_back(defInst);
         // The scope of the operand could be ended by inst. Therefore, emit
         // any compensating code needed to end the scope of the operand value
-        // once inst is deleted. Note that for force-deleted instructions this
-        // should be left to the clients as they may specially handle the
-        // operands.
-        if (!isForcedDeletedInst && instsNeedingLifetimeFix.count(inst))
-          fixLifetimeOfOperandOfDeadInst(operand);
+        // once inst is deleted.
+        fixLifetimeOfOperandOfDeadInst(operand);
       }
       // Remove all operands and other references from the instruction to be
       // deleted.
       inst->dropAllReferences();
 
       // Replace all uses of the instruction's results with undef. The
-      // instruction must have only scope-ending uses, unless it is force
-      // deleted. This is necessary to ensure that inst is not re-encountered
-      // while processing its dead uses. However, bail out if the instruction
-      // is force-deleted, as it may have legit uses and it is the
-      // responsibility of the client to handle them.
-      if (!isForcedDeletedInst) {
-        inst->replaceAllUsesOfAllResultsWithUndef();
-      }
+      // instruction must have only scope-ending uses like end_borrow or
+      // destroy_value.
+      inst->replaceAllUsesOfAllResultsWithUndef();
+    }
+
+    for (auto inst : deadInsts) {
+      // This will remove this instruction and all its uses.
+      // llvm::errs() << "Trying to remove instruction: " << *inst  << "\n";
+      eraseFromParentWithDebugInsts(inst, callback);
+    }
+
+    // Add operands that become dead to the worklist. Note that every
+    // instruction added in this step would not be a previously seen dead
+    // instruction, as by definition operandValInst is not a deadInst and
+    // neither are their users as by now all dead instructions have dropped
+    // their references and have been removed. This ensures that the worklist
+    // will eventually become empty.
+    deadInsts.clear();
+    for (SILInstruction *operandValInst : operandDefinitions) {
+      addInstructionAndUsesIfDead(operandValInst, deadInsts);
+    }
+  }
+}
+
+void swift::eliminateDeadCode(SILInstruction *rootInstruction,
+                              CallbackTy callback) {
+  eliminateDeadCode(ArrayRef<SILInstruction *>(rootInstruction));
+}
+
+void swift::recursivelyDeleteTriviallyDeadInstructions(
+    ArrayRef<SILInstruction *> ia, bool force, CallbackTy callback) {
+  // Delete these instruction and others that become dead after it's deleted.
+  llvm::SmallPtrSet<SILInstruction *, 8> deadInsts;
+  for (auto *inst : ia) {
+    // If the instruction is not dead and force is false, do nothing.
+    if (force || isInstructionTriviallyDead(inst))
+      deadInsts.insert(inst);
+  }
+  llvm::SmallPtrSet<SILInstruction *, 8> nextInsts;
+  while (!deadInsts.empty()) {
+    for (auto inst : deadInsts) {
+      // Call the callback before we mutate the to be deleted instruction in any
+      // way.
+      callback(inst);
+
       // Check if any of the operands will become dead as well.
-      for (SILInstruction *operandValInst : operandDefinitions) {
-        addInstAndUsesIfDead(operandValInst, nextInsts,
-                             instsNeedingLifetimeFix);
+      MutableArrayRef<Operand> operands = inst->getAllOperands();
+      for (Operand &operand : operands) {
+        SILValue operandVal = operand.get();
+        if (!operandVal)
+          continue;
+
+        // Remove the reference from the instruction being deleted to this
+        // operand.
+        operand.drop();
+
+        // If the operand is an instruction that is only used by the instruction
+        // being deleted, delete it.
+        if (auto *operandValInst = operandVal->getDefiningInstruction())
+          if (!deadInsts.count(operandValInst) &&
+              isInstructionTriviallyDead(operandValInst))
+            nextInsts.insert(operandValInst);
       }
+
+      // If we have a function ref inst, we need to especially drop its function
+      // argument so that it gets a proper ref decrement.
+      auto *fri = dyn_cast<FunctionRefInst>(inst);
+      if (fri && fri->getInitiallyReferencedFunction())
+        fri->dropReferencedFunction();
+
+      auto *dfri = dyn_cast<DynamicFunctionRefInst>(inst);
+      if (dfri && dfri->getInitiallyReferencedFunction())
+        dfri->dropReferencedFunction();
+
+      auto *pfri = dyn_cast<PreviousDynamicFunctionRefInst>(inst);
+      if (pfri && pfri->getInitiallyReferencedFunction())
+        pfri->dropReferencedFunction();
     }
 
     for (auto inst : deadInsts) {
@@ -422,10 +445,6 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
     nextInsts.swap(deadInsts);
     nextInsts.clear();
   }
-
-  //  llvm::errs() << "Function after deleting: \n";
-  //  fun->dump();
-  //  llvm::errs() << "\n";
 }
 
 /// If the given instruction is dead, delete it along with its dead
