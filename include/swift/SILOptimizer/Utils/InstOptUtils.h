@@ -56,15 +56,69 @@ NullablePtr<SILInstruction> createIncrementBefore(SILValue ptr,
 NullablePtr<SILInstruction> createDecrementBefore(SILValue ptr,
                                                   SILInstruction *insertpt);
 
+/// Find dead instructions in \p rootInstructions  and delete them, and
+/// recursively eliminate all code that becomes dead because of that. This
+/// function could delete instructions as well as introduce new destroy
+/// instructions, which could happen in case an instruction that is deleted
+/// consumes any of the operands. \pre the SIL function containing the
+/// instructions is assumed to be consistent, without any leaks or over
+/// releases.
 void eliminateDeadCode(
     ArrayRef<SILInstruction *> rootInstructions,
     llvm::function_ref<void(SILInstruction *)> callback = [](SILInstruction *) {
     });
 
+/// If the \p rootInstruction is dead delete it, and recursively eliminate all
+/// code that becomes because of that. This function could delete instructions
+/// as well as introduce new destroy instructions, which could happen in case an
+/// instruction that is deleted consumes its operands. \pre the SIL function
+/// containing the instruction is assumed to be consistent, without any leaks or
+/// over releases.
 void eliminateDeadCode(
     SILInstruction *rootInstruction,
     llvm::function_ref<void(SILInstruction *)> callback = [](SILInstruction *) {
     });
+
+/// A utility for deleting a set of instructions belonging to a function and,
+/// cleaning up any dead code resulting from deleting those instructions. Use
+/// this utility instead of
+/// \c recursivelyDeleteTriviallyDeadInstruction(ia, /*force*/ true, callback).
+class InstructionDeleter {
+private:
+  SmallPtrSet<SILInstruction *, 8> possiblyDeadInstructions;
+  SILFunction *function;
+
+public:
+  InstructionDeleter(SILFunction *fun) : function(fun) {
+    assert(fun != nullptr);
+  }
+
+  /// Delete instructions in \p instrsToDelete. This function will not
+  /// clean up dead code resulting for the instructions removal. To do so,
+  /// invoke the method \c cleanupDeadCode of this instance, once the SIL of the
+  /// contaning function is made consistent. \pre the instructions to be deleted
+  /// must not have any use other than debug uses.
+  void deleteInstructions(
+      ArrayRef<SILInstruction *> instrsToDelete,
+      llvm::function_ref<void(SILInstruction *)> callback =
+          [](SILInstruction *) {});
+
+  void deleteInstruction(
+      SILInstruction *inst,
+      llvm::function_ref<void(SILInstruction *)> callback =
+          [](SILInstruction *) {}) {
+    deleteInstructions(ArrayRef<SILInstruction *>(inst), callback);
+  }
+
+  /// Clean up the instructions that become dead because of invoking the
+  /// \c deleteInstructions method of this instance.
+  /// \pre the body of \c function, which contains the deleted instructions,
+  /// must be consistent before this function is invoked. Note that if \c
+  /// deleteInstructions leaves the SIL of the function body inconsistent, it
+  /// needs to be made consistent before this method is invoked.
+  void cleanupDeadCode(llvm::function_ref<void(SILInstruction *)> callback =
+                           [](SILInstruction *) {});
+};
 
 /// For each of the given instructions, if they are dead delete them
 /// along with their dead operands.

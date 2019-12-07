@@ -150,13 +150,10 @@ void BasicBlockCloner::sinkAddressProjections() {
            && "canCloneInstruction should catch this.");
 
     auto nextII = std::next(ii);
-    // FIXME: can all potentially dead instructions be collected and deleted
-    // outside the loop. This may enable using eliminateDeadCode utility.
-    recursivelyDeleteTriviallyDeadInstructions(
-        &*ii, false, [&nextII](SILInstruction *deadInst) {
-          if (deadInst->getIterator() == nextII)
-            ++nextII;
-        });
+    eliminateDeadCode(&*ii, [&nextII](SILInstruction *deadInst) {
+      if (deadInst->getIterator() == nextII)
+        ++nextII;
+    });
     ii = nextII;
   }
 }

@@ -263,11 +263,20 @@ static bool isScopeAffectingInstructionDead(SILInstruction *inst) {
 static void
 addInstructionAndUsesIfDead(SILInstruction *inst,
                             SmallPtrSetImpl<SILInstruction *> &deadInsts) {
+  //  llvm::errs() << "Removing inst: " << *inst << "addr: " << inst  << "\n";
+  //  for (SILValue result : inst->getResults()) {
+  //    for (Operand *use : result->getUses()) {
+  //      llvm::errs() << "Inst users: "<< *use->getUser() << "addr: " <<
+  //      use->getUser() << "\n";
+  //    }
+  //  }
   if (isInstructionTriviallyDead(inst)) {
+    //    llvm::errs() << "   >> Inst is trivially dead \n";
     deadInsts.insert(inst);
     return;
   }
   if (isScopeAffectingInstructionDead(inst)) {
+    //    llvm::errs() << "   >> Inst is scope-affecting and dead \n";
     // Here the instruction and also its users, which must be only end-of-scope
     // instruction like end_borrow or destroy_value instruction, are dead.
     for (SILValue result : inst->getResults()) {
@@ -276,7 +285,9 @@ addInstructionAndUsesIfDead(SILInstruction *inst,
       }
     }
     deadInsts.insert(inst);
+    return;
   }
+  // llvm::errs() << "   >> Inst is not dead \n";
 }
 
 namespace {
@@ -314,8 +325,6 @@ static void fixLifetimeOfOperandOfDeadInst(Operand &operand) {
   }
 }
 
-/// Delete the instructions given by \p ia and others that become dead after it
-/// is deleted.
 void swift::eliminateDeadCode(ArrayRef<SILInstruction *> rootInstructions,
                               CallbackTy callback) {
   // A worlist of dead instructions that must be removed.
@@ -327,7 +336,7 @@ void swift::eliminateDeadCode(ArrayRef<SILInstruction *> rootInstructions,
     // A list of all instructions defining operands of the deadInsts, which may
     // become dead, once deadInsts are removed.
     SmallVector<SILInstruction *, 4> operandDefinitions;
-    for (auto *inst : deadInsts) {
+    for (SILInstruction *inst : deadInsts) {
       // Call the callback before we mutate inst.
       callback(inst);
 
@@ -337,8 +346,7 @@ void swift::eliminateDeadCode(ArrayRef<SILInstruction *> rootInstructions,
       // value.
       for (Operand &operand : inst->getAllOperands()) {
         SILValue operandValue = operand.get();
-        if (!operandValue ||
-            operandValue->SILNode::getKind() == SILNodeKind::SILUndef)
+        if (!operandValue)
           continue;
         SILInstruction *defInst = operandValue->getDefiningInstruction();
         // If the operand value itself will be deleted, we need not process it.
@@ -356,16 +364,10 @@ void swift::eliminateDeadCode(ArrayRef<SILInstruction *> rootInstructions,
       // Remove all operands and other references from the instruction to be
       // deleted.
       inst->dropAllReferences();
-
-      // Replace all uses of the instruction's results with undef. The
-      // instruction must have only scope-ending uses like end_borrow or
-      // destroy_value.
-      inst->replaceAllUsesOfAllResultsWithUndef();
     }
 
-    for (auto inst : deadInsts) {
-      // This will remove this instruction and all its uses.
-      // llvm::errs() << "Trying to remove instruction: " << *inst  << "\n";
+    for (SILInstruction *inst : deadInsts) {
+      // Note that inst have debug uses will not be dead in Onone stage.
       eraseFromParentWithDebugInsts(inst, callback);
     }
 
@@ -384,7 +386,50 @@ void swift::eliminateDeadCode(ArrayRef<SILInstruction *> rootInstructions,
 
 void swift::eliminateDeadCode(SILInstruction *rootInstruction,
                               CallbackTy callback) {
-  eliminateDeadCode(ArrayRef<SILInstruction *>(rootInstruction));
+  eliminateDeadCode(ArrayRef<SILInstruction *>(rootInstruction), callback);
+}
+
+// A utility for deleting a set of instructions belonging to a function and,
+// cleaning up any dead code resulting from deleting those instructions. Use
+// this utility instead of
+// \c recursivelyDeleteTriviallyDeadInstruction(ia, /*force*/ true, callback).
+void InstructionDeleter::deleteInstructions(
+    ArrayRef<SILInstruction *> instrsToDelete, CallbackTy callback) {
+  SmallPtrSet<SILInstruction *, 8> deleteSet(instrsToDelete.begin(),
+                                             instrsToDelete.end());
+  for (auto inst : deleteSet) {
+    assert(inst->getFunction() == function);
+    // Call the callback before the instruction is mutated.
+    callback(inst);
+    // Remove the instruction that will be deleted from the candidate dead
+    // instructions we are keeping track of.
+    if (possiblyDeadInstructions.count(inst))
+      possiblyDeadInstructions.erase(inst);
+    // If the operand has a defining instruction, it could be potentially
+    // dead. Therefore, record the definition.
+    for (Operand &operand : inst->getAllOperands()) {
+      SILInstruction *defInst = operand.get()->getDefiningInstruction();
+      if (!defInst || deleteSet.count(defInst))
+        continue;
+      possiblyDeadInstructions.insert(defInst);
+    }
+    inst->dropAllReferences();
+  }
+  for (auto inst : deleteSet) {
+    eraseFromParentWithDebugInsts(inst, callback);
+  }
+}
+
+/// Clean up the instructions that become dead because of invoking the
+/// \c deleteInstructions method of this instance.
+/// \pre the body of \c function, which contains the deleted instructions, must
+/// be consistent before this function is invoked. Note that if \c
+/// deleteInstructions leaves the SIL of the function body inconsistent, it
+/// needs to be made consistent before this method is invoked.
+void InstructionDeleter::cleanupDeadCode(CallbackTy callback) {
+  SmallVector<SILInstruction *, 8> rootInsts(possiblyDeadInstructions.begin(),
+                                             possiblyDeadInstructions.end());
+  eliminateDeadCode(rootInsts, callback);
 }
 
 void swift::recursivelyDeleteTriviallyDeadInstructions(
