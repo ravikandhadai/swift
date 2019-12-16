@@ -28,6 +28,7 @@
 #include "swift/Basic/SourceLoc.h"
 #include "swift/SIL/SILBasicBlock.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallSet.h"
 
 namespace swift {
 class ASTContext;
@@ -221,6 +222,9 @@ bool isKnownConstantEvaluableFunction(SILFunction *fun);
 /// aborting interpretation and returning the error. Skipping an instruction
 /// that produces such errors is not a valid behavior.
 bool isFailStopError(SymbolicValue errorVal);
+
+void getConstEvalOpaqueArgumentIndices(
+    SILFunction *fun, llvm::SmallSet<unsigned, 8> &opaqueArgIndices);
 
 } // end namespace swift
 #endif

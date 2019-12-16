@@ -496,6 +496,15 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
   if (auto *convertEscapeInst = dyn_cast<ConvertEscapeToNoEscapeInst>(value))
     return getConstantValue(convertEscapeInst->getOperand());
 
+  // InitExistentialAddr is consider as a cast operation that only transforms
+  // the type of addressed memory. Though in reality it returns an offset from
+  // the pointer and initializes the memory. This is abstracted away in the
+  // interpreter. Note that the interpret cannot track values that are reference
+  // typed and therefore, cannot model deinitializing of values.
+  if (auto *initExistentialAddr = dyn_cast<InitExistentialAddrInst>(value)) {
+    return getConstantValue(initExistentialAddr->getOperand());
+  }
+
   LLVM_DEBUG(llvm::dbgs() << "ConstExpr Unknown simple: " << *value << "\n");
 
   // Otherwise, we don't know how to handle this.
@@ -1185,20 +1194,6 @@ ConstExprFunctionState::computeCallResult(ApplyInst *apply) {
   if (auto wellKnownFunction = classifyFunction(callee))
     return computeWellKnownCallResult(apply, *wellKnownFunction);
 
-  // Verify that we can fold all of the arguments to the call.
-  SmallVector<SymbolicValue, 4> paramConstants;
-  for (unsigned i = 0, e = apply->getNumOperands() - 1; i != e; ++i) {
-    // If any of the arguments is a non-constant value, then we can't fold this
-    // call.
-    auto op = apply->getOperand(i + 1);
-    SymbolicValue argValue = getConstantValue(op);
-    if (!argValue.isConstant()) {
-      return evaluator.getUnknown((SILInstruction *)apply,
-                                  UnknownReason::createCallArgumentUnknown(i));
-    }
-    paramConstants.push_back(argValue);
-  }
-
   // If we reached an external function that hasn't been deserialized yet, make
   // sure to pull it in so we can see its body. If that fails, then we can't
   // analyze the function. Note: pull in everything referenced from another
@@ -1207,6 +1202,38 @@ ConstExprFunctionState::computeCallResult(ApplyInst *apply) {
     apply->getModule().linkFunction(callee, SILModule::LinkingMode::LinkAll);
     if (callee->isExternalDeclaration())
       return computeOpaqueCallResult(apply, callee);
+  }
+
+  llvm::SmallSet<unsigned, 8> opaqueArgIndices;
+  getConstEvalOpaqueArgumentIndices(callee, opaqueArgIndices);
+
+  // Verify that we can fold all of the arguments to the call.
+  SmallVector<SymbolicValue, 4> paramConstants;
+  for (unsigned i = 0, e = apply->getNumOperands() - 1; i != e; ++i) {
+    // If any of the arguments is a non-constant value, then we can't fold this
+    // call.
+    auto op = apply->getOperand(i + 1);
+    // If the argument is a consteval_opaque_argument, model it using a fresh
+    // opaque symbolic value.
+    if (opaqueArgIndices.count(i)) {
+      SymbolicValue argValue = SymbolicValue::makeOpaqueSymbolicValue(op);
+      // If this parameter is an address wrap this into an address.
+      if (op->getType().isAddress()) {
+        Type valueType =
+            substituteGenericParamsAndSimpify(op->getType().getASTType());
+        auto *memObject = SymbolicValueMemoryObject::create(
+            valueType, argValue, evaluator.getAllocator());
+        argValue = SymbolicValue::getAddress(memObject);
+      }
+      paramConstants.push_back(argValue);
+      continue;
+    }
+    SymbolicValue argValue = getConstantValue(op);
+    if (!argValue.isConstant()) {
+      return evaluator.getUnknown((SILInstruction *)apply,
+                                  UnknownReason::createCallArgumentUnknown(i));
+    }
+    paramConstants.push_back(argValue);
   }
 
   // Compute the substitution map for the callee, which maps from all of its
@@ -2267,4 +2294,22 @@ bool swift::hasConstantEvaluableAnnotation(SILFunction *fun) {
 bool swift::isConstantEvaluable(SILFunction *fun) {
   return hasConstantEvaluableAnnotation(fun) ||
          isKnownConstantEvaluableFunction(fun);
+}
+
+void swift::getConstEvalOpaqueArgumentIndices(
+    SILFunction *fun, llvm::SmallSet<unsigned, 8> &opaqueArgIndices) {
+  unsigned numArguments = fun->getConventions().getNumParameters();
+  for (StringRef semanticAttr : fun->getSemanticsAttrs()) {
+    bool isOpaqueArg = semanticAttr.consume_front("consteval_opaque_argument_");
+    if (!isOpaqueArg)
+      continue;
+    unsigned argIndex;
+    bool error = semanticAttr.getAsInteger(10, argIndex);
+    // TODO: we need to accept an error handler here.
+    assert(!error &&
+           "consteval_opaque_argument_ must be followed by an integer");
+    assert(0 <= argIndex && argIndex < numArguments &&
+           "consteval_opaque_argument_ must be followed by an argument index");
+    opaqueArgIndices.insert(argIndex);
+  }
 }

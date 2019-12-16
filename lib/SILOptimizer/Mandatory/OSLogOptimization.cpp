@@ -406,14 +406,14 @@ static bool detectAndDiagnoseErrors(SymbolicValue errorInfo,
   // If evaluation of any other constant_evaluable function call fails, point
   // to that failed function along with a reason: such as that a parameter is
   // non-constant parameter or that body is not constant evaluable.
-  ApplyInst *call = dyn_cast<ApplyInst>(unevaluableInst);
-  if (call) {
-    SILFunction *callee = call->getCalleeFunction();
-    if (callee && isConstantEvaluable(callee)) {
-      diagnoseErrorInConstantEvaluableFunction(call, errorInfo);
-      return true; // abort evaluation.
-    }
-  }
+  //  ApplyInst *call = dyn_cast<ApplyInst>(unevaluableInst);
+  //  if (call) {
+  //    SILFunction *callee = call->getCalleeFunction();
+  //    if (callee && isConstantEvaluable(callee)) {
+  //      diagnoseErrorInConstantEvaluableFunction(call, errorInfo);
+  //      return true; // abort evaluation.
+  //    }
+  //  }
 
   // Every other error must happen in the body of the os_log function which
   // is inlined in the 'parentFun' before this pass. In this case, if we have a
@@ -447,6 +447,8 @@ static Optional<SymbolicValue> collectConstants(FoldState &foldState) {
   // endInstructions.
   while (true) {
     SILInstruction *currInst = &(*currI);
+    // llvm::errs() << "Analyzing instruction: " << *currInst << "\n";
+
     if (endInstructions.count(currInst))
       break;
 
@@ -465,6 +467,9 @@ static Optional<SymbolicValue> collectConstants(FoldState &foldState) {
     if (errorInfo && detectAndDiagnoseErrors(errorInfo.getValue(), currInst)) {
       return errorInfo;
     }
+
+    //    if (errorInfo)
+    //      errorInfo->emitUnknownDiagnosticNotes(currInst->getLoc());
 
     if (!nextI) {
       // We cannnot find the next instruction to continue evaluation, and we
@@ -1239,14 +1244,39 @@ static bool constantFold(SILInstruction *start,
   // value in the interpreter state. If this is not the case, it means the
   // overlay implementation of OSLogMessage (or its extensions by users) are
   // incorrect. Detect and diagnose this scenario.
-  bool errorDetected = checkOSLogMessageIsConstant(oslogMessage, state);
-  if (errorDetected)
-    return false;
+  //  bool errorDetected = checkOSLogMessageIsConstant(oslogMessage, state);
+  //  if (errorDetected)
+  //    return false;
 
-  substituteConstants(state);
+  // substituteConstants(state);
 
-  tryEliminateOSLogMessage(oslogMessage);
+  // tryEliminateOSLogMessage(oslogMessage);
   return true;
+}
+
+static void dropConstEvalOpaqueArguments(SILInstruction *inst,
+                                         SmallVectorImpl<Operand *> &result) {
+  auto allOperands = inst->getAllOperands();
+  ApplyInst *applyInst = dyn_cast<ApplyInst>(inst);
+  if (!applyInst || !applyInst->getCalleeFunction()) {
+    for (Operand &operand : allOperands)
+      result.push_back(&operand);
+    return;
+  }
+  // The first operand of the call is a function_ref, which can never be opaque.
+  result.push_back(&allOperands[0]);
+  // For each operand, include the operand iff it is not marked opauqe for
+  // constant evaluation.
+  SILFunction *callee = applyInst->getCalleeFunction();
+  llvm::SmallSet<unsigned, 8> opaqueArgIndices;
+  getConstEvalOpaqueArgumentIndices(callee, opaqueArgIndices);
+
+  for (unsigned i = 0; i < applyInst->getNumArguments(); i++) {
+    if (opaqueArgIndices.count(i)) {
+      continue;
+    }
+    result.push_back(&allOperands[i + 1]);
+  }
 }
 
 /// Given a call to the initializer of OSLogMessage, which conforms to
@@ -1292,9 +1322,12 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
       continue;
     }
 
-    for (Operand &operand : inst->getAllOperands()) {
+    SmallVector<Operand *, 8> relevantOperands;
+    dropConstEvalOpaqueArguments(inst, relevantOperands);
+
+    for (Operand *operand : relevantOperands) {
       if (SILInstruction *definingInstruction =
-            operand.get()->getDefiningInstruction()) {
+              operand->get()->getDefiningInstruction()) {
         if (seenInstructions.count(definingInstruction))
           continue;
         worklist.push_back(definingInstruction);

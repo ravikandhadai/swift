@@ -150,6 +150,12 @@ void SymbolicValue::print(llvm::raw_ostream &os, unsigned indent) const {
     os.indent(indent) << "]\n";
     return;
   }
+  case RK_Opaque: {
+    SILValue value = getOpaqueSILValue();
+    os << "opaque: ";
+    value->print(os);
+    return;
+  }
   }
 }
 
@@ -187,6 +193,8 @@ SymbolicValue::Kind SymbolicValue::getKind() const {
     return Array;
   case RK_Closure:
     return Closure;
+  case RK_Opaque:
+    return Opaque;
   }
   llvm_unreachable("covered switch");
 }
@@ -250,6 +258,9 @@ SymbolicValue::cloneInto(SymbolicValueAllocator &allocator) const {
     return SymbolicValue::makeClosure(clo->getTarget(), closureArgs,
                                       clo->getCallSubstitutionMap(),
                                       clo->getClosureInst(), allocator);
+  }
+  case RK_Opaque: {
+    return SymbolicValue::makeOpaqueSymbolicValue(getOpaqueSILValue());
   }
   }
   llvm_unreachable("covered switch");

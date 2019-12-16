@@ -288,6 +288,9 @@ private:
 
     /// This represents a closure.
     RK_Closure,
+
+    /// This represents an opaque value.
+    RK_Opaque,
   };
 
   union {
@@ -360,6 +363,8 @@ private:
     /// When this symbolic value is of "Closure" kind, store a pointer to the
     /// symbolic representation of the closure.
     SymbolicClosure *closure;
+
+    ValueBase *opaqueValue;
   } value;
 
   RepresentationKind representationKind : 8;
@@ -414,6 +419,8 @@ public:
 
     /// This represents a closure.
     Closure,
+
+    Opaque,
 
     /// These values are generally only seen internally to the system, external
     /// clients shouldn't have to deal with them.
@@ -585,6 +592,18 @@ public:
     return value.closure;
   }
 
+  static SymbolicValue makeOpaqueSymbolicValue(SILValue value) {
+    SymbolicValue result;
+    result.representationKind = RK_Opaque;
+    result.value.opaqueValue = value;
+    return result;
+  }
+
+  SILValue getOpaqueSILValue() const {
+    assert(getKind() == Opaque);
+    return value.opaqueValue;
+  }
+
   //===--------------------------------------------------------------------===//
   // Helpers
 
@@ -734,7 +753,6 @@ public:
 
   SubstitutionMap getCallSubstitutionMap() { return substitutionMap; }
 };
-
 } // end namespace swift
 
 #endif
