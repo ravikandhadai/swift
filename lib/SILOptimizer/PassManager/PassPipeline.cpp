@@ -130,6 +130,8 @@ static void addMandatoryOptPipeline(SILPassPipelinePlan &P) {
   // this pass.
   P.addOSLogOptimization();
 
+  //P.addConstantEvaluableSubsetChecker();
+
   // Diagnostic ConstantPropagation must be rerun on deserialized functions
   // because it is sensitive to the assert configuration.
   // Consequently, certain optimization passes beyond this point will also rerun.

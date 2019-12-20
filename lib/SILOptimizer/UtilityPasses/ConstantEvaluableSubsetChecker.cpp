@@ -161,8 +161,10 @@ class ConstantEvaluableSubsetChecker : public SILModuleTransform {
     assert(module);
 
     for (SILFunction &fun : *module) {
-      // Record functions annotated as constant evaluable.
-      if (hasConstantEvaluableAnnotation(&fun)) {
+      // Record functions annotated as constant evaluable. Ignore thunks and
+      // transparent functions.
+      if (hasConstantEvaluableAnnotation(&fun) && !fun.isThunk() &&
+          !fun.isTransparent()) {
         constantEvaluableFunctions.insert(&fun);
         continue;
       }
@@ -178,8 +180,10 @@ class ConstantEvaluableSubsetChecker : public SILModuleTransform {
     bool error = false;
     for (SILFunction *constEvalFun : constantEvaluableFunctions) {
       if (!evaluatedFunctions.count(constEvalFun)) {
-        llvm::errs() << "Error: function "
-                     << demangleSymbolName(constEvalFun->getName());
+        std::string demangledName = demangleSymbolName(constEvalFun->getName());
+        if (StringRef(demangledName).startswith("default argument"))
+          continue;
+        llvm::errs() << "Error: function " << demangledName;
         llvm::errs() << " annotated as constant evaluable";
         llvm::errs() << " does not have a test driver"
                      << "\n";
