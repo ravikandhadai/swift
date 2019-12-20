@@ -70,6 +70,8 @@ class ConstantEvaluableSubsetChecker : public SILModuleTransform {
     for (auto currI = fun->getEntryBlock()->begin();;) {
       auto *inst = &(*currI);
 
+      llvm::errs() << "Analyzing instruction: " << *inst << "\n";
+
       if (isa<ReturnInst>(inst))
         break;
 
@@ -95,6 +97,11 @@ class ConstantEvaluableSubsetChecker : public SILModuleTransform {
 
         std::tie(nextInstOpt, errorVal) =
             stepEvaluator.tryEvaluateOrElseMakeEffectsNonConstant(currI);
+        if (errorVal) {
+          llvm::errs() << "instruction generated error: "
+                       << "\n";
+          errorVal->emitUnknownDiagnosticNotes(inst->getLoc());
+        }
         if (!nextInstOpt) {
           // This indicates an error in the test driver.
           errorVal->emitUnknownDiagnosticNotes(inst->getLoc());

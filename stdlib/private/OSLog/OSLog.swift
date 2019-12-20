@@ -138,12 +138,12 @@ public func osLog(
   var currentBufferPosition = bufferMemory
   serialize(preamble, at: &currentBufferPosition)
   serialize(argumentCount, at: &currentBufferPosition)
-  //argumentClosures.forEach { $0(&currentBufferPosition, &stringStorageObjects) }
-  var i = 0
-  while (i < argumentCount) {
-    argumentClosures[i](&currentBufferPosition, &stringStorageObjects)
-    i += 1
-  }
+  argumentClosures.forEach { $0(&currentBufferPosition, &stringStorageObjects) }
+//  var i = 0
+//  while (i < argumentCount) {
+//    argumentClosures[i](&currentBufferPosition, &stringStorageObjects)
+//    i += 1
+//  }
 
   ___os_log_impl(UnsafeMutableRawPointer(mutating: #dsohandle),
                  logObject,
