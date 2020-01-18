@@ -130,6 +130,28 @@ public:
   void
   cleanUpDeadInstructions(llvm::function_ref<void(SILInstruction *)> callback =
                               [](SILInstruction *) {});
+
+  /// Given an instruction \c inst, recursively delete all transitive users
+  /// of \c inst (excluding \c inst) and fix the lifetimes of the operands
+  /// of the deleted instructions, except when the deleted instruction is a
+  /// destroy_value/addr. Note that after a call to this function, \c inst will
+  /// not have any non-incidental uses and hence may be missing destroys.
+  /// However, every other SIL value, except the results of \c inst, are
+  /// guaranteed to be destroyed correctly, provided the input SIL was
+  /// consistent with respect to ownership.
+  void forceDeleteUsersAndFixLifetimes(
+      SILInstruction *inst,
+      llvm::function_ref<void(SILInstruction *)> callback =
+          [](SILInstruction *) {});
+
+  /// Given an instruction \c inst, recursively delete all transitive users of
+  /// \c inst (excluding \c inst). After a call to this function, \c inst will
+  /// not have any non-incidental uses. This function will not fix the lifetime
+  /// of the operands of the deleted instructions.
+  void forceDeleteUsers(
+      SILInstruction *inst,
+      llvm::function_ref<void(SILInstruction *)> callback =
+          [](SILInstruction *) {});
 };
 
 /// If \c inst is dead, delete it and recursively eliminate all code that
@@ -146,6 +168,8 @@ public:
 void eliminateDeadInstruction(
     SILInstruction *inst, llvm::function_ref<void(SILInstruction *)> callback =
                               [](SILInstruction *) {});
+
+unsigned getNumInOutArguments(FullApplySite applySite);
 
 /// For each of the given instructions, if they are dead delete them
 /// along with their dead operands. Note this utility must be phased out and

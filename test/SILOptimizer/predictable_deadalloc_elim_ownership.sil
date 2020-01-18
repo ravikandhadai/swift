@@ -74,13 +74,8 @@ bb0(%0 : @owned $Builtin.NativeObject):
   return %9999 : $()
 }
 
-// We do not handle this today, since we do not understand that we need to treat
-// the destroy_value of the alloc_box as a destroy_addr of the entire value.
-//
-// FIXME: We should be able to handle this.
-//
 // CHECK-LABEL: sil [ossa] @simple_nontrivial_init_box : $@convention(thin) (@owned Builtin.NativeObject) -> () {
-// CHECK: alloc_box
+// CHECK-NOT: alloc_box
 // CHECK: } // end sil function 'simple_nontrivial_init_box'
 sil [ossa] @simple_nontrivial_init_box : $@convention(thin) (@owned Builtin.NativeObject) -> () {
 bb0(%0 : @owned $Builtin.NativeObject):
@@ -127,12 +122,8 @@ bb0(%0 : $Builtin.Int32, %1 : $*Builtin.Int32):
   return %9999 : $()
 }
 
-// In this case, we perform an init, copy. Since we do not want to lose the +1
-// on the argument, we do not eliminate this (even though with time perhaps we
-// could).
 // CHECK-LABEL: sil [ossa] @simple_init_copy : $@convention(thin) (@owned Builtin.NativeObject, @in_guaranteed Builtin.NativeObject) -> () {
-// CHECK: alloc_stack
-// CHECK: copy_addr
+// CHECK-NOT: alloc_stack
 // CHECK: } // end sil function 'simple_init_copy'
 sil [ossa] @simple_init_copy : $@convention(thin) (@owned Builtin.NativeObject, @in_guaranteed Builtin.NativeObject) -> () {
 bb0(%0 : @owned $Builtin.NativeObject, %1 : $*Builtin.NativeObject):
@@ -151,8 +142,7 @@ bb0(%0 : @owned $Builtin.NativeObject, %1 : $*Builtin.NativeObject):
 // CHECK: bb0([[ARG0:%.*]] : @owned $Builtin.NativeObject, [[ARG1:%.*]] : $*Builtin.NativeObject):
 // CHECK-NOT: alloc_stack
 // CHECK:  destroy_value [[ARG0]]
-// CHECK:  [[ARG1_LOADED:%.*]] = load [take] [[ARG1]]
-// CHECK:  destroy_value [[ARG1_LOADED]]
+// CHECK:  destroy_addr [[ARG1]]
 // CHECK: } // end sil function 'simple_init_take'
 sil [ossa] @simple_init_take : $@convention(thin) (@owned Builtin.NativeObject, @in Builtin.NativeObject) -> () {
 bb0(%0 : @owned $Builtin.NativeObject, %1 : $*Builtin.NativeObject):
@@ -204,8 +194,7 @@ bb0(%0 : @owned $Builtin.NativeObject, %1 : $*Builtin.NativeObject):
 // CHECK: bb0([[ARG:%.*]] :
 // CHECK-NOT: alloc_stack
 // CHECK-NOT: store
-// CHECK: bb3:
-// CHECK-NEXT: destroy_value [[ARG]]
+// CHECK: destroy_value [[ARG]]
 // CHECK: } // end sil function 'simple_diamond_without_assign'
 sil [ossa] @simple_diamond_without_assign : $@convention(thin) (@owned Builtin.NativeObject) -> () {
 bb0(%0 : @owned $Builtin.NativeObject):
@@ -252,15 +241,13 @@ bb3:
   return %9999 : $()
 }
 
-// Today PMO can not handle different available values coming from different
-// BBs. With time it can be taught to do that if necessary. That being said,
-// this test shows that we /tried/ and failed with the available value test
-// instead of failing earlier due to the copy_addr being an assign since we
-// explode the copy_addr.
-//
 // CHECK-LABEL: sil [ossa] @simple_diamond_with_assign_remove : $@convention(thin) (@owned Builtin.NativeObject, @in Builtin.NativeObject) -> () {
-// CHECK: alloc_stack
+// CHECK: bb0([[ARG0:%.*]] : @owned $Builtin.NativeObject, [[ARG1:%.*]] : $*Builtin.NativeObject):
+// CHECK-NOT: alloc_stack
+// CHECK: bb1:
+// CHECK: destroy_addr [[ARG1]]
 // CHECK-NOT: copy_addr
+// CHECK: bb2:
 // CHECK: } // end sil function 'simple_diamond_with_assign_remove'
 sil [ossa] @simple_diamond_with_assign_remove : $@convention(thin) (@owned Builtin.NativeObject, @in Builtin.NativeObject) -> () {
 bb0(%0 : @owned $Builtin.NativeObject, %1 : $*Builtin.NativeObject):
@@ -284,13 +271,13 @@ bb3:
   return %9999 : $()
 }
 
-// Make sure that we can handle structs, tuples that are not fully available
-// themselves, but whose components are fully available.
+// Make sure that we can handle structs, tuples.
 // CHECK-LABEL: sil [ossa] @multiple_inits_1 : $@convention(thin) (@owned Klass, @owned Klass, @owned Klass, @owned Klass) -> () {
 // CHECK: bb0([[ARG0:%.*]] : @owned $Klass, [[ARG1:%.*]] : @owned $Klass, [[ARG2:%.*]] : @owned $Klass, [[ARG3:%.*]] : @owned $Klass):
-// CHECK:   [[TUP:%.*]] = tuple ([[ARG1]] : $Klass, [[ARG2]] : $Klass)
-// CHECK:   [[STRUCT:%.*]] = struct $KlassWithKlassTuple ([[ARG0]] : $Klass, [[TUP]] : $(Klass, Klass), [[ARG3]] : $Klass)
-// CHECK:   destroy_value [[STRUCT]]
+// CHECK: destroy_value [[ARG0]]
+// CHECK: destroy_value [[ARG1]]
+// CHECK: destroy_value [[ARG2]]
+// CHECK: destroy_value [[ARG3]]
 // CHECK: } // end sil function 'multiple_inits_1'
 sil [ossa] @multiple_inits_1 : $@convention(thin) (@owned Klass, @owned Klass, @owned Klass, @owned Klass) -> () {
 bb0(%0 : @owned $Klass, %1 : @owned $Klass, %2 : @owned $Klass, %3 : @owned $Klass):
@@ -312,12 +299,44 @@ bb0(%0 : @owned $Klass, %1 : @owned $Klass, %2 : @owned $Klass, %3 : @owned $Kla
   return %9999 : $()
 }
 
+// Make sure that we can handle structs, tuples that are not fully available
+// themselves, but whose components are fully available.
+// CHECK-LABEL: sil [ossa] @multiple_inits_with_load_1 : $@convention(thin) (@owned Klass, @owned Klass, @owned Klass, @owned Klass) -> () {
+// CHECK: bb0([[ARG0:%.*]] : @owned $Klass, [[ARG1:%.*]] : @owned $Klass, [[ARG2:%.*]] : @owned $Klass, [[ARG3:%.*]] : @owned $Klass):
+// CHECK:   [[TUP:%.*]] = tuple ([[ARG1]] : $Klass, [[ARG2]] : $Klass)
+// CHECK:   [[STRUCT:%.*]] = struct $KlassWithKlassTuple ([[ARG0]] : $Klass, [[TUP]] : $(Klass, Klass), [[ARG3]] : $Klass)
+// CHECK:   destroy_value [[STRUCT]]
+// CHECK: } // end sil function 'multiple_inits_with_load_1'
+sil [ossa] @multiple_inits_with_load_1 : $@convention(thin) (@owned Klass, @owned Klass, @owned Klass, @owned Klass) -> () {
+bb0(%0 : @owned $Klass, %1 : @owned $Klass, %2 : @owned $Klass, %3 : @owned $Klass):
+  %stack = alloc_stack $KlassWithKlassTuple
+  %stack0 = struct_element_addr %stack : $*KlassWithKlassTuple, #KlassWithKlassTuple.first
+  %stack1 = struct_element_addr %stack : $*KlassWithKlassTuple, #KlassWithKlassTuple.second
+  %stack10 = tuple_element_addr %stack1 : $*(Klass, Klass), 0
+  %stack11 = tuple_element_addr %stack1 : $*(Klass, Klass), 1
+  %stack2 = struct_element_addr %stack : $*KlassWithKlassTuple, #KlassWithKlassTuple.third
+
+  store %0 to [init] %stack0 : $*Klass
+  store %1 to [init] %stack10 : $*Klass
+  store %2 to [init] %stack11 : $*Klass
+  %c = copy_value %3 : $Klass
+  store %c to [init] %stack2 : $*Klass
+
+  %loaded = load [take] %stack2 : $*Klass
+  destroy_value %loaded : $Klass
+
+  store %3 to [init] %stack2 : $*Klass
+  destroy_addr %stack : $*KlassWithKlassTuple
+  dealloc_stack %stack : $*KlassWithKlassTuple
+  %9999 = tuple()
+  return %9999 : $()
+}
+
 // CHECK-LABEL: sil [ossa] @multiple_inits_2 : $@convention(thin) (@owned Klass, @owned (Klass, Klass), @owned Klass) -> () {
 // CHECK: bb0([[ARG0:%.*]] : @owned $Klass, [[ARG1:%.*]] : @owned $(Klass, Klass), [[ARG2:%.*]] : @owned $Klass):
-// CHECK:   ([[LHS:%.*]], [[RHS:%.*]]) = destructure_tuple [[ARG1]]
-// CHECK:   [[TUP:%.*]] = tuple ([[LHS]] : $Klass, [[RHS]] : $Klass)
-// CHECK:   [[STRUCT:%.*]] = struct $KlassWithKlassTuple ([[ARG0]] : $Klass, [[TUP]] : $(Klass, Klass), [[ARG2]] : $Klass)
-// CHECK:   destroy_value [[STRUCT]]
+// CHECK:  destroy_value [[ARG0]]
+// CHECK:  destroy_value [[ARG1]]
+// CHECK:  destroy_value [[ARG2]]
 // CHECK: } // end sil function 'multiple_inits_2'
 sil [ossa] @multiple_inits_2 : $@convention(thin) (@owned Klass, @owned (Klass, Klass), @owned Klass) -> () {
 bb0(%0 : @owned $Klass, %1 : @owned $(Klass, Klass), %2 : @owned $Klass):
@@ -336,12 +355,39 @@ bb0(%0 : @owned $Klass, %1 : @owned $(Klass, Klass), %2 : @owned $Klass):
   return %9999 : $()
 }
 
-// We can not promote this since we have destroy_addr that are not fully
-// available. This would mean that we would need to split up the store which is
-// unsupported today.
-//
+// CHECK-LABEL: sil [ossa] @multiple_inits_with_load_2 : $@convention(thin) (@owned Klass, @owned (Klass, Klass), @owned Klass) -> () {
+// CHECK: bb0([[ARG0:%.*]] : @owned $Klass, [[ARG1:%.*]] : @owned $(Klass, Klass), [[ARG2:%.*]] : @owned $Klass):
+// CHECK:   ([[LHS:%.*]], [[RHS:%.*]]) = destructure_tuple [[ARG1]]
+// CHECK:   [[TUP:%.*]] = tuple ([[LHS]] : $Klass, [[RHS]] : $Klass)
+// CHECK:   [[STRUCT:%.*]] = struct $KlassWithKlassTuple ([[ARG0]] : $Klass, [[TUP]] : $(Klass, Klass), [[ARG2]] : $Klass)
+// CHECK:   destroy_value [[STRUCT]]
+// CHECK: } // end sil function 'multiple_inits_with_load_2'
+sil [ossa] @multiple_inits_with_load_2 : $@convention(thin) (@owned Klass, @owned (Klass, Klass), @owned Klass) -> () {
+bb0(%0 : @owned $Klass, %1 : @owned $(Klass, Klass), %2 : @owned $Klass):
+  %stack = alloc_stack $KlassWithKlassTuple
+  %stack0 = struct_element_addr %stack : $*KlassWithKlassTuple, #KlassWithKlassTuple.first
+  %stack1 = struct_element_addr %stack : $*KlassWithKlassTuple, #KlassWithKlassTuple.second
+  %stack2 = struct_element_addr %stack : $*KlassWithKlassTuple, #KlassWithKlassTuple.third
+
+  store %0 to [init] %stack0 : $*Klass
+  store %1 to [init] %stack1 : $*(Klass, Klass)
+  %c = copy_value %2 : $Klass
+  store %c to [init] %stack2 : $*Klass
+
+  %loaded = load [take] %stack2 : $*Klass
+  destroy_value %loaded : $Klass
+
+  store %2 to [init] %stack2 : $*Klass
+  destroy_addr %stack : $*KlassWithKlassTuple
+  dealloc_stack %stack : $*KlassWithKlassTuple
+  %9999 = tuple()
+  return %9999 : $()
+}
+
 // CHECK-LABEL: sil [ossa] @destroy_addr_not_fully_available : $@convention(thin) (@owned KlassWithKlassTuple) -> () {
-// CHECK: alloc_stack
+// CHECK: bb0([[ARG0:%.*]] : @owned $KlassWithKlassTuple):
+// CHECK-NOT: alloc_stack
+// CHECK: destroy_value [[ARG0]]
 // CHECK: } // end sil function 'destroy_addr_not_fully_available'
 sil [ossa] @destroy_addr_not_fully_available : $@convention(thin) (@owned KlassWithKlassTuple) -> () {
 bb0(%0 : @owned $KlassWithKlassTuple):
@@ -357,7 +403,6 @@ bb0(%0 : @owned $KlassWithKlassTuple):
   dealloc_stack %stack : $*KlassWithKlassTuple
   %9999 = tuple()
   return %9999 : $()
-
 }
 
 struct NativeObjectPair {
@@ -513,6 +558,154 @@ bb3:
   store %fout to [init] %2 : $*NativeObjectTriple
   destroy_addr %2 : $*NativeObjectTriple
   dealloc_stack %2 : $*NativeObjectTriple
+  %9999 = tuple()
+  return %9999 : $()
+}
+
+// Check dead-code elimination of alloc stack used only as inout parameter of a
+// constant evaluable call (that only writes into that inout parameter).
+sil [ossa] [_semantics "constant_evaluable"] @constevalFun : $@convention(thin) (@inout Builtin.Int32) -> () {
+bb0(%0 : $*Builtin.Int32):
+  %9999 = tuple()
+  return %9999 : $()
+}
+
+// CHECK-LABEL: sil [ossa] @trivial_stack_with_consteval_calls : $@convention(thin) (Builtin.Int32) -> () {
+// CHECK-NOT: alloc_stack
+// CHECK: } // end sil function 'trivial_stack_with_consteval_calls'
+sil [ossa] @trivial_stack_with_consteval_calls : $@convention(thin) (Builtin.Int32) -> () {
+bb0(%0 : $Builtin.Int32):
+  %1 = alloc_stack $Builtin.Int32
+  store %0 to [trivial] %1 : $*Builtin.Int32
+  %4 = function_ref @constevalFun : $@convention(thin) (@inout Builtin.Int32) -> ()
+  %5 = apply %4(%1) : $@convention(thin) (@inout Builtin.Int32) -> ()
+  dealloc_stack %1 : $*Builtin.Int32
+  %9999 = tuple()
+  return %9999 : $()
+}
+
+sil [ossa] [_semantics "constant_evaluable"] @constevalFun2 : $@convention(thin) (@in String, @inout Builtin.Int32) -> () {
+bb0(%0 : $*String, %1 : $*Builtin.Int32):
+  destroy_addr %0 : $*String
+  %9999 = tuple()
+  return %9999 : $()
+}
+
+// CHECK-LABEL: sil [ossa] @test_stack_elim_with_consteval_calls
+// CHECK-NOT: alloc_stack
+// CHECK: } // end sil function 'test_stack_elim_with_consteval_calls'
+sil [ossa] @test_stack_elim_with_consteval_calls : $@convention(thin) (@in String, Builtin.Int32) -> () {
+bb0(%0 : $*String, %1 : $Builtin.Int32):
+  %2 = alloc_stack $Builtin.Int32
+  store %1 to [trivial] %2 : $*Builtin.Int32
+  %4 = function_ref @constevalFun2 : $@convention(thin) (@in String, @inout Builtin.Int32) -> ()
+  %5 = apply %4(%0, %2) : $@convention(thin) (@in String, @inout Builtin.Int32) -> ()
+  dealloc_stack %2 : $*Builtin.Int32
+  %9999 = tuple()
+  return %9999 : $()
+}
+
+sil [ossa] [_semantics "constant_evaluable"] @constevalFun3 : $@convention(thin) <A> (@in_guaranteed A) -> @out A {
+bb0(%0 : $*A, %1 : $*A):
+  copy_addr %1 to [initialization] %0 : $*A
+  %4 = tuple ()
+  return %4 : $()
+}
+
+// CHECK-LABEL: sil [ossa] @test_stack_elim_with_consteval_calls_with_indirect_results
+// CHECK-NOT: alloc_stack
+// CHECK: } // end sil function 'test_stack_elim_with_consteval_calls_with_indirect_results'
+sil [ossa] @test_stack_elim_with_consteval_calls_with_indirect_results : $@convention(thin) (@in_guaranteed Builtin.Int32) -> () {
+bb0(%0 : $*Builtin.Int32):
+  %3 = alloc_stack $Builtin.Int32
+  %4 = function_ref @constevalFun3 : $@convention(thin) <τ_0_0> (@in_guaranteed τ_0_0) -> @out τ_0_0
+  %5 = apply %4<Builtin.Int32>(%3, %0) : $@convention(thin) <τ_0_0> (@in_guaranteed τ_0_0) -> @out τ_0_0
+  dealloc_stack %3 : $*Builtin.Int32
+  %9999 = tuple()
+  return %9999 : $()
+}
+
+// This function cannot be dead-code eliminated as it has two indirectly writable arguments,
+// and the analysis assumes that one memory location can escape through the other.
+// TODO: This can fixed in the future but would require analyzing multiple alloc_stack
+// locations together.
+sil [ossa] [_semantics "constant_evaluable"] @constevalFun4 : $@convention(thin) <A> (@inout A) -> @out A {
+bb0(%0 : $*A, %1 : $*A):
+  copy_addr %1 to [initialization] %0 : $*A
+  %4 = tuple ()
+  return %4 : $()
+}
+
+// CHECK-LABEL: sil [ossa] @test_no_stack_elim_with_consteval_calls
+// CHECK: alloc_stack
+// CHECK: } // end sil function 'test_no_stack_elim_with_consteval_calls'
+sil [ossa] @test_no_stack_elim_with_consteval_calls : $@convention(thin) (@inout Builtin.Int32) -> () {
+bb0(%0 : $*Builtin.Int32):
+  %3 = alloc_stack $Builtin.Int32
+  %4 = function_ref @constevalFun4 : $@convention(thin) <τ_0_0> (@inout τ_0_0) -> @out τ_0_0
+  %5 = apply %4<Builtin.Int32>(%3, %0) : $@convention(thin) <τ_0_0> (@inout τ_0_0) -> @out τ_0_0
+  dealloc_stack %3 : $*Builtin.Int32
+  %9999 = tuple()
+  return %9999 : $()
+}
+
+// This is an example of dead alloc-stack elimination that is expected to
+// happen with the OSLog APIs.
+
+struct OSLogInterpolation {
+  var formatString: String
+}
+
+enum Privacy {}
+
+sil [_semantics "constant_evaluable"] @oslogInterpolationInit : $@convention(method) (@thin OSLogInterpolation.Type) -> @owned OSLogInterpolation
+
+sil [_semantics "constant_evaluable"] @oslogAppendLiteral : $@convention(method) (@guaranteed String, @inout OSLogInterpolation) -> ()
+
+sil [_semantics "constant_evaluable"] @oslogAppendInterpolation : $@convention(method) (@guaranteed @callee_guaranteed () -> Int, @in_guaranteed Privacy, @inout OSLogInterpolation) -> ()
+
+sil [readonly] [_semantics "string.makeUTF8"] @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+
+// CHECK-LABEL: sil [ossa] @test_dead_oslog_string_interpolation_alloc_stack_elimination
+// CHECK-NOT: alloc_stack
+// CHECK: } // end sil function 'test_dead_oslog_string_interpolation_alloc_stack_elimination'
+sil [ossa] @test_dead_oslog_string_interpolation_alloc_stack_elimination : $@convention(thin) (@guaranteed @callee_guaranteed () -> Int, @in_guaranteed Privacy) -> () {
+bb0(%0 : @guaranteed $@callee_guaranteed () -> Int, %1: $*Privacy):
+  %2 = alloc_stack $OSLogInterpolation, var, name "$interpolation"
+  %9 = metatype $@thin OSLogInterpolation.Type
+  %10 = function_ref @oslogInterpolationInit : $@convention(method) (@thin OSLogInterpolation.Type) -> @owned OSLogInterpolation
+  %11 = apply %10(%9) : $@convention(method) (@thin OSLogInterpolation.Type) -> @owned OSLogInterpolation
+  store %11 to [init] %2 : $*OSLogInterpolation
+  %13 = string_literal utf8 "Minimum integer value: "
+  %14 = integer_literal $Builtin.Word, 23
+  %15 = integer_literal $Builtin.Int1, -1
+  %16 = metatype $@thin String.Type
+  // function_ref String.init(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)
+  %17 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %18 = apply %17(%13, %14, %15, %16) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  %19 = begin_access [modify] [static] %2 : $*OSLogInterpolation
+  %20 = function_ref @oslogAppendLiteral : $@convention(method) (@guaranteed String, @inout OSLogInterpolation) -> ()
+  %21 = apply %20(%18, %19) : $@convention(method) (@guaranteed String, @inout OSLogInterpolation) -> ()
+  end_access %19 : $*OSLogInterpolation
+  destroy_value %18 : $String
+  %29 = begin_access [modify] [static] %2 : $*OSLogInterpolation
+  %33 = function_ref @oslogAppendInterpolation : $@convention(method) (@guaranteed @callee_guaranteed () -> Int, @in_guaranteed Privacy, @inout OSLogInterpolation) -> ()
+  %34 = apply %33(%0, %1, %29) : $@convention(method) (@guaranteed @callee_guaranteed () -> Int, @in_guaranteed Privacy, @inout OSLogInterpolation) -> ()
+  end_access %29 : $*OSLogInterpolation
+  %41 = string_literal utf8 ""
+  %42 = integer_literal $Builtin.Word, 0
+  %43 = integer_literal $Builtin.Int1, -1
+  %44 = metatype $@thin String.Type
+  // function_ref String.init(_builtinStringLiteral:utf8CodeUnitCount:isASCII:)
+  %45 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String // user: %46
+  %46 = apply %45(%41, %42, %43, %44) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String // users: %51, %49
+  %47 = begin_access [modify] [static] %2 : $*OSLogInterpolation
+  %48 = function_ref @oslogAppendLiteral : $@convention(method) (@guaranteed String, @inout OSLogInterpolation) -> ()
+  %49 = apply %48(%46, %47) : $@convention(method) (@guaranteed String, @inout OSLogInterpolation) -> ()
+  end_access %47 : $*OSLogInterpolation
+  destroy_value %46 : $String
+  destroy_addr %2 : $*OSLogInterpolation
+  dealloc_stack %2 : $*OSLogInterpolation
   %9999 = tuple()
   return %9999 : $()
 }

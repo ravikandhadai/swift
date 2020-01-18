@@ -211,11 +211,11 @@ bb0(%0 : @owned $ContainsNativeObject):
 // CHECK:   [[f3:%.*]] = struct_extract [[BORROWED_ARG]] : $ComplexStruct, #ComplexStruct.f1
 // CHECK:   [[f3_copy:%.*]] = copy_value [[f3]]
 // CHECK:   end_borrow [[BORROWED_ARG]]
+// CHECK:   destroy_value [[ARG]]
 // CHECK:   [[f3_copy_1:%.*]] = copy_value [[f3_copy]]
 // CHECK:   [[f3_copy_2:%.*]] = copy_value [[f3_copy_1]]
 // CHECK:   [[f2_x_copy_1:%.*]] = copy_value [[f2_x_copy]]
 // CHECK:   [[f2_x_copy_2:%.*]] = copy_value [[f2_x_copy_1]]
-// CHECK:   destroy_value [[ARG]]
 // CHECK:   [[RESULT:%.*]] = tuple ([[f3_copy_2]] : $Builtin.NativeObject, [[f2_x_copy_2]] : $Builtin.NativeObject, [[f1]] : $Builtin.Int32)
 // CHECK:   return [[RESULT]]
 // CHECK: } // end sil function 'multiple_level_extract_2'
@@ -560,6 +560,7 @@ bb3:
 // CHECK:   [[BORROWED_ARG:%.*]] = begin_borrow [[ARG]]
 // CHECK:   [[LHS2:%.*]] = struct_extract [[BORROWED_ARG]] : $NativeObjectPair, #NativeObjectPair.x
 // CHECK:   [[LHS2_COPY:%.*]] = copy_value [[LHS2]]
+// CHECK:   destroy_value [[ARG]]
 // CHECK:   cond_br undef, bb1, bb2
 //
 // CHECK: bb1:
@@ -575,7 +576,6 @@ bb3:
 // CHECK:   br bb3([[LHS1_COPY_2]] :
 //
 // CHECK: bb3([[PHI:%.*]] :
-// CHECK:   destroy_value [[ARG]]
 // CHECK:   return [[PHI]]
 // CHECK: } // end sil function 'diamond_test_2'
 sil [ossa] @diamond_test_2 : $@convention(thin) (@owned NativeObjectPair) -> @owned Builtin.NativeObject {
@@ -644,24 +644,28 @@ struct NativeObjectTriple {
 // CHECK:   cond_br undef, bb1, bb2
 //
 // CHECK: bb1:
+// CHECK-NEXT: destroy_value [[ARG0]] : $Builtin.NativeObject
 // CHECK-NEXT: [[BORROWED_ARG1:%.*]] = begin_borrow [[ARG1]]
 // CHECK-NEXT: [[PAIR_LHS:%.*]] = struct_extract [[BORROWED_ARG1]]
 // CHECK-NEXT: [[PAIR_LHS_COPY:%.*]] = copy_value [[PAIR_LHS]]
 // CHECK-NEXT: end_borrow [[BORROWED_ARG1]]
+// CHECK-NEXT: destroy_value [[ARG1]] : $NativeObjectPair
 // CHECK-NEXT: br bb3([[PAIR_LHS_COPY]] :
 //
 // CHECK: bb2:
+// CHECK-NEXT: destroy_value [[ARG0]] : $Builtin.NativeObject
 // CHECK-NEXT: [[BORROWED_ARG1:%.*]] = begin_borrow [[ARG1]]
 // CHECK-NEXT: [[PAIR_LHS:%.*]] = struct_extract [[BORROWED_ARG1]]
 // CHECK-NEXT: [[PAIR_LHS_COPY:%.*]] = copy_value [[PAIR_LHS]]
 // CHECK-NEXT: end_borrow [[BORROWED_ARG1]]
+// CHECK-NEXT: destroy_value [[ARG1]] : $NativeObjectPair
 // CHECK-NEXT: br bb3([[PAIR_LHS_COPY]] :
 //
 // CHECK: bb3([[PHI:%.*]] : @owned $Builtin.NativeObject):
 // CHECK: [[PHI_COPY_1:%.*]] = copy_value [[PHI]]
 // CHECK: [[PHI_COPY_2:%.*]] = copy_value [[PHI_COPY_1]]
-// CHECK: [[REFORMED:%.*]] = struct $NativeObjectTriple ([[ARG0]] : {{.*}}, [[ARG1]] : {{.*}})
-// CHECK: destroy_value [[REFORMED]]
+// CHECK: destroy_value [[PHI_COPY_1]] : $Builtin.NativeObject
+// CHECK: destroy_value [[PHI]] : $Builtin.NativeObject
 // CHECK: return [[PHI_COPY_2]]
 // CHECK: } // end sil function 'diamond_test_4'
 sil [ossa] @diamond_test_4 : $@convention(thin) (@owned Builtin.NativeObject, @owned NativeObjectPair) -> @owned Builtin.NativeObject {
@@ -889,18 +893,13 @@ bb9:
 //
 // CHECK-LABEL: sil [ossa] @dead_allocation_with_unreachable_destroy_addr : $@convention(thin) (@owned Builtin.NativeObject) -> () {
 // CHECK: bb0([[ARG:%.*]] : @owned $Builtin.NativeObject):
-// CHECK-NEXT: alloc_stack
-// CHECK-NEXT: store
-// CHECK-NEXT: br bb1
-//
+// CHECK-NOT: alloc_stack
+// CHECK: destroy_value [[ARG]]
 // CHECK: bb1:
-// CHECK-NEXT: destroy_addr
-// CHECK-NEXT: dealloc_stack
 // CHECK-NEXT: tuple
 // CHECK-NEXT: return
 //
 // CHECK: bb2:
-// CHECK-NEXT: destroy_addr
 // CHECK-NEXT: unreachable
 // CHECK: } // end sil function 'dead_allocation_with_unreachable_destroy_addr'
 sil [ossa] @dead_allocation_with_unreachable_destroy_addr : $@convention(thin) (@owned Builtin.NativeObject) -> () {

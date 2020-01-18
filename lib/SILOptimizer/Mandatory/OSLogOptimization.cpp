@@ -23,8 +23,9 @@
 /// the log APIs.
 ///
 /// Pass Dependencies:  This pass depends on MandatoryInlining and Mandatory
-/// Linking happening before this pass and ConstantPropagation happening after
-/// this pass. This pass also uses `ConstExprStepEvaluator` defined in
+/// Linking happening before this pass, and ConstantPropagation and
+/// PredictableDeadAllocationElimination happening after this pass.
+/// This pass also uses `ConstExprStepEvaluator` defined in
 /// `Utils/ConstExpr.cpp`.
 ///
 /// Algorithm Overview:
