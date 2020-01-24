@@ -23,9 +23,8 @@
 /// the log APIs.
 ///
 /// Pass Dependencies:  This pass depends on MandatoryInlining and Mandatory
-/// Linking happening before this pass, and ConstantPropagation and
-/// PredictableDeadAllocationElimination happening after this pass.
-/// This pass also uses `ConstExprStepEvaluator` defined in
+/// Linking happening before this pass, and ConstantPropagation happening after
+/// this pass. This pass also uses `ConstExprStepEvaluator` defined in
 /// `Utils/ConstExpr.cpp`.
 ///
 /// Algorithm Overview:
@@ -1060,32 +1059,112 @@ static bool checkOSLogMessageIsConstant(SingleValueInstruction *osLogMessage,
   return errorDetected;
 }
 
+using CallbackTy = llvm::function_ref<void(SILInstruction *)>;
+
+static void deleteConstantEvaluableCall(ApplyInst *inst,
+                                        InstructionDeleter &deleter,
+                                        CallbackTy callback) {
+  if (!llvm::all_of(inst->getUses(), [&](Operand *use) {
+        return isa<DestroyValueInst>(use->getUser());
+      })) {
+    // We can't delete this constant evaluable call.
+    return;
+  }
+  while (!inst->use_empty()) {
+    auto ui = inst->use_begin();
+    deleter.forceDelete(ui->getUser(), callback);
+  }
+  deleter.forceDeleteAndFixLifetimes(inst, callback);
+}
+
+static void deleteAllocStackIfDead(AllocStackInst *inst,
+                                   InstructionDeleter &deleter,
+                                   CallbackTy callback) {
+  if (!llvm::all_of(inst->getUses(), [&](Operand *use) {
+        SILInstruction *user = use->getUser();
+        return isa<StoreInst>(user) || isa<DeallocStackInst>(user) ||
+               isa<DestroyAddrInst>(user) || isa<InjectEnumAddrInst>(user);
+      })) {
+    return;
+  }
+  while (!inst->use_empty()) {
+    auto *user = inst->use_begin()->getUser();
+    if (isa<DestroyAddrInst>(user)) {
+      deleter.forceDelete(user, callback);
+      continue;
+    }
+    deleter.forceDeleteAndFixLifetimes(user, callback);
+  }
+  deleter.forceDelete(inst, callback);
+}
+
+static void deleteInstructionWithUsersAndFixLifetimes(
+    SILInstruction *inst, InstructionDeleter &deleter, CallbackTy callback) {
+  SmallVector<SILInstruction *, 8> users;
+  for (SILValue result : inst->getResults()) {
+    for (Operand *use : result->getUses()) {
+      users.push_back(use->getUser());
+    }
+  }
+  for (SILInstruction *user : users) {
+    // Recursively zap transitive users.
+    deleteInstructionWithUsersAndFixLifetimes(user, deleter, callback);
+  }
+  // We can eliminate alloc_stack that has only stores and destroy addresses.
+  if (AllocStackInst *allocStack = dyn_cast<AllocStackInst>(inst)) {
+    deleteAllocStackIfDead(allocStack, deleter, callback);
+    return;
+  }
+  // Force delete constant evaluable calls, as it should have folded.
+  if (ApplyInst *apply = dyn_cast<ApplyInst>(inst)) {
+    SILFunction *callee = apply->getCalleeFunction();
+    if (callee && isConstantEvaluable(callee)) {
+      deleteConstantEvaluableCall(apply, deleter, callback);
+      return;
+    }
+  }
+  deleter.deleteIfDead(inst, callback);
+}
+
 /// Try to dead-code eliminate the OSLogMessage instance \c oslogMessage passed
 /// to the os log call and clean up its dependencies. If the instance cannot be
 /// eliminated, it implies that either the instance is not auto-generated or the
 /// implementation of the os log overlay is incorrect. Therefore emit
 /// diagnostics in such cases.
 static void tryEliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
-  // Collect the set of root instructions that could be dead due to constant
-  // folding. These include the oslogMessage initialzer call and its transitive
-  // users.
-  SmallVector<SILInstruction *, 8> oslogMessageUsers;
-  getTransitiveUsers(oslogMessage, oslogMessageUsers);
-
+  // Try deleting oslogMessage and all its forward and backward data
+  // dependencies. Note that we force delete constant_evaluable calls as either
+  // they should have been folded or an error should have been generated
+  // earlier.
   InstructionDeleter deleter;
-  for (SILInstruction *user : oslogMessageUsers)
-    deleter.trackIfDead(user);
-  deleter.trackIfDead(oslogMessage);
-
-  bool isOSLogMessageDead = false;
-  deleter.cleanUpDeadInstructions([&](SILInstruction *deadInst) {
-    if (deadInst == oslogMessage)
-      isOSLogMessageDead = true;
-  });
-  // At this point, the OSLogMessage instance must be deleted if
-  // the overlay implementation (or its extensions by users) is correct.
-  if (!isOSLogMessageDead) {
+  SmallVector<SILInstruction *, 4> worklist = {oslogMessage};
+  // Set of all deleted instructions.
+  SmallPtrSet<SILInstruction *, 4> deletedInstructions;
+  unsigned startIndex = 0;
+  while (startIndex < worklist.size()) {
+    SILInstruction *inst = worklist[startIndex++];
+    if (deletedInstructions.count(inst))
+      continue;
+    // Add operands of all deleted instructions to the worklist so that they
+    // can be recursively deleted, if possible.
+    deleteInstructionWithUsersAndFixLifetimes(
+        inst, deleter, [&](SILInstruction *deadInst) {
+          for (Operand &operand : deadInst->getAllOperands()) {
+            if (SILInstruction *definingInstruction =
+                    operand.get()->getDefiningInstruction()) {
+              if (!deletedInstructions.count(definingInstruction))
+                worklist.push_back(definingInstruction);
+            }
+          }
+          (void)deletedInstructions.insert(deadInst);
+        });
+  }
+  deleter.cleanUpDeadInstructions();
+  // If the OSLogMessage instance is not deleted, the overlay implementation
+  // (or its extensions by users) is incorrect.
+  if (!deletedInstructions.count(oslogMessage)) {
     SILFunction *fun = oslogMessage->getFunction();
+    fun->dump();
     diagnose(fun->getASTContext(), oslogMessage->getLoc().getSourceLoc(),
              diag::oslog_message_alive_after_opts);
   }

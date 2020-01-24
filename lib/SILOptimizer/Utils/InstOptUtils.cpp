@@ -218,9 +218,10 @@ unsigned swift::getNumInOutArguments(FullApplySite applySite) {
 
 /// Return true iff there are no arguments to the call that can be written by
 /// the callee.
-static bool mayOnlyReadOrDestroySILArguments(FullApplySite applySite) {
-  return !applySite.hasIndirectSILResults() && !getNumInOutArguments(applySite);
-}
+// static bool mayOnlyReadOrDestroySILArguments(FullApplySite applySite) {
+//  return !applySite.hasIndirectSILResults() &&
+//  !getNumInOutArguments(applySite);
+//}
 
 /// Return true iff the \p applySite calls a constant evaluable function and
 /// it is read and destroy only, which means that the call can do only the
@@ -231,17 +232,18 @@ static bool mayOnlyReadOrDestroySILArguments(FullApplySite applySite) {
 ///   (4) The call may use assertions, which traps at runtime on failure.
 /// Essentially, these are calls whose "effect" is visible only in their return
 /// value or through the parameters that are destroyed.
-static bool isReadOrDestroyOnlyConstantEvaluableCall(FullApplySite applySite) {
-  assert(applySite);
-  SILFunction *callee = applySite.getCalleeFunction();
-  if (!callee || !isConstantEvaluable(callee)) {
-    return false;
-  }
-  // Here all effects of the call is restricted to its writable SIL arguments.
-  // If there are no writable SIL arguments, the call must be read and destroy
-  // only.
-  return mayOnlyReadOrDestroySILArguments(applySite);
-}
+// static bool isReadOrDestroyOnlyConstantEvaluableCall(FullApplySite applySite)
+// {
+//  assert(applySite);
+//  SILFunction *callee = applySite.getCalleeFunction();
+//  if (!callee || !isConstantEvaluable(callee)) {
+//    return false;
+//  }
+//  // Here all effects of the call is restricted to its writable SIL arguments.
+//  // If there are no writable SIL arguments, the call must be read and destroy
+//  // only.
+//  return mayOnlyReadOrDestroySILArguments(applySite);
+//}
 
 /// A scope-affecting instruction is an instruction which may end the scope of
 /// its operand or may produce scoped results that require cleaning up. E.g.
@@ -306,25 +308,30 @@ static bool isScopeAffectingInstructionDead(SILInstruction *inst) {
     // explicitly.
     return true;
   }
-  case SILInstructionKind::ApplyInst: {
-    // The following property holds for constant evaluable functions:
-    // 1. they do not create objects having deinitializers with global
-    // side effects.
-    // 2. they do not use global variables and will only use objects reachable
-    // from parameters.
-    // The above two properties imply that a value returned by a constant
-    // evaluable function either does not have a deinitializer with global side
-    // effects, or if it does, the deinitializer that has the global side effect
-    // must be that of a parameter.
-    //
-    // A read-and-destroy-only constant evaluable call only reads and/or
-    // destroys its parameters. Therefore, if its return value is used only in
-    // destroys, the constant evaluable call can be removed provided the
-    // parameters it consumes are explicitly destroyed at the call site, which
-    // is taken care of by the function: \c deleteInstruction
-    FullApplySite applySite(cast<ApplyInst>(inst));
-    return isReadOrDestroyOnlyConstantEvaluableCall(applySite);
-  }
+    //  case SILInstructionKind::ApplyInst: {
+    //    // The following property holds for constant evaluable functions:
+    //    // 1. they do not create objects having deinitializers with global
+    //    // side effects.
+    //    // 2. they do not use global variables and will only use objects
+    //    reachable
+    //    // from parameters.
+    //    // The above two properties imply that a value returned by a constant
+    //    // evaluable function either does not have a deinitializer with global
+    //    side
+    //    // effects, or if it does, the deinitializer that has the global side
+    //    effect
+    //    // must be that of a parameter.
+    //    //
+    //    // A read-and-destroy-only constant evaluable call only reads and/or
+    //    // destroys its parameters. Therefore, if its return value is used
+    //    only in
+    //    // destroys, the constant evaluable call can be removed provided the
+    //    // parameters it consumes are explicitly destroyed at the call site,
+    //    which
+    //    // is taken care of by the function: \c deleteInstruction
+    //    FullApplySite applySite(cast<ApplyInst>(inst));
+    //    return isReadOrDestroyOnlyConstantEvaluableCall(applySite);
+    //  }
   default: {
     return false;
   }
@@ -530,6 +537,14 @@ static bool hasOnlyIncidentalUses(SILInstruction *inst,
     }
   }
   return true;
+}
+
+void InstructionDeleter::deleteIfDead(SILInstruction *inst,
+                                      CallbackTy callback) {
+  if (isInstructionTriviallyDead(inst) ||
+      isScopeAffectingInstructionDead(inst)) {
+    deleteInstruction(inst, callback, /*Fix lifetime of operands*/ true);
+  }
 }
 
 void InstructionDeleter::forceDeleteAndFixLifetimes(SILInstruction *inst,

@@ -79,6 +79,11 @@ public:
   /// up.
   void trackIfDead(SILInstruction *inst);
 
+  void deleteIfDead(
+      SILInstruction *inst,
+      llvm::function_ref<void(SILInstruction *)> callback =
+          [](SILInstruction *) {});
+
   /// Delete the instruction \p inst and record instructions that may become
   /// dead because of the removal of \c inst. This function will add necessary
   /// ownership instructions to fix the lifetimes of the operands of \c inst to

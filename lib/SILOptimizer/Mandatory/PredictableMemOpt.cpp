@@ -2474,15 +2474,18 @@ static bool hasOnlyStoreUses(ArrayRef<PMOMemoryUse> uses) {
       // But, \c PMOMemoryUseCollector does not do this. Therefore we have to
       // conservatively assume that the address could be loaded. Therefore,
       // bail out in this case.
-      if (isa<InitExistentialAddrInst>(u.Inst))
+      if (isa<InitExistentialAddrInst>(u.Inst) || isa<ApplyInst>(u.Inst))
         return false;
-      if (!isa<ApplyInst>(u.Inst))
-        continue;
+      continue;
+      //      if (!)
+      //        continue;
       // Handle apply instructions as if they are inout/indirect use.
-      LLVM_FALLTHROUGH;
+      // LLVM_FALLTHROUGH;
     case PMOUseKind::IndirectIn:
-    case PMOUseKind::InOutUse: {
-      assert(isa<ApplyInst>(u.Inst));
+    case PMOUseKind::InOutUse:
+    case PMOUseKind::Escape:
+      return false; // These do prevent removal.
+                    //      /assert(isa<ApplyInst>(u.Inst));
       // These uses can be considered as point stores as long as all of the
       // following holds:
       // 1. The apply instruction calls a constant_evaluable function. This
@@ -2514,36 +2517,35 @@ static bool hasOnlyStoreUses(ArrayRef<PMOMemoryUse> uses) {
       // have value semantics. Therefore, it is not possible to observe the
       // effects of the constant-evaluable function on any value apart from
       // its indirect/direct results.
-      ApplyInst *apply = cast<ApplyInst>(u.Inst);
-      SILFunction *callee = apply->getCalleeFunction();
-      if (!callee || !isConstantEvaluable(callee))
-        return false;
-      // If the apply's direct results are used, bail out. It means the value
-      // stored in TheMemory could be read.
-      if (!apply->use_empty()) {
-        return false;
-      }
-      // If the call has other outputs, bail out as TheMemory could be loaded
-      // through them in the caller.
-      unsigned numInOutArguments = getNumInOutArguments(apply);
-      bool hasOtherIndirectOutputs = false;
-      if (u.Kind == Initialization) {
-        hasOtherIndirectOutputs =
-            apply->getNumIndirectResults() > 1 || numInOutArguments > 0;
-      } else if (u.Kind == PMOUseKind::IndirectIn) {
-        hasOtherIndirectOutputs =
-            apply->getNumIndirectResults() > 0 || numInOutArguments > 0;
-      } else if (u.Kind == PMOUseKind::InOutUse) {
-        hasOtherIndirectOutputs =
-            apply->getNumIndirectResults() > 0 || numInOutArguments > 1;
-      }
-      if (hasOtherIndirectOutputs) {
-        return false;
-      }
-      continue;
-    }
-    case PMOUseKind::Escape:
-      return false; // These do prevent removal.
+      //      ApplyInst *apply = cast<ApplyInst>(u.Inst);
+      //      SILFunction *callee = apply->getCalleeFunction();
+      //      if (!callee || !isConstantEvaluable(callee))
+      //        return false;
+      //      // If the apply's direct results are used, bail out. It means the
+      //      value
+      //      // stored in TheMemory could be read.
+      //      if (!apply->use_empty()) {
+      //        return false;
+      //      }
+      //      // If the call has other outputs, bail out as TheMemory could be
+      //      loaded
+      //      // through them in the caller.
+      //      unsigned numInOutArguments = getNumInOutArguments(apply);
+      //      bool hasOtherIndirectOutputs = false;
+      //      if (u.Kind == Initialization) {
+      //        hasOtherIndirectOutputs =
+      //            apply->getNumIndirectResults() > 1 || numInOutArguments > 0;
+      //      } else if (u.Kind == PMOUseKind::IndirectIn) {
+      //        hasOtherIndirectOutputs =
+      //            apply->getNumIndirectResults() > 0 || numInOutArguments > 0;
+      //      } else if (u.Kind == PMOUseKind::InOutUse) {
+      //        hasOtherIndirectOutputs =
+      //            apply->getNumIndirectResults() > 0 || numInOutArguments > 1;
+      //      }
+      //      if (hasOtherIndirectOutputs) {
+      //        return false;
+      //      }
+      //      continue;
     }
   }
   return true;
@@ -2584,10 +2586,10 @@ bool AllocOptimize::tryToRemoveDeadAllocation(InstructionDeleter &deleter) {
   // If we have only (logical) stores to TheMemory, the alloc stack is dead and
   // the stored values can be destroyed at the places where they are stored.
   // This is handled first, and later handle the case of load promotion.
-  if (TheMemory->getFunction()->hasOwnership() && hasOnlyStoreUses(Uses)) {
-    deleter.forceDeleteUsersAndFixLifetimes(TheMemory);
-    return true;
-  }
+  //  if (TheMemory->getFunction()->hasOwnership() && hasOnlyStoreUses(Uses)) {
+  //    deleter.forceDeleteUsersAndFixLifetimes(TheMemory);
+  //    return true;
+  //  }
 
   SmallVector<SILInstruction *, 8> loadTakeList;
   // Check the uses list to see if there are any non-store uses left over after
