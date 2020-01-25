@@ -1061,36 +1061,86 @@ static bool checkOSLogMessageIsConstant(SingleValueInstruction *osLogMessage,
 
 using CallbackTy = llvm::function_ref<void(SILInstruction *)>;
 
-static void deleteConstantEvaluableCall(ApplyInst *inst,
-                                        InstructionDeleter &deleter,
-                                        CallbackTy callback) {
-  if (!llvm::all_of(inst->getUses(), [&](Operand *use) {
-        return isa<DestroyValueInst>(use->getUser());
-      })) {
-    // We can't delete this constant evaluable call.
-    return;
+/// Return true iff the given address-valued instruction has only stores into
+/// it. This function tests for the conditions under which a call, that was
+/// constant evaluates, that writes into the address-valued instruction can be
+/// considered as a point store and exploits it to remove such uses.
+/// TODO: eventually some of this logic can be moved to
+/// PredictableDeadAllocElimination pass, but the assumption about constant
+/// evaluable functions taking inout parameter is not easily generalizable to
+/// arbitrary non-constant contexts where the function could be used. The logic
+/// here is relying on the fact that the constant_evaluable function has been
+/// evaluated and therefore doesn't have any side-effects (expect on writable
+/// parameters namely, @inout and @out).
+static bool hasOnlyStoreUses(SingleValueInstruction *addressInst) {
+  for (Operand *use : addressInst->getUses()) {
+    SILInstruction *user = use->getUser();
+    switch (user->getKind()) {
+    default:
+      return false;
+    case SILInstructionKind::BeginAccessInst: {
+      if (!hasOnlyStoreUses(cast<BeginAccessInst>(user)))
+        return false;
+      continue;
+    }
+    case SILInstructionKind::StoreInst: {
+      // For now, ignore assigns as we need to destroy_addr its dest if it
+      // is deleted.
+      if (cast<StoreInst>(user)->getOwnershipQualifier() ==
+          StoreOwnershipQualifier::Assign)
+        return false;
+      continue;
+    }
+    case SILInstructionKind::EndAccessInst:
+    case SILInstructionKind::DestroyAddrInst:
+    case SILInstructionKind::InjectEnumAddrInst:
+    case SILInstructionKind::DeallocStackInst:
+      continue;
+    case SILInstructionKind::ApplyInst: {
+      // Note that since we are looking at an alloc_stack used in the
+      // OSLogMessage instance, a constant_evaluable call that should have been
+      // evaluated successfully by the evaluator. Otherwise, we would have
+      // reported an error earlier. Therefore, all values manipulated by such
+      // a call are symbolic constants and it would not have any global
+      // side-effects. The following logic relies on this property.
+      ApplyInst *apply = cast<ApplyInst>(user);
+      SILFunction *callee = apply->getCalleeFunction();
+      if (!callee || !isConstantEvaluable(callee) || !apply->use_empty())
+        return false;
+      // If there are other indirect writable results for the call other
+      // the alloc_stack we are checking, we don't know if it is dead or not
+      // Therefore bail out.
+      unsigned numWritableArguments =
+          getNumInOutArguments(apply) + apply->getNumIndirectResults();
+      if (numWritableArguments > 1)
+        return false;
+      continue;
+    }
+    }
   }
-  while (!inst->use_empty()) {
-    auto ui = inst->use_begin();
-    deleter.forceDelete(ui->getUser(), callback);
-  }
-  deleter.forceDeleteAndFixLifetimes(inst, callback);
+  return true;
 }
 
-static void deleteAllocStackIfDead(AllocStackInst *inst,
-                                   InstructionDeleter &deleter,
-                                   CallbackTy callback) {
-  if (!llvm::all_of(inst->getUses(), [&](Operand *use) {
-        SILInstruction *user = use->getUser();
-        return isa<StoreInst>(user) || isa<DeallocStackInst>(user) ||
-               isa<DestroyAddrInst>(user) || isa<InjectEnumAddrInst>(user);
-      })) {
-    return;
-  }
-  while (!inst->use_empty()) {
-    auto *user = inst->use_begin()->getUser();
+/// Delete the given alloc_stack instruction by deleting the users of the
+/// instruction, in case the user is a begin_apply recursively delete the users
+/// of begin_apply. This will also fix the lifetimes of the deleted instructions
+/// whenever possible.
+static void forceDeleteAllocStack(SingleValueInstruction *inst,
+                                  InstructionDeleter &deleter,
+                                  CallbackTy callback) {
+  SmallVector<SILInstruction *, 8> users;
+  for (Operand *use : inst->getUses())
+    users.push_back(use->getUser());
+
+  for (SILInstruction *user : users) {
+    if (isIncidentalUse(user))
+      continue;
     if (isa<DestroyAddrInst>(user)) {
       deleter.forceDelete(user, callback);
+      continue;
+    }
+    if (isa<BeginAccessInst>(user)) {
+      forceDeleteAllocStack(cast<BeginAccessInst>(user), deleter, callback);
       continue;
     }
     deleter.forceDeleteAndFixLifetimes(user, callback);
@@ -1098,32 +1148,34 @@ static void deleteAllocStackIfDead(AllocStackInst *inst,
   deleter.forceDelete(inst, callback);
 }
 
+/// Recursively visit users of \c inst  (including \c inst)and delete
+/// instructions that are dead. Invoke the \c callback on instructions that are
+/// deleted.
+static void recursivelyDeleteUsersIfDead(SILInstruction *inst,
+                                         InstructionDeleter &deleter,
+                                         CallbackTy callback) {
+  SmallVector<SILInstruction *, 8> users;
+  for (SILValue result : inst->getResults())
+    for (Operand *use : result->getUses())
+      users.push_back(use->getUser());
+
+  for (SILInstruction *user : users)
+    recursivelyDeleteUsersIfDead(user, deleter, callback);
+  deleter.deleteIfDead(inst, callback);
+}
+
+/// Delete \c inst , if it is dead, along with its dead users and invoke the
+/// callback whever an instruction is deleted.
 static void deleteInstructionWithUsersAndFixLifetimes(
     SILInstruction *inst, InstructionDeleter &deleter, CallbackTy callback) {
-  SmallVector<SILInstruction *, 8> users;
-  for (SILValue result : inst->getResults()) {
-    for (Operand *use : result->getUses()) {
-      users.push_back(use->getUser());
-    }
-  }
-  for (SILInstruction *user : users) {
-    // Recursively zap transitive users.
-    deleteInstructionWithUsersAndFixLifetimes(user, deleter, callback);
-  }
-  // We can eliminate alloc_stack that has only stores and destroy addresses.
+  // If this is an alloc_stack, it can be eliminated as long as it is only
+  // stored into or destroyed.
   if (AllocStackInst *allocStack = dyn_cast<AllocStackInst>(inst)) {
-    deleteAllocStackIfDead(allocStack, deleter, callback);
+    if (hasOnlyStoreUses(allocStack))
+      forceDeleteAllocStack(allocStack, deleter, callback);
     return;
   }
-  // Force delete constant evaluable calls, as it should have folded.
-  if (ApplyInst *apply = dyn_cast<ApplyInst>(inst)) {
-    SILFunction *callee = apply->getCalleeFunction();
-    if (callee && isConstantEvaluable(callee)) {
-      deleteConstantEvaluableCall(apply, deleter, callback);
-      return;
-    }
-  }
-  deleter.deleteIfDead(inst, callback);
+  recursivelyDeleteUsersIfDead(inst, deleter, callback);
 }
 
 /// Try to dead-code eliminate the OSLogMessage instance \c oslogMessage passed
@@ -1132,11 +1184,8 @@ static void deleteInstructionWithUsersAndFixLifetimes(
 /// implementation of the os log overlay is incorrect. Therefore emit
 /// diagnostics in such cases.
 static void tryEliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
-  // Try deleting oslogMessage and all its forward and backward data
-  // dependencies. Note that we force delete constant_evaluable calls as either
-  // they should have been folded or an error should have been generated
-  // earlier.
   InstructionDeleter deleter;
+  // List of instruction which are possibly dead.
   SmallVector<SILInstruction *, 4> worklist = {oslogMessage};
   // Set of all deleted instructions.
   SmallPtrSet<SILInstruction *, 4> deletedInstructions;
@@ -1145,10 +1194,11 @@ static void tryEliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
     SILInstruction *inst = worklist[startIndex++];
     if (deletedInstructions.count(inst))
       continue;
-    // Add operands of all deleted instructions to the worklist so that they
-    // can be recursively deleted, if possible.
+    // Try deleting instruction along with its users.
     deleteInstructionWithUsersAndFixLifetimes(
         inst, deleter, [&](SILInstruction *deadInst) {
+          // Add operands of all deleted instructions to the worklist so that
+          // they can be recursively deleted, if possible.
           for (Operand &operand : deadInst->getAllOperands()) {
             if (SILInstruction *definingInstruction =
                     operand.get()->getDefiningInstruction()) {

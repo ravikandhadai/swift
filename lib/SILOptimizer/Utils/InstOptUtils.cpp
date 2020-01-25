@@ -218,10 +218,9 @@ unsigned swift::getNumInOutArguments(FullApplySite applySite) {
 
 /// Return true iff there are no arguments to the call that can be written by
 /// the callee.
-// static bool mayOnlyReadOrDestroySILArguments(FullApplySite applySite) {
-//  return !applySite.hasIndirectSILResults() &&
-//  !getNumInOutArguments(applySite);
-//}
+static bool mayOnlyReadOrDestroySILArguments(FullApplySite applySite) {
+  return !applySite.hasIndirectSILResults() && !getNumInOutArguments(applySite);
+}
 
 /// Return true iff the \p applySite calls a constant evaluable function and
 /// it is read and destroy only, which means that the call can do only the
@@ -232,18 +231,17 @@ unsigned swift::getNumInOutArguments(FullApplySite applySite) {
 ///   (4) The call may use assertions, which traps at runtime on failure.
 /// Essentially, these are calls whose "effect" is visible only in their return
 /// value or through the parameters that are destroyed.
-// static bool isReadOrDestroyOnlyConstantEvaluableCall(FullApplySite applySite)
-// {
-//  assert(applySite);
-//  SILFunction *callee = applySite.getCalleeFunction();
-//  if (!callee || !isConstantEvaluable(callee)) {
-//    return false;
-//  }
-//  // Here all effects of the call is restricted to its writable SIL arguments.
-//  // If there are no writable SIL arguments, the call must be read and destroy
-//  // only.
-//  return mayOnlyReadOrDestroySILArguments(applySite);
-//}
+static bool isReadOrDestroyOnlyConstantEvaluableCall(FullApplySite applySite) {
+  assert(applySite);
+  SILFunction *callee = applySite.getCalleeFunction();
+  if (!callee || !isConstantEvaluable(callee)) {
+    return false;
+  }
+  // Here all effects of the call is restricted to its writable SIL arguments.
+  // If there are no writable SIL arguments, the call must be read and destroy
+  // only.
+  return mayOnlyReadOrDestroySILArguments(applySite);
+}
 
 /// A scope-affecting instruction is an instruction which may end the scope of
 /// its operand or may produce scoped results that require cleaning up. E.g.
@@ -308,30 +306,25 @@ static bool isScopeAffectingInstructionDead(SILInstruction *inst) {
     // explicitly.
     return true;
   }
-    //  case SILInstructionKind::ApplyInst: {
-    //    // The following property holds for constant evaluable functions:
-    //    // 1. they do not create objects having deinitializers with global
-    //    // side effects.
-    //    // 2. they do not use global variables and will only use objects
-    //    reachable
-    //    // from parameters.
-    //    // The above two properties imply that a value returned by a constant
-    //    // evaluable function either does not have a deinitializer with global
-    //    side
-    //    // effects, or if it does, the deinitializer that has the global side
-    //    effect
-    //    // must be that of a parameter.
-    //    //
-    //    // A read-and-destroy-only constant evaluable call only reads and/or
-    //    // destroys its parameters. Therefore, if its return value is used
-    //    only in
-    //    // destroys, the constant evaluable call can be removed provided the
-    //    // parameters it consumes are explicitly destroyed at the call site,
-    //    which
-    //    // is taken care of by the function: \c deleteInstruction
-    //    FullApplySite applySite(cast<ApplyInst>(inst));
-    //    return isReadOrDestroyOnlyConstantEvaluableCall(applySite);
-    //  }
+  case SILInstructionKind::ApplyInst: {
+    // The following property holds for constant evaluable functions:
+    // 1. they do not create objects having deinitializers with global
+    // side effects.
+    // 2. they do not use global variables and will only use objects reachable
+    // from parameters.
+    // The above two properties imply that a value returned by a constant
+    // evaluable function either does not have a deinitializer with global side
+    // effects, or if it does, the deinitializer that has the global side effect
+    // must be that of a parameter.
+    //
+    // A read-and-destroy-only constant evaluable call only reads and/or
+    // destroys its parameters. Therefore, if its return value is used only in
+    // destroys, the constant evaluable call can be removed provided the
+    // parameters it consumes are explicitly destroyed at the call site, which
+    // is taken care of by the function: \c deleteInstruction
+    FullApplySite applySite(cast<ApplyInst>(inst));
+    return isReadOrDestroyOnlyConstantEvaluableCall(applySite);
+  }
   default: {
     return false;
   }
@@ -371,64 +364,65 @@ static void destroyConsumedOperandOfDeadInst(Operand &operand) {
   assert(!isEndOfScopeMarker(deadInst) && !isa<DestroyValueInst>(deadInst) &&
          !isa<DestroyAddrInst>(deadInst) &&
          "lifetime ending instruction is deleted without its operand");
-  if (operandValue->getType().isAddress()) {
-    bool destroyOperand = false;
-    switch (deadInst->getKind()) {
-    case SILInstructionKind::LoadInst: {
-      LoadInst *loadInst = cast<LoadInst>(deadInst);
-      destroyOperand =
-          loadInst->getOwnershipQualifier() == LoadOwnershipQualifier::Take;
-      break;
-    }
-    case SILInstructionKind::StoreInst: {
-      StoreInst *storeInst = cast<StoreInst>(deadInst);
-      assert(operandValue == storeInst->getDest());
-      destroyOperand =
-          storeInst->getOwnershipQualifier() == StoreOwnershipQualifier::Assign;
-      break;
-    }
-    case SILInstructionKind::CopyAddrInst: {
-      CopyAddrInst *copyAddr = cast<CopyAddrInst>(deadInst);
-      if (copyAddr->getSrc() == operandValue && copyAddr->isTakeOfSrc())
-        destroyOperand = true;
-      if (copyAddr->getDest() == operandValue &&
-          !copyAddr->isInitializationOfDest())
-        destroyOperand = true;
-      break;
-    }
-    case SILInstructionKind::ApplyInst: {
-      ApplyInst *deadApply = cast<ApplyInst>(deadInst);
-      Optional<unsigned> argumentIndex =
-          deadApply->getArgumentIndexForOperandIndex(
-              operand.getOperandNumber());
-      // If this operand is not a call argument, its lifetime will not be
-      // affected.
-      if (!argumentIndex.hasValue())
-        break;
-      auto substConv = deadApply->getSubstCalleeConv();
-      auto numIndirectResults = substConv.getNumIndirectSILResults();
-      if (argumentIndex.getValue() < numIndirectResults) {
-        // No need to fix lifetime of indirect results.
-        break;
-      }
-      auto paramIndex = argumentIndex.getValue() - numIndirectResults;
-      auto params = substConv.getParameters();
-      assert(paramIndex < params.size() && "argument index greater than "
-                                           "number of parameters");
-      auto paramConvention = params[paramIndex].getConvention();
-      if (paramConvention == ParameterConvention::Indirect_In)
-        destroyOperand = true;
-      break;
-    }
-    default:
-      break;
-    }
-    if (destroyOperand) {
-      SILBuilderWithScope builder(deadInst);
-      builder.createDestroyAddr(deadInst->getLoc(), operandValue);
-    }
-    return;
-  }
+  //  if (operandValue->getType().isAddress()) {
+  //    bool destroyOperand = false;
+  //    switch (deadInst->getKind()) {
+  //    case SILInstructionKind::LoadInst: {
+  //      LoadInst *loadInst = cast<LoadInst>(deadInst);
+  //      destroyOperand =
+  //          loadInst->getOwnershipQualifier() == LoadOwnershipQualifier::Take;
+  //      break;
+  //    }
+  //    case SILInstructionKind::StoreInst: {
+  //      StoreInst *storeInst = cast<StoreInst>(deadInst);
+  //      assert(operandValue == storeInst->getDest());
+  //      destroyOperand =
+  //          storeInst->getOwnershipQualifier() ==
+  //          StoreOwnershipQualifier::Assign;
+  //      break;
+  //    }
+  //    case SILInstructionKind::CopyAddrInst: {
+  //      CopyAddrInst *copyAddr = cast<CopyAddrInst>(deadInst);
+  //      if (copyAddr->getSrc() == operandValue && copyAddr->isTakeOfSrc())
+  //        destroyOperand = true;
+  //      if (copyAddr->getDest() == operandValue &&
+  //          !copyAddr->isInitializationOfDest())
+  //        destroyOperand = true;
+  //      break;
+  //    }
+  //    case SILInstructionKind::ApplyInst: {
+  //      ApplyInst *deadApply = cast<ApplyInst>(deadInst);
+  //      Optional<unsigned> argumentIndex =
+  //          deadApply->getArgumentIndexForOperandIndex(
+  //              operand.getOperandNumber());
+  //      // If this operand is not a call argument, its lifetime will not be
+  //      // affected.
+  //      if (!argumentIndex.hasValue())
+  //        break;
+  //      auto substConv = deadApply->getSubstCalleeConv();
+  //      auto numIndirectResults = substConv.getNumIndirectSILResults();
+  //      if (argumentIndex.getValue() < numIndirectResults) {
+  //        // No need to fix lifetime of indirect results.
+  //        break;
+  //      }
+  //      auto paramIndex = argumentIndex.getValue() - numIndirectResults;
+  //      auto params = substConv.getParameters();
+  //      assert(paramIndex < params.size() && "argument index greater than "
+  //                                           "number of parameters");
+  //      auto paramConvention = params[paramIndex].getConvention();
+  //      if (paramConvention == ParameterConvention::Indirect_In)
+  //        destroyOperand = true;
+  //      break;
+  //    }
+  //    default:
+  //      break;
+  //    }
+  //    if (destroyOperand) {
+  //      SILBuilderWithScope builder(deadInst);
+  //      builder.createDestroyAddr(deadInst->getLoc(), operandValue);
+  //    }
+  //    return;
+  //  }
 
   ValueOwnershipKind operandOwnershipKind = operandValue.getOwnershipKind();
   UseLifetimeConstraint lifetimeConstraint =
