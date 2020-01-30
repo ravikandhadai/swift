@@ -354,22 +354,44 @@ static bool unrollForEach(ArrayLiteralInfo arrayLiteralInfo,
   //      and pass the alloc_stack to the calls. The alloc_stack must be
   //      deallocated in the errorBB as well as normalBB of the original
   //      forEachCall.
-  //   2. Since the body closure is throwing, we need to a new of basic
+  //   2. Since the body closure may throw, we need to create new of basic
   //      blocks for each unrolling of the loop.
+
+  // Create alloc_stack to hold the array elements.
   SILBuilderWithScope builder(forEachCall);
-  for (uint64_t i = 0; i < arrayLiteralInfo.getElementSize(); i++) {
+  SILType arrayElementType = arrayLiteralInfo.getElement(0)->getType();
+  SILValue allocStack = builder.createAllocStack(forEachLoc, arrayElementType);
+
+  // Iterate through the array elements in the reverse order and create try
+  // applies of the body closure.
+  SILBasicBlock *nextNormalBB = forEachCall->getNormalBB();
+  SILBasicBlock *errorBB = forEachCall->getErrorBB();
+
+  // Dealloc the stack in normalBB and also in errorBB.
+  SILBuilderWithScope(&nextNormalBB->front())
+    .createDeallocStack(forEachLoc, allocStack);
+  SILBuilderWithScope (&nextNormalBB->front())
+    .createDeallocStack(forEachLoc, allocStack);
+
+  for (uint64_t i = arrayLiteralInfo.getElementSize() - 1; i >= 0 ; i--) {
+    // Create a basic block and a builder to insert at the end of the block.
+    SILBasicBlock *currentBB = fun->createBasicBlockBefore(nextNormalBB);
+    SILBuilderWithScope builder(currentBB, forEachCall);
+
+    // store_borrow the array element into the alloc_stack. Note tha the
+    // element is guaranteed to be alive for the during of the forEach (as it
+    // is stored in the array).
+    SILValue element = arrayLiteralInfo.getElement(i);
+    builder.createStoreBorrow(forEachLoc, element, allocStack);
+
     // TODO: substitution map must be empty, is any other option possible?
-    builder.createApply(forEachLoc, unabstractedBodyClosure, SubstitutionMap(),
-                        arrayLiteralInfo.getElement(i));
+    // TODO: can we have all instructions using same errorBB? probably not.
+    builder.createTryApply(forEachLoc, forEachBodyClosure, SubstitutionMap(),
+                           allocStack, nextNormalBB, errorBB);
+    nextNormalBB = currentBB;
   }
-  // Create an unconditional branch to normalBB. Note that the normalBB takes
-  // an empty tuple as an argument. Therefore, synthesize the empty tuple and
-  // pass it in.
-  SILValue emptyTuple =
-    builder.createTuple(forEachLoc,
-                        fun->getLoweredType(astContext.TheEmptyTupleType),
-                        ArrayRef<SILValue>());
-  builder.createBranch(forEachLoc, forEachCall->getNormalBB(), emptyTuple);
+  // Create an unconditional branch to nextNormalBB in place of the forEachCall.
+  builder.createBranch(forEachLoc, nextNormalBB);
   // Remove the forEach and clean up dead instructions.
   InstructionDeleter deleter;
   deleter.forceDelete(forEachCall);
