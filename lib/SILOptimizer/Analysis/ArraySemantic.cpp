@@ -170,6 +170,7 @@ ArrayCallKind swift::ArraySemanticsCall::getKind() const {
                   ArrayCallKind::kArrayPropsIsNativeTypeChecked)
             .StartsWith("array.init", ArrayCallKind::kArrayInit)
             .Case("array.uninitialized", ArrayCallKind::kArrayUninitialized)
+            .Case("array.uninitialized_intrinsic", ArrayCallKind::kArrayUninitializedIntrinsic)
             .Case("array.check_subscript", ArrayCallKind::kCheckSubscript)
             .Case("array.check_index", ArrayCallKind::kCheckIndex)
             .Case("array.get_count", ArrayCallKind::kGetCount)
@@ -623,7 +624,20 @@ SILValue swift::ArraySemanticsCall::getInitializationCount() const {
 }
 
 SILValue swift::ArraySemanticsCall::getArrayValue() const {
-  if (getKind() == ArrayCallKind::kArrayUninitialized) {
+  ArrayCallKind arrayCallKind = getKind();
+  if (arrayCallKind == ArrayCallKind::kArrayUninitialized ||
+      arrayCallKind == ArrayCallKind::kArrayUninitializedIntrinsic) {
+    if (SemanticsCall->getFunction()->hasOwnership()) {
+      Operand *singleUse = SemanticsCall->getSingleUse();
+      if (!singleUse)
+        return SILValue();
+      if (DestructureTupleInst *destructTuple =
+            dyn_cast<DestructureTupleInst>(singleUse->getUser())) {
+        return destructTuple->getResult(0);
+      }
+      return SILValue();
+    }
+    // Handle non-OSSA here.
     TupleExtractInst *ArrayDef = nullptr;
     for (auto *Op : SemanticsCall->getUses()) {
       auto *TupleElt = dyn_cast<TupleExtractInst>(Op->getUser());
@@ -652,7 +666,20 @@ SILValue swift::ArraySemanticsCall::getArrayValue() const {
 }
 
 SILValue swift::ArraySemanticsCall::getArrayElementStoragePointer() const {
-  if (getKind() == ArrayCallKind::kArrayUninitialized) {
+  ArrayCallKind arrayCallKind = getKind();
+  if (arrayCallKind == ArrayCallKind::kArrayUninitialized ||
+      arrayCallKind == ArrayCallKind::kArrayUninitializedIntrinsic) {
+    if (SemanticsCall->getFunction()->hasOwnership()) {
+      Operand *singleUse = SemanticsCall->getSingleUse();
+      if (!singleUse)
+        return SILValue();
+      if (DestructureTupleInst *destructTuple =
+            dyn_cast<DestructureTupleInst>(singleUse->getUser())) {
+        return destructTuple->getResult(1);
+      }
+      return SILValue();
+    }
+    // Handle non-OSSA here.
     TupleExtractInst *ArrayElementStorage = nullptr;
     for (auto *Op : SemanticsCall->getUses()) {
       auto *TupleElt = dyn_cast<TupleExtractInst>(Op->getUser());

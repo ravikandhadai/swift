@@ -314,6 +314,7 @@ static bool isNonMutatingArraySemanticCall(SILInstruction *Inst) {
   case ArrayCallKind::kWithUnsafeMutableBufferPointer:
   case ArrayCallKind::kArrayInit:
   case ArrayCallKind::kArrayUninitialized:
+  case ArrayCallKind::kArrayUninitializedIntrinsic:
   case ArrayCallKind::kAppendContentsOf:
   case ArrayCallKind::kAppendElement:
     return false;

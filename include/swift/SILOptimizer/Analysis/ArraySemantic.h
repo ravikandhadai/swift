@@ -41,7 +41,8 @@ enum class ArrayCallKind {
   // a function, and it has a self parameter, make sure that it is defined
   // before this comment.
   kArrayInit,
-  kArrayUninitialized
+  kArrayUninitialized,
+  kArrayUninitializedIntrinsic
 };
 
 /// Wrapper around array semantic calls.
