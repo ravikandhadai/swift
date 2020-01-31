@@ -403,8 +403,9 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
       arrayLiteralInfo.getArrayValue().getDefiningInstruction();
   for (uint64_t i = 0; i < arrayLiteralInfo.getElementSize(); i++) {
     SILValue element = arrayLiteralInfo.getElement(i);
-    SILValue copy = SILBuilderWithScope(copyInsertionPoint)
-                        .createCopyValue(copyInsertionPoint->getLoc(), element);
+    SILValue copy =
+        SILBuilderWithScope(copyInsertionPoint)
+            .emitCopyValueOperation(copyInsertionPoint->getLoc(), element);
     elementCopies.push_back(copy);
   }
 
@@ -414,7 +415,7 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
   for (DestroyValueInst *destroy : arrayLiteralInfo.getDestroys()) {
     SILBuilderWithScope destroyBuilder(destroy);
     for (SILValue element : elementCopies) {
-      destroyBuilder.createDestroyValue(destroy->getLoc(), element);
+      destroyBuilder.emitDestroyValueOperation(destroy->getLoc(), element);
     }
   }
 
@@ -468,13 +469,21 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
     // Borrow the elementCopy and store it in the allocStack. Note that the
     // element's copy is guaranteed to be alive until the array is alive.
     // Therefore it is okay to use a borrow here.
-    SILValue borrowedElem =
-        unrollBuilder.createBeginBorrow(forEachLoc, elementCopy);
-    unrollBuilder.createStoreBorrow(forEachLoc, borrowedElem, allocStack);
-    unrollBuilder.createEndBorrow(forEachLoc, borrowedElem);
+    if (arrayElementType.isTrivial(*fun)) {
+      unrollBuilder.createStore(forEachLoc, elementCopy, allocStack,
+                                StoreOwnershipQualifier::Trivial);
+    } else {
+      SILValue borrowedElem =
+          unrollBuilder.createBeginBorrow(forEachLoc, elementCopy);
+      unrollBuilder.createStoreBorrow(forEachLoc, borrowedElem, allocStack);
+      unrollBuilder.createEndBorrow(forEachLoc, borrowedElem);
+    }
     // Create an error target for the try-apply.
     SILBasicBlock *errorTarget = errorTargetGenerator(nextNormalBB);
-    // TODO: substitution map must be empty, is any other option possible?
+    // Note that the substitution map must be empty as we are not supporting
+    // elements of address-only type. All elements in the array are guaranteed
+    // to beloadable. TODO: this can be generalized to address-only types
+    // as well.
     unrollBuilder.createTryApply(forEachLoc, forEachBodyClosure,
                                  SubstitutionMap(), allocStack, nextNormalBB,
                                  errorTarget);
