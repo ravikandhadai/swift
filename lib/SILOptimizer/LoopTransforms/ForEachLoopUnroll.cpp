@@ -183,6 +183,22 @@ static TryApplyInst *forEachUseOfArray(SILInstruction *user, SILValue array) {
   return apply;
 }
 
+// TODO: move this to instruction deleter?
+static void recursivelyDeleteInstructionAndUses(SILInstruction *inst,
+                                                InstructionDeleter &deleter) {
+  for (SILValue result : inst->getResults()) {
+    while (!result->use_empty()) {
+      SILInstruction *user = result->use_begin()->getUser();
+      recursivelyDeleteInstructionAndUses(user, deleter);
+    }
+  }
+  if (isIncidentalUse(inst) || isa<DestroyValueInst>(inst)) {
+    deleter.forceDelete(inst);
+    return;
+  }
+  deleter.forceDeleteAndFixLifetimes(inst);
+}
+
 /// Utility class for storing information about array literal initializations and
 /// forEach operations on the array .
 ///
@@ -199,41 +215,53 @@ class ArrayLiteralInfo {
   llvm::DenseMap<uint64_t, SILValue> elementValueMap;
 
   /// List of Sequence.forEach calls in which the array is used.
-  SmallVector<TryApplyInst *, 4> forEachCalls;
+  SmallSetVector<TryApplyInst *, 4> forEachCalls;
 
   /// Indicates whether the array may be written/updated after initialization.
+  /// The presence of such uses will prevent the forEach loops from getting
+  /// unrolled.
   bool mayBeWritten = false;
+
+  /// Indicates whether the array could be used in read-only operations such
+  /// array.count, subscript etc. apart from the forEach, destroy and incidental
+  /// uses. The presence of such uses will block the array from being deleted
+  /// once the forEach calls are unrolled.
+  bool hasNonForEachReadOnlyUses = false;
+
+  /// destroy_value instructions of the array.
+  SmallVector<DestroyValueInst *, 4> destroys;
 
   void classifyUsesOfArray(SILValue arrayValue) {
     for (Operand *operand : arrayValue->getUses()) {
       auto *user = operand->getUser();
-      // Ignore reference counting instruction.
-      if (isa<RefCountingInst>(user) || isa<DestroyValueInst>(user) ||
-          isIncidentalUse(user))
+      if (isIncidentalUse(user))
         continue;
-
-      // Ignore fixLifetime uses of the array. Note this may not be subsumed
-      // by isIncidentalUse check as the array could be passed indirectly.
+      // Ignore fixLifetime uses of the array. Note this will not be subsumed
+      // by isIncidentalUse check as the array would be passed indirectly.
       if (fixLifetimeUseOfArray(user, arrayValue))
         continue;
-
       // Check if this is a forEach call on an array. This also uses an indirect
       // calling convention and therefore must be a store use of arrayVal.
       if (TryApplyInst *forEachCall = forEachUseOfArray(user, arrayValue)) {
-        forEachCalls.push_back(forEachCall);
+        forEachCalls.insert(forEachCall);
         continue;
       }
-
       // Recursively classify begin borrow uses.
       if (BeginBorrowInst *beginBorrow = dyn_cast<BeginBorrowInst>(user)) {
         classifyUsesOfArray(beginBorrow);
         continue;
       }
-
-      // Set mayBeWritten to true if the user could modify the array. Note that
-      // mutation of the array elements is not a problem.
+      if (auto *destroyValue = dyn_cast<DestroyValueInst>(user)) {
+        destroys.push_back(destroyValue);
+        continue;
+      }
+      // Set mayBeWritten to true if the user could modify the array. (Note that
+      // mutation of the array elements can be ignored). Otherwise, set
+      // hasNonForEachReadOnlyUses to true.
       ArraySemanticsCall arrayOp(user);
-      if (!arrayOp.doesNotChangeArray()) {
+      if (arrayOp.doesNotChangeArray()) {
+        hasNonForEachReadOnlyUses = true;
+      } else {
         mayBeWritten = true;
       }
     }
@@ -251,12 +279,6 @@ public:
                                                semantics::ARRAY_UNINITIALIZED_INTRINSIC);
     if (!arrayAllocateUninitCall)
       return false;
-
-//    SILFunction *callee = apply->getCalleeFunction();
-//    if (!callee ||
-//        !callee->hasSemanticsAttr(semantics::ARRAY_UNINITIALIZED_INTRINSIC))
-//      return false;
-
     arrayValue = arrayAllocateUninitCall.getArrayValue();
     if (!arrayValue)
       return false;
@@ -285,7 +307,7 @@ public:
 
   ArrayRef<TryApplyInst *> getForEachUses() {
     assert(arrayValue);
-    return forEachCalls;
+    return ArrayRef<TryApplyInst *>(forEachCalls.begin(), forEachCalls.end());
   }
 
   uint64_t getElementSize() {
@@ -297,41 +319,66 @@ public:
     assert(arrayValue);
     return elementValueMap[index];
   }
+
+  ArrayRef<DestroyValueInst *> getDestroys() {
+    assert(arrayValue);
+    return destroys;
+  }
+
+  void removeForEachCall(TryApplyInst *forEachCall) {
+    assert(arrayValue);
+    if (!forEachCalls.remove(forEachCall))
+      return; // If the forEach call is already removed, do nothing.
+    // Force delete the alloc_stack of the forEach call and its uses.
+    AllocStackInst *allocStack =
+        dyn_cast<AllocStackInst>(forEachCall->getArgument(1));
+    assert(allocStack);
+    InstructionDeleter deleter;
+    recursivelyDeleteInstructionAndUses(allocStack, deleter);
+    deleter.cleanUpDeadInstructions();
+  }
+
+  bool deleteArrayValueIfDead(InstructionDeleter &deleter) {
+    // If the array has forEach calls, or has nonForEach uses or may be written,
+    // it is not dead and cannot be cleaned up.
+    if (!forEachCalls.empty() || hasNonForEachReadOnlyUses || mayBeWritten)
+      return false;
+    if (!getDebugUses(arrayValue).empty() &&
+        arrayValue->getFunction()->getEffectiveOptimizationMode() <=
+            OptimizationMode::NoOptimization) {
+      // Don't delete the array with debug uses in Onone.
+      return false;
+    }
+    recursivelyDeleteInstructionAndUses(arrayValue->getDefiningInstruction(),
+                                        deleter);
+    return true;
+  }
 };
 
-// Strip through convert functions and reabstraction thunks iteratively.
-static SILValue lookThroughThunksAndConvertFunction(SILValue closure) {
-  SILValue currVal = closure;
-  while (true) {
-    if (isa<ConvertFunctionInst>(currVal)) {
-      currVal = cast<ConvertFunctionInst>(currVal)->getOperand();
-      continue;
-    }
-    PartialApplyInst *papply = dyn_cast<PartialApplyInst>(currVal);
-    if (!papply)
-      break;
-    SILValue unabstractedValue = isPartialApplyOfReabstractionThunk(papply);
-    if (!unabstractedValue)
-      break;
-    currVal = unabstractedValue;
-  }
-  return currVal;
-}
+///// Given a SILValue \p value, find the point where a copy_value of the value
+///can be inserted. This is
+///// either the instruction following the definingInstruction of value, if
+///there is one. Otherwise, it is the
+///// first instruction of the basic block that takes the value as the
+///parameter.
+// static SILInstruction *getInsertionPointForCopyValue(SILValue value) {
+//  if (SILInstruction *definingInst = value->getDefiningInstruction()) {
+//    return &(*std::next(definingInst->getIterator()));
+//  }
+//  SILBasicBlock *parentBlock = value->getParentBlock();
+//  assert(parentBlock);
+//  return &parentBlock->front();
+//}
 
-static bool unrollForEach(ArrayLiteralInfo arrayLiteralInfo,
+static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
                           TryApplyInst *forEachCall) {
   if (arrayLiteralInfo.getElementSize() == 0) {
     // If this is an empty array, delete the forEach entirely.
-    InstructionDeleter deleter;
-    deleter.forceDelete(forEachCall);
-    deleter.cleanUpDeadInstructions();
-    return true;
+    arrayLiteralInfo.removeForEachCall(forEachCall);
+    return;
   }
 
   SILFunction *fun = forEachCall->getFunction();
-  SILModule &module = fun->getModule();
-  ASTContext &astContext = module.getASTContext();
-
   SILLocation forEachLoc = forEachCall->getLoc();
   SILValue forEachBodyClosure = forEachCall->getArgument(0);
 
@@ -339,13 +386,37 @@ static bool unrollForEach(ArrayLiteralInfo arrayLiteralInfo,
   // arguments. But, we only consider array literals where the element values
   // are "stored" into the array. That is, we only consider arrays with loadable
   // elements. Therefore, we need to create an alloc_stack to indirectly pass
-  // the elements.
+  // the elements. TO do this, create copies of the array element at the
+  // time when they are put into the array. Connect the lifetimes of the
+  // copies to the lifetime of the array. The copies would be destroyed
+  // when the array is destroyed.
   SILFunctionType *bodyClosureType =
     forEachBodyClosure->getType().getAs<SILFunctionType>();
   SILParameterInfo bodyParameterInfo = bodyClosureType->getParameters()[0];
   assert(bodyParameterInfo.getConvention() ==
          ParameterConvention::Indirect_In_Guaranteed &&
          "forEach body closure is expected to take @in_guaranteed argument");
+
+  // TODO: use the store instructions as the insertion point for this.
+  SmallVector<SILValue, 4> elementCopies;
+  SILInstruction *copyInsertionPoint =
+      arrayLiteralInfo.getArrayValue().getDefiningInstruction();
+  for (uint64_t i = 0; i < arrayLiteralInfo.getElementSize(); i++) {
+    SILValue element = arrayLiteralInfo.getElement(i);
+    SILValue copy = SILBuilderWithScope(copyInsertionPoint)
+                        .createCopyValue(copyInsertionPoint->getLoc(), element);
+    elementCopies.push_back(copy);
+  }
+
+  // Destroy all copies wherever the array is destroyed. Note that since the
+  // array doesn't have any consuming operation (except destroy) its lifetime
+  // ends only in destroys.
+  for (DestroyValueInst *destroy : arrayLiteralInfo.getDestroys()) {
+    SILBuilderWithScope destroyBuilder(destroy);
+    for (SILValue element : elementCopies) {
+      destroyBuilder.createDestroyValue(destroy->getLoc(), element);
+    }
+  }
 
   // Apply the body closure on every element of the array. There are two
   // things to handle here:
@@ -356,50 +427,74 @@ static bool unrollForEach(ArrayLiteralInfo arrayLiteralInfo,
   //      forEachCall.
   //   2. Since the body closure may throw, we need to create new of basic
   //      blocks for each unrolling of the loop.
-
-  // Create alloc_stack to hold the array elements.
-  SILBuilderWithScope builder(forEachCall);
   SILType arrayElementType = arrayLiteralInfo.getElement(0)->getType();
-  SILValue allocStack = builder.createAllocStack(forEachLoc, arrayElementType);
+  // Create alloc_stack to hold the array elements.
+  SILValue allocStack = SILBuilderWithScope(forEachCall)
+                            .createAllocStack(forEachLoc, arrayElementType);
+
+  SILBasicBlock *normalBB = forEachCall->getNormalBB();
+  SILBasicBlock *errorBB = forEachCall->getErrorBB();
+  // Error and normal blocks must be taking a phi argument.
+  assert(errorBB->getSILPhiArguments().size() == 1 &&
+         normalBB->getSILPhiArguments().size() == 1);
+  SILPhiArgument *normalArgument = normalBB->getSILPhiArguments()[0];
+  SILPhiArgument *errorArgument = errorBB->getSILPhiArguments()[0];
+
+  auto normalTargetGenerator = [&](SILBasicBlock *insertionBlock) {
+    SILBasicBlock *newBB = fun->createBasicBlockBefore(insertionBlock);
+    newBB->createPhiArgument(normalArgument->getType(),
+                             normalArgument->getOwnershipKind());
+    return newBB;
+  };
+
+  auto errorTargetGenerator = [&](SILBasicBlock *insertionBlock) {
+    SILBasicBlock *newErrorBB = fun->createBasicBlockBefore(insertionBlock);
+    SILValue argument = newErrorBB->createPhiArgument(
+        errorArgument->getType(), errorArgument->getOwnershipKind());
+    SILBuilderWithScope builder(newErrorBB, forEachCall);
+    builder.createBranch(forEachLoc, errorBB, argument);
+    return newErrorBB;
+  };
 
   // Iterate through the array elements in the reverse order and create try
   // applies of the body closure.
-  SILBasicBlock *nextNormalBB = forEachCall->getNormalBB();
-  SILBasicBlock *errorBB = forEachCall->getErrorBB();
-
-  // Dealloc the stack in normalBB and also in errorBB.
-  SILBuilderWithScope(&nextNormalBB->front())
-    .createDeallocStack(forEachLoc, allocStack);
-  SILBuilderWithScope (&nextNormalBB->front())
-    .createDeallocStack(forEachLoc, allocStack);
-
-  for (uint64_t i = arrayLiteralInfo.getElementSize() - 1; i >= 0 ; i--) {
-    // Create a basic block and a builder to insert at the end of the block.
-    SILBasicBlock *currentBB = fun->createBasicBlockBefore(nextNormalBB);
-    SILBuilderWithScope builder(currentBB, forEachCall);
-
-    // store_borrow the array element into the alloc_stack. Note tha the
-    // element is guaranteed to be alive for the during of the forEach (as it
-    // is stored in the array).
-    SILValue element = arrayLiteralInfo.getElement(i);
-    builder.createStoreBorrow(forEachLoc, element, allocStack);
-
+  SILBasicBlock *nextNormalBB = normalBB;
+  for (uint64_t num = arrayLiteralInfo.getElementSize(); num > 0; num--) {
+    SILValue elementCopy = elementCopies[num - 1];
+    // Create a new basic block from second element onwards.
+    SILBasicBlock *currentBB = num > 1 ? normalTargetGenerator(nextNormalBB)
+                                       : forEachCall->getParentBlock();
+    SILBuilderWithScope unrollBuilder(currentBB, forEachCall);
+    // Borrow the elementCopy and store it in the allocStack. Note that the
+    // element's copy is guaranteed to be alive until the array is alive.
+    // Therefore it is okay to use a borrow here.
+    SILValue borrowedElem =
+        unrollBuilder.createBeginBorrow(forEachLoc, elementCopy);
+    unrollBuilder.createStoreBorrow(forEachLoc, borrowedElem, allocStack);
+    unrollBuilder.createEndBorrow(forEachLoc, borrowedElem);
+    // Create an error target for the try-apply.
+    SILBasicBlock *errorTarget = errorTargetGenerator(nextNormalBB);
     // TODO: substitution map must be empty, is any other option possible?
-    // TODO: can we have all instructions using same errorBB? probably not.
-    builder.createTryApply(forEachLoc, forEachBodyClosure, SubstitutionMap(),
-                           allocStack, nextNormalBB, errorBB);
+    unrollBuilder.createTryApply(forEachLoc, forEachBodyClosure,
+                                 SubstitutionMap(), allocStack, nextNormalBB,
+                                 errorTarget);
     nextNormalBB = currentBB;
   }
-  // Create an unconditional branch to nextNormalBB in place of the forEachCall.
-  builder.createBranch(forEachLoc, nextNormalBB);
+
+  // Dealloc the stack in normalBB and also in errorBB.
+  SILBuilderWithScope(&normalBB->front())
+      .createDeallocStack(forEachLoc, allocStack);
+  SILBuilderWithScope(&errorBB->front())
+      .createDeallocStack(forEachLoc, allocStack);
+
   // Remove the forEach and clean up dead instructions.
-  InstructionDeleter deleter;
-  deleter.forceDelete(forEachCall);
-  deleter.cleanUpDeadInstructions();
-  return true;
+  arrayLiteralInfo.removeForEachCall(forEachCall);
 }
 
-static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply) {
+static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
+                                                  InstructionDeleter &deleter,
+                                                  bool &isArrayValueDeleted) {
+  isArrayValueDeleted = false;
   // Try to initialiaze the array literal.
   ArrayLiteralInfo arrayLiteralInfo;
   if (!arrayLiteralInfo.tryInitialize(apply))
@@ -412,9 +507,9 @@ static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply) {
   ArrayRef<TryApplyInst *> forEachCalls = arrayLiteralInfo.getForEachUses();
   if (forEachCalls.empty() || forEachCalls.size() > 1)
     return false;
-  llvm::errs() << " Checking forEach: " << *forEachCalls.front()  << "\n";
-  return unrollForEach(arrayLiteralInfo, forEachCalls.front());
-  // TODO: eliminate the array literal initialization code when possible.
+  unrollForEach(arrayLiteralInfo, forEachCalls.front());
+  isArrayValueDeleted = arrayLiteralInfo.deleteArrayValueIfDead(deleter);
+  return true;
 }
 
 class ForEachLoopUnroller : public SILFunctionTransform {
@@ -426,14 +521,31 @@ class ForEachLoopUnroller : public SILFunctionTransform {
     SILFunction &fun = *getFunction();
     bool changed = false;
 
+    InstructionDeleter deleter;
+
     for (SILBasicBlock &bb : fun) {
-      for (SILInstruction &inst : bb) {
-        if (ApplyInst *apply = dyn_cast<ApplyInst>(&inst)) {
-          changed |= tryUnrollForEachCallsOverArrayLiteral(apply);
+      for (auto instIter = bb.begin(); instIter != bb.end();) {
+        SILInstruction *inst = &*instIter;
+        ApplyInst *apply = dyn_cast<ApplyInst>(inst);
+        if (!apply) {
+          instIter++;
+          continue;
+        }
+        bool isArrayValueDeleted;
+        changed |= tryUnrollForEachCallsOverArrayLiteral(apply, deleter,
+                                                         isArrayValueDeleted);
+        instIter++;
+        if (isArrayValueDeleted) {
+          // We can force delete the apply here. Note that the iterator has
+          // already been advanced here. Therefore, there will be no iterator
+          // invalidation.
+          recursivelyDeleteInstructionAndUses(inst, deleter);
         }
       }
     }
+
     if (changed) {
+      deleter.cleanUpDeadInstructions();
       PM->invalidateAnalysis(&fun,
                   SILAnalysis::InvalidationKind::FunctionBody);
     }
