@@ -325,7 +325,8 @@ public:
     return destroys;
   }
 
-  void removeForEachCall(TryApplyInst *forEachCall) {
+  void removeForEachCall(TryApplyInst *forEachCall,
+                         InstructionDeleter &deleter) {
     assert(arrayValue);
     if (!forEachCalls.remove(forEachCall))
       return; // If the forEach call is already removed, do nothing.
@@ -333,9 +334,7 @@ public:
     AllocStackInst *allocStack =
         dyn_cast<AllocStackInst>(forEachCall->getArgument(1));
     assert(allocStack);
-    InstructionDeleter deleter;
     recursivelyDeleteInstructionAndUses(allocStack, deleter);
-    deleter.cleanUpDeadInstructions();
   }
 
   bool deleteArrayValueIfDead(InstructionDeleter &deleter) {
@@ -371,10 +370,11 @@ public:
 //}
 
 static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
-                          TryApplyInst *forEachCall) {
+                          TryApplyInst *forEachCall,
+                          InstructionDeleter &deleter) {
   if (arrayLiteralInfo.getElementSize() == 0) {
     // If this is an empty array, delete the forEach entirely.
-    arrayLiteralInfo.removeForEachCall(forEachCall);
+    arrayLiteralInfo.removeForEachCall(forEachCall, deleter);
     return;
   }
 
@@ -488,7 +488,7 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
       .createDeallocStack(forEachLoc, allocStack);
 
   // Remove the forEach and clean up dead instructions.
-  arrayLiteralInfo.removeForEachCall(forEachCall);
+  arrayLiteralInfo.removeForEachCall(forEachCall, deleter);
 }
 
 static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
@@ -507,7 +507,7 @@ static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
   ArrayRef<TryApplyInst *> forEachCalls = arrayLiteralInfo.getForEachUses();
   if (forEachCalls.empty() || forEachCalls.size() > 1)
     return false;
-  unrollForEach(arrayLiteralInfo, forEachCalls.front());
+  unrollForEach(arrayLiteralInfo, forEachCalls.front(), deleter);
   isArrayValueDeleted = arrayLiteralInfo.deleteArrayValueIfDead(deleter);
   return true;
 }
