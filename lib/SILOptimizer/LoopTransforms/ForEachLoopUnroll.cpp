@@ -72,71 +72,6 @@ using namespace swift;
 
 namespace {
 
-// TODO: move this to a common place. This is copied from array element
-// propagation.
-/// Map the indices of array element initialization stores to their values.
-static bool mapInitializationStores(
-    SILValue ElementBuffer,
-    llvm::DenseMap<uint64_t, StoreInst *> &ElementValueMap) {
-  assert(ElementBuffer &&
-         "Must have identified an array element storage pointer");
-
-  // Match initialization stores.
-  // %83 = struct_extract %element_buffer : $UnsafeMutablePointer<Int>
-  // %84 = pointer_to_address %83 : $Builtin.RawPointer to strict $*Int
-  // store %85 to %84 : $*Int
-  // %87 = integer_literal $Builtin.Word, 1
-  // %88 = index_addr %84 : $*Int, %87 : $Builtin.Word
-  // store %some_value to %88 : $*Int
-
-//  auto *UnsafeMutablePointerExtract =
-//      dyn_cast_or_null<StructExtractInst>(getSingleNonDebugUser(ElementBuffer));
-//  if (!UnsafeMutablePointerExtract)
-//    return false;
-  auto *PointerToAddress = dyn_cast_or_null<PointerToAddressInst>(
-      getSingleNonDebugUser(ElementBuffer));
-  if (!PointerToAddress)
-    return false;
-
-  // Match the stores. We can have either a store directly to the address or
-  // to an index_addr projection.
-  for (auto *Op : PointerToAddress->getUses()) {
-    auto *Inst = Op->getUser();
-
-    // Store to the base.
-    auto *SI = dyn_cast<StoreInst>(Inst);
-    if (SI && SI->getDest() == PointerToAddress) {
-      // We have already seen an entry for this index bail.
-      if (ElementValueMap.count(0))
-        return false;
-      ElementValueMap[0] = SI;
-      continue;
-    } else if (SI)
-      return false;
-
-    // Store an index_addr projection.
-    auto *IndexAddr = dyn_cast<IndexAddrInst>(Inst);
-    if (!IndexAddr)
-      return false;
-    SI = dyn_cast_or_null<StoreInst>(getSingleNonDebugUser(IndexAddr));
-    if (!SI || SI->getDest() != IndexAddr)
-      return false;
-    auto *Index = dyn_cast<IntegerLiteralInst>(IndexAddr->getIndex());
-    if (!Index)
-      return false;
-    auto IndexVal = Index->getValue();
-    // Let's not blow up our map.
-    if (IndexVal.getActiveBits() > 16)
-      return false;
-    // Already saw an entry.
-    if (ElementValueMap.count(IndexVal.getZExtValue()))
-      return false;
-
-    ElementValueMap[IndexVal.getZExtValue()] = SI;
-  }
-  return !ElementValueMap.empty();
-}
-
 static FixLifetimeInst *fixLifetimeUseOfArray(SILInstruction *user,
                                                 SILValue array) {
   // Since an array would be passed indirectly to fixLifetime instruction,
@@ -212,7 +147,7 @@ class ArrayLiteralInfo {
   SILValue arrayValue;
 
   /// A map of Array indices to element values
-  llvm::DenseMap<uint64_t, StoreInst *> elementValueMap;
+  llvm::DenseMap<uint64_t, StoreInst *> elementStoreMap;
 
   /// List of Sequence.forEach calls in which the array is used.
   SmallSetVector<TryApplyInst *, 4> forEachCalls;
@@ -282,12 +217,7 @@ public:
     arrayValue = arrayAllocateUninitCall.getArrayValue();
     if (!arrayValue)
       return false;
-
-    SILValue elementBuffer = arrayAllocateUninitCall.getArrayElementStoragePointer();
-    if (!elementBuffer)
-      return false;
-
-    if (!mapInitializationStores(elementBuffer, elementValueMap))
+    if (!arrayAllocateUninitCall.mapInitializationStores(elementStoreMap))
       return false;
 
     // Initialize the information about uses of the array value.
@@ -312,17 +242,17 @@ public:
 
   uint64_t getNumElements() {
     assert(arrayValue);
-    return elementValueMap.size();
+    return elementStoreMap.size();
   }
 
   StoreInst *getElementStore(uint64_t index) {
     assert(arrayValue);
-    return elementValueMap[index];
+    return elementStoreMap[index];
   }
 
   SILType getElementSILType() {
     assert(getNumElements() > 0 && "cannot call this on empty arrays");
-    return elementValueMap[0]->getSrc()->getType();
+    return elementStoreMap[0]->getSrc()->getType();
   }
 
   ArrayRef<DestroyValueInst *> getDestroys() {
