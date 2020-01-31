@@ -663,7 +663,8 @@ bool COWArrayOpt::hasLoopOnlyDestructorSafeArrayOperations() {
         auto Kind = Sem.getKind();
         // Safe because they create new arrays.
         if (Kind == ArrayCallKind::kArrayInit ||
-            Kind == ArrayCallKind::kArrayUninitialized)
+            Kind == ArrayCallKind::kArrayUninitialized ||
+            Kind == ArrayCallKind::kArrayUninitializedIntrinsic)
           continue;
         // All array types must be the same. This is a stronger guaranteed than
         // we actually need. The requirement is that we can't create another

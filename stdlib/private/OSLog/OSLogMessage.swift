@@ -48,9 +48,11 @@ public enum Privacy {
 @_optimize(none)
 public var maxOSLogArgumentCount: UInt8 { return 48 }
 
-@_semantics("constant_evaluable")
-@inlinable
-@_optimize(none)
+//@_semantics("constant_evaluable")
+//@inlinable
+//@_optimize(none)
+@_transparent
+@usableFromInline
 internal var logBitsPerByte: Int { return 3 }
 
 /// Represents a string interpolation passed to the log APIs.
