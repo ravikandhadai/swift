@@ -68,7 +68,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
 
-
 using namespace swift;
 
 namespace {
@@ -76,8 +75,9 @@ namespace {
 // TODO: move this to a common place. This is copied from array element
 // propagation.
 /// Map the indices of array element initialization stores to their values.
-static bool mapInitializationStores(SILValue ElementBuffer,
-                                    llvm::DenseMap<uint64_t, SILValue> &ElementValueMap) {
+static bool mapInitializationStores(
+    SILValue ElementBuffer,
+    llvm::DenseMap<uint64_t, StoreInst *> &ElementValueMap) {
   assert(ElementBuffer &&
          "Must have identified an array element storage pointer");
 
@@ -109,7 +109,7 @@ static bool mapInitializationStores(SILValue ElementBuffer,
       // We have already seen an entry for this index bail.
       if (ElementValueMap.count(0))
         return false;
-      ElementValueMap[0] = SI->getSrc();
+      ElementValueMap[0] = SI;
       continue;
     } else if (SI)
       return false;
@@ -132,7 +132,7 @@ static bool mapInitializationStores(SILValue ElementBuffer,
     if (ElementValueMap.count(IndexVal.getZExtValue()))
       return false;
 
-    ElementValueMap[IndexVal.getZExtValue()] = SI->getSrc();
+    ElementValueMap[IndexVal.getZExtValue()] = SI;
   }
   return !ElementValueMap.empty();
 }
@@ -140,8 +140,8 @@ static bool mapInitializationStores(SILValue ElementBuffer,
 static FixLifetimeInst *fixLifetimeUseOfArray(SILInstruction *user,
                                                 SILValue array) {
   // Since an array would be passed indirectly to fixLifetime instruction,
-  // we would only see a store the array into an alloc_stack here and have to
-  // look at the uses of the alloc_stack.
+  // we would only see a store of the array into an alloc_stack here and have
+  // to look at the uses of the alloc_stack.
   StoreBorrowInst *storeUser = dyn_cast<StoreBorrowInst>(user);
   if (!storeUser || storeUser->getSrc() != array)
     return nullptr;
@@ -212,7 +212,7 @@ class ArrayLiteralInfo {
   SILValue arrayValue;
 
   /// A map of Array indices to element values
-  llvm::DenseMap<uint64_t, SILValue> elementValueMap;
+  llvm::DenseMap<uint64_t, StoreInst *> elementValueMap;
 
   /// List of Sequence.forEach calls in which the array is used.
   SmallSetVector<TryApplyInst *, 4> forEachCalls;
@@ -310,14 +310,19 @@ public:
     return ArrayRef<TryApplyInst *>(forEachCalls.begin(), forEachCalls.end());
   }
 
-  uint64_t getElementSize() {
+  uint64_t getNumElements() {
     assert(arrayValue);
     return elementValueMap.size();
   }
 
-  SILValue getElement(uint64_t index) {
+  StoreInst *getElementStore(uint64_t index) {
     assert(arrayValue);
     return elementValueMap[index];
+  }
+
+  SILType getElementSILType() {
+    assert(getNumElements() > 0 && "cannot call this on empty arrays");
+    return elementValueMap[0]->getSrc()->getType();
   }
 
   ArrayRef<DestroyValueInst *> getDestroys() {
@@ -354,25 +359,10 @@ public:
   }
 };
 
-///// Given a SILValue \p value, find the point where a copy_value of the value
-///can be inserted. This is
-///// either the instruction following the definingInstruction of value, if
-///there is one. Otherwise, it is the
-///// first instruction of the basic block that takes the value as the
-///parameter.
-// static SILInstruction *getInsertionPointForCopyValue(SILValue value) {
-//  if (SILInstruction *definingInst = value->getDefiningInstruction()) {
-//    return &(*std::next(definingInst->getIterator()));
-//  }
-//  SILBasicBlock *parentBlock = value->getParentBlock();
-//  assert(parentBlock);
-//  return &parentBlock->front();
-//}
-
 static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
                           TryApplyInst *forEachCall,
                           InstructionDeleter &deleter) {
-  if (arrayLiteralInfo.getElementSize() == 0) {
+  if (arrayLiteralInfo.getNumElements() == 0) {
     // If this is an empty array, delete the forEach entirely.
     arrayLiteralInfo.removeForEachCall(forEachCall, deleter);
     return;
@@ -397,15 +387,13 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
          ParameterConvention::Indirect_In_Guaranteed &&
          "forEach body closure is expected to take @in_guaranteed argument");
 
-  // TODO: use the store instructions as the insertion point for this.
   SmallVector<SILValue, 4> elementCopies;
-  SILInstruction *copyInsertionPoint =
-      arrayLiteralInfo.getArrayValue().getDefiningInstruction();
-  for (uint64_t i = 0; i < arrayLiteralInfo.getElementSize(); i++) {
-    SILValue element = arrayLiteralInfo.getElement(i);
-    SILValue copy =
-        SILBuilderWithScope(copyInsertionPoint)
-            .emitCopyValueOperation(copyInsertionPoint->getLoc(), element);
+  for (uint64_t i = 0; i < arrayLiteralInfo.getNumElements(); i++) {
+    StoreInst *elementStore = arrayLiteralInfo.getElementStore(i);
+    // Insert the copy just before the store of the element into the array.
+    SILValue copy = SILBuilderWithScope(elementStore)
+                        .emitCopyValueOperation(elementStore->getLoc(),
+                                                elementStore->getSrc());
     elementCopies.push_back(copy);
   }
 
@@ -428,7 +416,7 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
   //      forEachCall.
   //   2. Since the body closure may throw, we need to create new of basic
   //      blocks for each unrolling of the loop.
-  SILType arrayElementType = arrayLiteralInfo.getElement(0)->getType();
+  SILType arrayElementType = arrayLiteralInfo.getElementSILType();
   // Create alloc_stack to hold the array elements.
   SILValue allocStack = SILBuilderWithScope(forEachCall)
                             .createAllocStack(forEachLoc, arrayElementType);
@@ -460,7 +448,7 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
   // Iterate through the array elements in the reverse order and create try
   // applies of the body closure.
   SILBasicBlock *nextNormalBB = normalBB;
-  for (uint64_t num = arrayLiteralInfo.getElementSize(); num > 0; num--) {
+  for (uint64_t num = arrayLiteralInfo.getNumElements(); num > 0; num--) {
     SILValue elementCopy = elementCopies[num - 1];
     // Create a new basic block from second element onwards.
     SILBasicBlock *currentBB = num > 1 ? normalTargetGenerator(nextNormalBB)
@@ -531,6 +519,7 @@ class ForEachLoopUnroller : public SILFunctionTransform {
     bool changed = false;
 
     InstructionDeleter deleter;
+    SmallVector<ApplyInst *, 4> deadArrayInitCalls;
 
     for (SILBasicBlock &bb : fun) {
       for (auto instIter = bb.begin(); instIter != bb.end();) {
@@ -543,17 +532,20 @@ class ForEachLoopUnroller : public SILFunctionTransform {
         bool isArrayValueDeleted;
         changed |= tryUnrollForEachCallsOverArrayLiteral(apply, deleter,
                                                          isArrayValueDeleted);
-        instIter++;
         if (isArrayValueDeleted) {
-          // We can force delete the apply here. Note that the iterator has
-          // already been advanced here. Therefore, there will be no iterator
-          // invalidation.
-          recursivelyDeleteInstructionAndUses(inst, deleter);
+          // Do not eagerly delete the array init call to prevent iterator
+          // invalidation. Track the array init call so that it can be
+          // deleted later. TODO: modify instruction deleter to do this.
+          deadArrayInitCalls.push_back(apply);
         }
+        instIter++;
       }
     }
 
     if (changed) {
+      // We can force delete all the dead array init calls here and clean up.
+      for (ApplyInst *arrayInitCall : deadArrayInitCalls)
+        recursivelyDeleteInstructionAndUses(arrayInitCall, deleter);
       deleter.cleanUpDeadInstructions();
       PM->invalidateAnalysis(&fun,
                   SILAnalysis::InvalidationKind::FunctionBody);
