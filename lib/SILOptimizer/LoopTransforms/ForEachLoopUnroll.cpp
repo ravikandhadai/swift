@@ -219,7 +219,6 @@ public:
       return false;
     if (!arrayAllocateUninitCall.mapInitializationStores(elementStoreMap))
       return false;
-
     // Initialize the information about uses of the array value.
     classifyUsesOfArray(arrayValue);
     return true;
@@ -270,22 +269,6 @@ public:
         dyn_cast<AllocStackInst>(forEachCall->getArgument(1));
     assert(allocStack);
     recursivelyDeleteInstructionAndUses(allocStack, deleter);
-  }
-
-  bool deleteArrayValueIfDead(InstructionDeleter &deleter) {
-    // If the array has forEach calls, or has nonForEach uses or may be written,
-    // it is not dead and cannot be cleaned up.
-    if (!forEachCalls.empty() || hasNonForEachReadOnlyUses || mayBeWritten)
-      return false;
-    if (!getDebugUses(arrayValue).empty() &&
-        arrayValue->getFunction()->getEffectiveOptimizationMode() <=
-            OptimizationMode::NoOptimization) {
-      // Don't delete the array with debug uses in Onone.
-      return false;
-    }
-    recursivelyDeleteInstructionAndUses(arrayValue->getDefiningInstruction(),
-                                        deleter);
-    return true;
   }
 };
 
@@ -414,14 +397,12 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
   SILBuilderWithScope(&errorBB->front())
       .createDeallocStack(forEachLoc, allocStack);
 
-  // Remove the forEach and clean up dead instructions.
+  // Remove the forEach call as it has now been unrolled.
   arrayLiteralInfo.removeForEachCall(forEachCall, deleter);
 }
 
 static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
-                                                  InstructionDeleter &deleter,
-                                                  bool &isArrayValueDeleted) {
-  isArrayValueDeleted = false;
+                                                  InstructionDeleter &deleter) {
   // Try to initialiaze the array literal.
   ArrayLiteralInfo arrayLiteralInfo;
   if (!arrayLiteralInfo.tryInitialize(apply))
@@ -435,7 +416,6 @@ static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
   if (forEachCalls.empty() || forEachCalls.size() > 1)
     return false;
   unrollForEach(arrayLiteralInfo, forEachCalls.front(), deleter);
-  isArrayValueDeleted = arrayLiteralInfo.deleteArrayValueIfDead(deleter);
   return true;
 }
 
@@ -449,8 +429,6 @@ class ForEachLoopUnroller : public SILFunctionTransform {
     bool changed = false;
 
     InstructionDeleter deleter;
-    SmallVector<ApplyInst *, 4> deadArrayInitCalls;
-
     for (SILBasicBlock &bb : fun) {
       for (auto instIter = bb.begin(); instIter != bb.end();) {
         SILInstruction *inst = &*instIter;
@@ -459,23 +437,14 @@ class ForEachLoopUnroller : public SILFunctionTransform {
           instIter++;
           continue;
         }
-        bool isArrayValueDeleted;
-        changed |= tryUnrollForEachCallsOverArrayLiteral(apply, deleter,
-                                                         isArrayValueDeleted);
-        if (isArrayValueDeleted) {
-          // Do not eagerly delete the array init call to prevent iterator
-          // invalidation. Track the array init call so that it can be
-          // deleted later. TODO: modify instruction deleter to do this.
-          deadArrayInitCalls.push_back(apply);
-        }
+        // Note that this call may delete a forEach call but would not delete
+        // the apply instruction. Therefore, the iterator is not invalid here.
+        changed |= tryUnrollForEachCallsOverArrayLiteral(apply, deleter);
         instIter++;
       }
     }
 
     if (changed) {
-      // We can force delete all the dead array init calls here and clean up.
-      for (ApplyInst *arrayInitCall : deadArrayInitCalls)
-        recursivelyDeleteInstructionAndUses(arrayInitCall, deleter);
       deleter.cleanUpDeadInstructions();
       PM->invalidateAnalysis(&fun,
                   SILAnalysis::InvalidationKind::FunctionBody);
