@@ -151,7 +151,7 @@ func testNSObjectInterpolation(h: Logger, nsArray: NSArray) {
     // CHECK-NEXT: [[OFFSET4:%.+]] = getelementptr inbounds i8, i8* [[BUFFER]], i64 4
     // CHECK-NEXT: [[BITCASTED_DEST:%.+]] = bitcast i8* [[OFFSET4]] to %TSo7NSArrayC**
     // CHECK-NEXT: [[BITCASTED_SRC:%.+]] = bitcast i8* [[NSARRAY_ARG]] to %TSo7NSArrayC*
-    // CHECK-NEXT: store %TSo7NSArrayC*  [[BITCASTED_SRC]], %TSo7NSArrayC**  [[BITCASTED_DEST]], align 1
+    // CHECK-NEXT: store %TSo7NSArrayC*  [[BITCASTED_SRC]], %TSo7NSArrayC*  [[BITCASTED_DEST]], align 1
     // CHECK-NEXT: tail call void @_os_log_impl({{.*}}, {{.*}} [[LOGOBJ]], i8 zeroext [[LOGLEVEL]], i8* getelementptr inbounds ([20 x i8], [20 x i8]* @{{.*}}, i64 0, i64 0), i8* [[BUFFER]], i32 12)
     // CHECK-NEXT: tail call void @swift_slowDealloc(i8* [[BUFFER]]
     // CHECK-NEXT: br label %[[NOT_ENABLED]]
@@ -162,3 +162,5 @@ func testNSObjectInterpolation(h: Logger, nsArray: NSArray) {
     // CHECK-NEXT: tail call void @llvm.objc.release
     // CHECK-NEXT: ret void
 }
+
+// TODO: add test for String.
