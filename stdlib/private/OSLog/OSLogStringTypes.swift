@@ -102,9 +102,8 @@ extension OSLogArguments {
 /// evaluator, this function returns the byte size of Int, which must equal the
 /// word length of the target architecture and hence the pointer size.
 /// This function must be constant evaluable.
-@_semantics("constant_evaluable")
-@inlinable
-@_optimize(none)
+@_transparent
+@usableFromInline
 internal func pointerSizeInBytes() -> Int {
   return Int.bitWidth &>> logBitsPerByte
 }
