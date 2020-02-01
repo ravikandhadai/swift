@@ -118,22 +118,6 @@ static TryApplyInst *forEachUseOfArray(SILInstruction *user, SILValue array) {
   return apply;
 }
 
-// TODO: move this to instruction deleter?
-static void recursivelyDeleteInstructionAndUses(SILInstruction *inst,
-                                                InstructionDeleter &deleter) {
-  for (SILValue result : inst->getResults()) {
-    while (!result->use_empty()) {
-      SILInstruction *user = result->use_begin()->getUser();
-      recursivelyDeleteInstructionAndUses(user, deleter);
-    }
-  }
-  if (isIncidentalUse(inst) || isa<DestroyValueInst>(inst)) {
-    deleter.forceDelete(inst);
-    return;
-  }
-  deleter.forceDeleteAndFixLifetimes(inst);
-}
-
 /// Utility class for storing information about array literal initializations and
 /// forEach operations on the array .
 ///
@@ -264,11 +248,10 @@ public:
     assert(arrayValue);
     if (!forEachCalls.remove(forEachCall))
       return; // If the forEach call is already removed, do nothing.
-    // Force delete the alloc_stack of the forEach call and its uses.
     AllocStackInst *allocStack =
         dyn_cast<AllocStackInst>(forEachCall->getArgument(1));
     assert(allocStack);
-    recursivelyDeleteInstructionAndUses(allocStack, deleter);
+    deleter.recursivelyForceDeleteUsersAndFixLifetimes(allocStack);
   }
 };
 
@@ -403,7 +386,6 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
 
 static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
                                                   InstructionDeleter &deleter) {
-  // Try to initialiaze the array literal.
   ArrayLiteralInfo arrayLiteralInfo;
   if (!arrayLiteralInfo.tryInitialize(apply))
     return false;
@@ -423,7 +405,6 @@ class ForEachLoopUnroller : public SILFunctionTransform {
 
   ~ForEachLoopUnroller() override {}
 
-  /// The entry point to the transformation.
   void run() override {
     SILFunction &fun = *getFunction();
     bool changed = false;
@@ -437,8 +418,9 @@ class ForEachLoopUnroller : public SILFunctionTransform {
           instIter++;
           continue;
         }
-        // Note that this call may delete a forEach call but would not delete
-        // the apply instruction. Therefore, the iterator is not invalid here.
+        // Note that the following operation may delete a forEach call but
+        // would not delete this apply instruction, which is an array
+        // initializer. Therefore, the iterator should be valid here.
         changed |= tryUnrollForEachCallsOverArrayLiteral(apply, deleter);
         instIter++;
       }

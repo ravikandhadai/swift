@@ -592,11 +592,16 @@ bool swift::ArraySemanticsCall::canInlineEarly() const {
     case ArrayCallKind::kAppendContentsOf:
     case ArrayCallKind::kReserveCapacityForAppend:
     case ArrayCallKind::kAppendElement:
+    case ArrayCallKind::kArrayUninitializedIntrinsic:
       // append(Element) calls other semantics functions. Therefore it's
       // important that it's inlined by the early inliner (which is before all
       // the array optimizations). Also, this semantics is only used to lookup
       // Array.append(Element), so inlining it does not prevent any other
       // optimization.
+      //
+      // Early inlining array.uninitialized_intrinsic semantic call helps in
+      // stack promotion. The intrinsic is only used by DeadObjectElimination
+      // and Mandatory Opts as of now.
       return true;
   }
 }
