@@ -80,3 +80,19 @@ func unrollLetArrayLiteralWithClosures(i: Int32, j: Int32) {
   // CHECK: try_apply {{.*}}([[STACK]])
 }
 
+// CHECK-LABEL: sil hidden @$s25for_each_loop_unroll_test0E16NoUnrollScenarioyyF
+func testNoUnrollScenario() {
+  var a = [Int64(15), Int64(27)]
+  a.append(Int64(7))
+  a.forEach { print($0) }
+    // CHECK: forEach
+}
+
+// FIXME: Currently, array literals with address-only types cannot be unrolled
+// as they are initialied using copy_addr instead of store.
+// CHECK-LABEL: sil hidden @$s25for_each_loop_unroll_test0E27UnrollingOfAddressOnlyTypes1x1yyx_xtlF
+func testUnrollingOfAddressOnlyTypes<T>(x: T, y: T) {
+  let a = [x, y]
+  a.forEach { print($0) }
+  // CHECK: forEach
+}
