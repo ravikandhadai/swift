@@ -20,3 +20,63 @@ func unrollLetArrayLiteralTest() {
     // CHECK: store [[INT2]] to [[STACK]] : $*Int64
     // CHECK: try_apply {{.*}}([[STACK]])
 }
+
+// CHECK-LABEL: sil hidden @$s25for_each_loop_unroll_test0D35LetArrayLiteralWithVariableElements1x1yys5Int64V_AFtF
+func unrollLetArrayLiteralWithVariableElements(x: Int64, y: Int64) {
+  let a = [x, y]
+  a.forEach { print($0) }
+  // CHECK-NOT: forEach
+  // CHECK: [[STACK:%[0-9]+]] = alloc_stack $Int64
+  // CHECK: store %0 to [[STACK]]
+  // CHECK: try_apply %{{.*}}([[STACK]]) : $@noescape @callee_guaranteed (@in_guaranteed Int64) -> @error Error, normal [[NORMAL:bb[0-9]+]], error [[ERROR:bb[0-9]+]]
+  
+  // CHECK: [[NORMAL]](%{{.*}} : $()):
+  // CHECK: store %1 to [[STACK]] : $*Int64
+  // CHECK: try_apply {{.*}}([[STACK]])
+}
+
+// CHECK-LABEL: sil hidden @$s25for_each_loop_unroll_test0D37LetArrayLiteralWithNonTrivialElementsyyF
+func unrollLetArrayLiteralWithNonTrivialElements() {
+  let a = ["a", "aa"]
+  a.forEach { print($0) }
+  // CHECK: [[LIT1:%[0-9]+]] = string_literal utf8 "a"
+  // CHECK: [[STRING_INIT:%[0-9]+]] = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC
+  // CHECK: [[STRING1:%[0-9]+]] = apply [[STRING_INIT]]([[LIT1]],
+  
+  // CHECK: [[LIT2:%[0-9]+]] = string_literal utf8 "aa"
+  // CHECK: [[STRING_INIT2:%[0-9]+]] = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC
+  // CHECK: [[STRING2:%[0-9]+]] = apply [[STRING_INIT2]]([[LIT2]],
+
+  // CHECK-NOT: forEach
+  // CHECK: [[STACK:%[0-9]+]] = alloc_stack $String
+  // CHECK: store [[STRING1]] to [[STACK]] : $*String
+  // CHECK: try_apply %{{.*}}([[STACK]]) : $@noescape @callee_guaranteed (@in_guaranteed String) -> @error Error, normal [[NORMAL:bb[0-9]+]], error [[ERROR:bb[0-9]+]]
+  
+  // CHECK: [[NORMAL]](%{{.*}} : $()):
+  // CHECK: store [[STRING2]] to [[STACK]] : $*String
+  // CHECK: try_apply {{.*}}([[STACK]])
+}
+
+// This test mimics the array liteal and forEach created by the OSLogOptimization pass.
+// CHECK-LABEL: sil hidden @$s25for_each_loop_unroll_test0D27LetArrayLiteralWithClosures1i1jys5Int32V_AFtF
+func unrollLetArrayLiteralWithClosures(i: Int32, j: Int32) {
+  let a = [{ i } , { j }]
+  a.forEach { print($0()) }
+  // CHECK: [[ALLOCATE:%[0-9]+]] = function_ref @$ss27_allocateUninitializedArrayySayxG_BptBwlF
+  // CHECK: [[ARRAYTUP:%[0-9]+]] = apply [[ALLOCATE]]<() -> Int32>
+  // CHECK: [[STORAGEPTR:%[0-9]+]] =  tuple_extract [[ARRAYTUP]] : $(Array<() -> Int32>, Builtin.RawPointer), 1
+  // CHECK: [[STORAGEADDR:%[0-9]+]] = pointer_to_address [[STORAGEPTR]]
+  // CHECK: store [[CLOSURE1:%[0-9]+]] to [[STORAGEADDR]]
+  // CHECK: [[INDEX1:%[0-9]+]] = index_addr [[STORAGEADDR]]
+  // CHECK: store [[CLOSURE2:%[0-9]+]] to [[INDEX1]]
+  
+  // CHECK-NOT: forEach
+  // CHECK: [[STACK:%[0-9]+]] = alloc_stack
+  // CHECK: store [[CLOSURE1]] to [[STACK]]
+  // CHECK: try_apply %{{.*}}([[STACK]]) : $@noescape @callee_guaranteed (@in_guaranteed {{.*}}) -> @error Error, normal [[NORMAL:bb[0-9]+]], error [[ERROR:bb[0-9]+]]
+  
+  // CHECK: [[NORMAL]](%{{.*}} : $()):
+  // CHECK: store [[CLOSURE2]] to [[STACK]]
+  // CHECK: try_apply {{.*}}([[STACK]])
+}
+
