@@ -23,6 +23,8 @@ func testEmptyDeadArrayElimination() {
     // CHECK-NEXT: return %{{.*}} : $()
 }
 
+// The use case tested by the following test, where a _fixLifetime call is
+// invoked on an array, appears when new os log APIs are  used.
 // CHECK-LABEL: sil hidden @$s15dead_array_elim35testDeadArrayElimWithFixLifetimeUseyyF
 func testDeadArrayElimWithFixLifetimeUse() {
   let a: [Int] = []
@@ -30,4 +32,9 @@ func testDeadArrayElimWithFixLifetimeUse() {
     // CHECK: bb0:
     // CHECK-NEXT: %{{.*}} = tuple ()
     // CHECK-NEXT: return %{{.*}} : $()
+}
+
+// FIXME: DeadObjectElimination doesn't optimize this yet.
+func testDeadArrayElimWithAddressOnlyValues<T>(x: T, y: T) {
+  _ = [x, y]
 }

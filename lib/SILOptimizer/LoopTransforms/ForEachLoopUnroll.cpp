@@ -384,6 +384,16 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
   arrayLiteralInfo.removeForEachCall(forEachCall, deleter);
 }
 
+static bool canUnrollForEachOfArray(ArrayLiteralInfo arrayLiteralInfo,
+                                    SILModule &module) {
+  const uint64_t unrollThreshold = module.getOptions().UnrollThreshold;
+  // The cost of unrolloing a forEach loop is two instructions: one to store
+  // the element into an alloc_stack and another is invoking the forEach body
+  // closure with the element.
+  const uint64_t cost = 2;
+  return arrayLiteralInfo.getNumElements() * cost <= unrollThreshold;
+}
+
 static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
                                                   InstructionDeleter &deleter) {
   ArrayLiteralInfo arrayLiteralInfo;
@@ -392,12 +402,16 @@ static bool tryUnrollForEachCallsOverArrayLiteral(ApplyInst *apply,
   // Bail out, if the array could be modified after initialization.
   if (arrayLiteralInfo.mayBeModified())
     return false;
-  // Check if the thresholds for unrolling are met. For now, always unroll if
-  // there is only one forEach call. TODO: make this parametrizable.
+  // If there are no forEach loops to unroll, return.
   ArrayRef<TryApplyInst *> forEachCalls = arrayLiteralInfo.getForEachUses();
-  if (forEachCalls.empty() || forEachCalls.size() > 1)
+  if (forEachCalls.empty())
     return false;
-  unrollForEach(arrayLiteralInfo, forEachCalls.front(), deleter);
+  // Check the threshold for unrolling.
+  if (!canUnrollForEachOfArray(arrayLiteralInfo,
+                               apply->getParent()->getModule()))
+    return false;
+  for (TryApplyInst *forEachCall : forEachCalls)
+    unrollForEach(arrayLiteralInfo, forEachCall, deleter);
   return true;
 }
 
