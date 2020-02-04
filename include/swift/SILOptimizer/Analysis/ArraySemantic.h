@@ -184,6 +184,22 @@ public:
   /// Can this function be inlined by the early inliner.
   bool canInlineEarly() const;
 
+  /// If this is a call to  ArrayUninitialized (or
+  /// ArrayUninitializedInstrinsic), which initializes the array through a
+  /// sequence of stores at corresponding offsets of the internal storage
+  /// pointer, identify the stored values and add the index and the store
+  /// instruction that stores to that index to \p ElementStoreMap.
+  ///
+  /// \returns true iff this is an "array.uninitialized" semantic call, and the
+  /// stores into the array indices are identified and the \p ElementStoreMap is
+  /// populated.
+  ///
+  /// Note that this function does not support array initialization that use
+  /// copy_addr, which means that array initializations that store address-only
+  /// types would not be recognized by this function as yet.
+  bool mapInitializationStores(
+      llvm::DenseMap<uint64_t, StoreInst *> &ElementStoreMap);
+
 protected:
   /// Validate the signature of this call.
   bool isValidSignature();
