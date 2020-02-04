@@ -170,6 +170,7 @@ ArrayCallKind swift::ArraySemanticsCall::getKind() const {
                   ArrayCallKind::kArrayPropsIsNativeTypeChecked)
             .StartsWith("array.init", ArrayCallKind::kArrayInit)
             .Case("array.uninitialized", ArrayCallKind::kArrayUninitialized)
+            .Case("array.uninitialized_intrinsic", ArrayCallKind::kArrayUninitializedIntrinsic)
             .Case("array.check_subscript", ArrayCallKind::kCheckSubscript)
             .Case("array.check_index", ArrayCallKind::kCheckIndex)
             .Case("array.get_count", ArrayCallKind::kGetCount)
@@ -591,11 +592,16 @@ bool swift::ArraySemanticsCall::canInlineEarly() const {
     case ArrayCallKind::kAppendContentsOf:
     case ArrayCallKind::kReserveCapacityForAppend:
     case ArrayCallKind::kAppendElement:
+    case ArrayCallKind::kArrayUninitializedIntrinsic:
       // append(Element) calls other semantics functions. Therefore it's
       // important that it's inlined by the early inliner (which is before all
       // the array optimizations). Also, this semantics is only used to lookup
       // Array.append(Element), so inlining it does not prevent any other
       // optimization.
+      //
+      // Early inlining array.uninitialized_intrinsic semantic call helps in
+      // stack promotion. The intrinsic is only used by DeadObjectElimination
+      // and Mandatory Opts as of now.
       return true;
   }
 }
@@ -623,7 +629,9 @@ SILValue swift::ArraySemanticsCall::getInitializationCount() const {
 }
 
 SILValue swift::ArraySemanticsCall::getArrayValue() const {
-  if (getKind() == ArrayCallKind::kArrayUninitialized) {
+  ArrayCallKind arrayCallKind = getKind();
+  if (arrayCallKind == ArrayCallKind::kArrayUninitialized ||
+      arrayCallKind == ArrayCallKind::kArrayUninitializedIntrinsic) {
     TupleExtractInst *ArrayDef = nullptr;
     for (auto *Op : SemanticsCall->getUses()) {
       auto *TupleElt = dyn_cast<TupleExtractInst>(Op->getUser());
@@ -652,7 +660,9 @@ SILValue swift::ArraySemanticsCall::getArrayValue() const {
 }
 
 SILValue swift::ArraySemanticsCall::getArrayElementStoragePointer() const {
-  if (getKind() == ArrayCallKind::kArrayUninitialized) {
+  ArrayCallKind arrayCallKind = getKind();
+  if (arrayCallKind == ArrayCallKind::kArrayUninitialized ||
+      arrayCallKind == ArrayCallKind::kArrayUninitializedIntrinsic) {
     TupleExtractInst *ArrayElementStorage = nullptr;
     for (auto *Op : SemanticsCall->getUses()) {
       auto *TupleElt = dyn_cast<TupleExtractInst>(Op->getUser());
