@@ -387,9 +387,11 @@ static void unrollForEach(ArrayLiteralInfo &arrayLiteralInfo,
 static bool canUnrollForEachOfArray(ArrayLiteralInfo arrayLiteralInfo,
                                     SILModule &module) {
   const uint64_t unrollThreshold = module.getOptions().UnrollThreshold;
-  // The cost of unrolloing a forEach loop is two instructions: one to store
-  // the element into an alloc_stack and another is invoking the forEach body
-  // closure with the element.
+  // The cost of unrolling a forEach loop is mostly just two instructions per
+  // array element: one to store the element into an alloc_stack and another to
+  // invoke the forEach body closure with the element. Note that the copy_value
+  // of the element and the basic blocks created for tehe try-apply of the body
+  // closure are not counted, as these should likely get optimized away.
   const uint64_t cost = 2;
   return arrayLiteralInfo.getNumElements() * cost <= unrollThreshold;
 }

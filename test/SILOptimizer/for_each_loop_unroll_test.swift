@@ -96,3 +96,16 @@ func testUnrollingOfAddressOnlyTypes<T>(x: T, y: T) {
   a.forEach { print($0) }
   // CHECK: forEach
 }
+
+// Check that when there are multiple forEach loops they are unrolled.
+// CHECK-LABEL: sil hidden @$s25for_each_loop_unroll_test0D13MultipleLoops1x1y1zys5Int64V_AGSbtF
+func unrollMultipleLoops(x: Int64, y: Int64, z: Bool) {
+  let a = [x, y]
+  if z {
+    a.forEach { print($0) }
+  } else {
+    a.forEach{ print($0 + 1) }
+  }
+    // CHECK-NOT: forEach
+    // CHECK-LABEL: end sil function '$s25for_each_loop_unroll_test0D13MultipleLoops1x1y1zys5Int64V_AGSbtF'
+}
