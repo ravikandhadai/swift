@@ -15,6 +15,7 @@
 // Do not use it outside of tests.
 
 @_exported import os
+import Dispatch
 
 @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
 public struct Logger {
@@ -45,61 +46,61 @@ public struct Logger {
   /// it is not specified.
   @_transparent
   @_optimize(none)
-  public func log(level: OSLogType = .default, _ message: OSLogMessage) {
-    osLog(log: logObject, level: level, message)
+  public func log(level: OSLogType = .default, _ message: OSLogMessage) -> UInt64 {
+    return osLog(log: logObject, level: level, message)
   }
 
   // The following overloads are for logging at specific levels. The levels that
   // are supported are debug (also called trace), info, notice (also called
   // default), error (also called warning), fault (also called critical).
 
-  @_transparent
-  @_optimize(none)
-  public func trace(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .debug, message)
-  }
-
-  @_transparent
-  @_optimize(none)
-  public func debug(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .debug, message)
-  }
-
-  @_transparent
-  @_optimize(none)
-  public func info(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .info, message)
-  }
-
-  @_transparent
-  @_optimize(none)
-  public func notice(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .default, message)
-  }
-
-  @_transparent
-  @_optimize(none)
-  public func warning(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .error, message)
-  }
-
-  @_transparent
-  @_optimize(none)
-  public func error(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .error, message)
-  }
-
-  @_transparent
-  @_optimize(none)
-  public func critical(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .fault, message)
-  }
-
-  @_transparent
-  @_optimize(none)
-  public func fault(_ message: OSLogMessage) {
-    osLog(log: logObject, level: .fault, message)
-  }
+//  @_transparent
+//  @_optimize(none)
+//  public func trace(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .debug, message)
+//  }
+//
+//  @_transparent
+//  @_optimize(none)
+//  public func debug(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .debug, message)
+//  }
+//
+//  @_transparent
+//  @_optimize(none)
+//  public func info(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .info, message)
+//  }
+//
+//  @_transparent
+//  @_optimize(none)
+//  public func notice(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .default, message)
+//  }
+//
+//  @_transparent
+//  @_optimize(none)
+//  public func warning(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .error, message)
+//  }
+//
+//  @_transparent
+//  @_optimize(none)
+//  public func error(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .error, message)
+//  }
+//
+//  @_transparent
+//  @_optimize(none)
+//  public func critical(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .fault, message)
+//  }
+//
+//  @_transparent
+//  @_optimize(none)
+//  public func fault(_ message: OSLogMessage) {
+//    osLog(log: logObject, level: .fault, message)
+//  }
 }
 
 /// Given an instance of the custom string interpolation type: `OSLogMessage`,
@@ -112,7 +113,7 @@ public func osLog(
   log logObject: OSLog,
   level logLevel: OSLogType,
   _ message: OSLogMessage
-) {
+) -> UInt64  {
   // Compute static constants first so that they can be folded by
   // OSLogOptimization pass.
   let formatString = message.interpolation.formatString
@@ -125,7 +126,7 @@ public func osLog(
   let formatStringPointer = _getGlobalStringTablePointer(formatString)
 
   // Code that will execute at runtime.
-  guard logObject.isEnabled(type: logLevel) else { return }
+  guard logObject.isEnabled(type: logLevel) else { return 0 }
 
   // Allocate a byte buffer to store the arguments. The buffer could be stack
   // allocated as it is local to this function and also its size is a
@@ -140,12 +141,17 @@ public func osLog(
   serialize(argumentCount, at: &currentBufferPosition)
   argumentClosures.forEach { $0(&currentBufferPosition, &stringStorageObjects) }
 
+  let startTime = DispatchTime.now()
+
   ___os_log_impl(UnsafeMutableRawPointer(mutating: #dsohandle),
                  logObject,
                  logLevel,
                  formatStringPointer,
                  bufferMemory,
                  uint32bufferSize)
+
+  let endTime = DispatchTime.now()
+  let loggingTime = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
   // The following operation extends the lifetime of argumentClosures,
   // stringStorageObjects, and also of the objects stored in them till this
@@ -154,6 +160,7 @@ public func osLog(
   _fixLifetime(argumentClosures)
   _fixLifetime(stringStorageObjects)
   bufferMemory.deallocate()
+  return loggingTime
 }
 
 /// A test helper that constructs a byte buffer and a format string from an
