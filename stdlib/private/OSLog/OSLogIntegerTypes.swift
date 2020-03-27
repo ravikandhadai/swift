@@ -36,6 +36,7 @@ extension OSLogInterpolation {
   @_semantics("constant_evaluable")
   @inlinable
   @_optimize(none)
+  @_semantics("requires_constant_format_align_privacy")
   public mutating func appendInterpolation(
     _ number: @autoclosure @escaping () -> Int,
     format: OSLogIntegerFormatting = .decimal,

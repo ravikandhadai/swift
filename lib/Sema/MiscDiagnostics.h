@@ -83,6 +83,12 @@ void diagnoseUnownedImmediateDeallocation(ASTContext &ctx,
                                           SourceLoc equalLoc,
                                           const Expr *initializer);
 
+/// If \p expr is a call with a requirement that some arguments must constants, which
+/// is indicated through @_semantics("requires_constant_<argnames>") annotation, check
+/// whether the call is passed only constant arguments. Otherwise, diagnose and emit errors.
+void diagnoseConstantArgumentRequirement(const Expr *expr,
+                                         const DeclContext *DC);
+
 /// Attempt to fix the type of \p decl so that it's a valid override for
 /// \p base...but only if we're highly confident that we know what the user
 /// should have written.

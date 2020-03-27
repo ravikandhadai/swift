@@ -29,6 +29,7 @@ add_swift_host_library(swiftSema STATIC
   LookupVisibleDecls.cpp
   MiscDiagnostics.cpp
   NameBinding.cpp
+  OSLogSemaDiagnostics.cpp
   PCMacro.cpp
   PlaygroundTransform.cpp
   ResilienceDiagnostics.cpp
