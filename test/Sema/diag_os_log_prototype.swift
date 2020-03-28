@@ -45,68 +45,76 @@ func testMultipleOptions(
     // expected-error@-3 {{argument 'privacy' must be a constant}}
 }
 
-//
-//func testNoninlinedOSLogMessage(h: Logger) {
-//  let logMessage: OSLogMessage = "Minimum integer value: \(Int.min)"
-//  h.log(level: .debug, logMessage)
-//  // @-1 {{log message must be a string literal or string interpolation}}
-//}
-//
-//  let globalLogMessage: OSLogMessage = "A global message"
-//
-//  func testNoninlinedOSLogMessageComplex(h: Logger, b: Bool) {
-//    h.log(level: .debug, globalLogMessage)
-//    // @-1 {{log message must be a string literal or string interpolation}}
-//
-//    let logMessage: OSLogMessage = "Maximum integer value: \(Int.max)"
-//    if !b {
-//      return;
-//    }
-//    h.log(level: .debug, logMessage)
-//    // @-1 {{log message must be a string literal or string interpolation}}
-//  }
-//
-//  // No errors are expected here.
-//  func testValidLogCalls(h: Logger, x: Int) {
-//    h.log("\(x, format: .hex, privacy: .private)")
-//    h.log("\(x, format: IntFormat.hex, privacy: .public)")
-//    h.log("\(x, privacy: Privacy.public)")
-//    h.log(level: .debug, "\((x + 1) * 2, privacy: .public)")
-//  }
-//
-//  // Check whether os-log-specific diagnostics do not crash when there
-//  // are type errors.
-//  func testTypeIncorrectLogCalls(h: Logger) {
-//    let message = "test message"
-//
-//    h.log(message)
-//    // @-1 {{cannot convert value of type 'String' to expected argument type 'OSLogMessage'}}
-//    h.log("prefix" + "\(x)")
-//    // @-1 {{cannot convert value of type 'String' to expected argument type 'OSLogMessage'}}
-//    h.log("prefix", "\(x)")
-//    // @-1 {{missing argument label 'level:' in call}}
-//
-//    class TestClass {
-//    }
-//    let x = TestClass()
-//    h.log("\(x, format: .hex)")
-//    //@-1 {{cannot convert value of type 'TestClass' to expected argument type}}
-//
-//    h.log("\(10, format: .myFormat, privacy: .private)")
-//    // @-1 {{type 'IntFormat' has no member 'myFormat'}}
-//  }
+func testNoninlinedOSLogMessage() {
+  let logMessage: OSLogMessage = "Minimum integer value: \(Int.min)"
+  _osLogTestHelper(logMessage)
+    // expected-error@-1 {{argument 'message' must be a constant}}
+}
 
-//
-//// Extensions to OSLogInterpolation are not supported as yet, but will be
-//// supported in the future.
-//extension OSLogInterpolation {
-//   mutating func appendInterpolation(line: Int) {
-//     self.appendInterpolation(line)
-//   }
-//}
-//
-//@available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
-//func testOSLogInterpolationExtension(h: Logger, line: Int) {
-//  h.log(level: .debug, "Error at line: \(line: line)")
-//  // @-1 {{externally defined interpolation is not supported in os log}}
-//}
+let globalLogMessage: OSLogMessage = "A global message"
+
+func testGlobalLogMessage() {
+  _osLogTestHelper(globalLogMessage)
+    // expected-error@-1 {{argument 'message' must be a constant}}
+}
+
+// No errors are expected here.
+func testValidLogCalls(x: Int) {
+  _osLogTestHelper("\(x, format: .hex, privacy: .private)")
+  _osLogTestHelper("\(x, format: OSLogIntegerFormatting.hex, privacy: .public)")
+  _osLogTestHelper("\(x, privacy: OSLogPrivacy.public)")
+  _osLogTestHelper("\((x + 1) * 2, privacy: .public)")
+}
+
+
+// Check whether os-log-specific diagnostics do not crash when there
+// are type errors.
+func testTypeIncorrectLogCalls() {
+  let message = "test message"
+
+  _osLogTestHelper(message)
+  // expected-error@-1 {{cannot convert value of type 'String' to expected argument type 'OSLogMessage'}}
+  _osLogTestHelper("prefix" + "\(x)")
+  // expected-error@-1 {{cannot convert value of type 'String' to expected argument type 'OSLogMessage'}}
+  _osLogTestHelper("prefix", "\(x)")
+  // expected-error@-1 {{cannot convert value of type 'String' to expected argument type '(String, UnsafeBufferPointer<UInt8>) -> Void'}}
+  // expected-error@-2 {{missing argument label 'assertion:' in call}}
+
+  class TestClass {
+  }
+  let x = TestClass()
+  _osLogTestHelper("\(x, format: .hex)")
+  //expected-error@-1 {{no exact matches in call to instance method 'appendInterpolation'}}
+
+  _osLogTestHelper("\(10, format: .myFormat, privacy: .private)")
+  //expected-error@-1 {{type 'OSLogIntegerFormatting' has no member 'myFormat'}}
+}
+
+// Test diagnostics in extensions to OSLogInterpolation. This is not officially
+// supported yet.
+struct A {
+  var i: Int
+}
+
+extension OSLogInterpolation {
+  mutating func appendInterpolation(a: A) {
+    self.appendInterpolation(a.i)
+  }
+
+  mutating func appendInterpolation(a: A, format: OSLogIntegerFormatting) {
+    self.appendInterpolation(a.i, format: format)
+      // expected-error@-1 {{argument 'format' must be a constant}}
+  }
+
+  @_semantics("requires_constant_constFormat")
+  mutating func appendInterpolation(a: A, constFormat: OSLogIntegerFormatting) {
+    self.appendInterpolation(a.i, format: constFormat)
+  }
+}
+
+func testOSLogInterpolationExtension(a: A) {
+  // The following is not a Sema error but would result in a SIL diagnostics as
+  // the appendInterpolation overload is not marked as constant_evaluable.
+  _osLogTestHelper("Error at line: \(a: a)")
+}
+
