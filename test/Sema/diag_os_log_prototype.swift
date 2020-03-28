@@ -19,6 +19,8 @@ func testNonconstantFormatOption(
   _osLogTestHelper("\(UInt.max, format: .hex(uppercase: uppercase))")
     // expected-error@-1 {{argument 'format' must be a constant}}
     // expected-note@-2 {{expression not constant}}
+
+  _osLogTestHelper("\(UInt.max, format: .hex)") // No error is expected here.
 }
 
 func testNonconstantPrivacyOption(privacyOpt: OSLogPrivacy) {

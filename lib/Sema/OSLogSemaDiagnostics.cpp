@@ -21,6 +21,15 @@
 #include "swift/AST/ParameterList.h"
 using namespace swift;
 
+static bool hasConstantEvaluableAttr(ValueDecl *decl) {
+  for (auto semantics : decl->getAttrs().getAttributes<SemanticsAttr>()) {
+    if (semantics->Value.equals("constant_evaluable")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Check whether \p expr is constant valued i.e., it  uses only literals or
 /// enum elements whose arguments are constant valued.
 static Expr * checkConstantness(Expr *expr) {
@@ -37,6 +46,15 @@ static Expr * checkConstantness(Expr *expr) {
       continue;
     if (isa<TypeExpr>(expr))
       continue;
+
+    if (MemberRefExpr *memberRef = dyn_cast<MemberRefExpr>(expr)) {
+      if (ValueDecl *memberDecl = memberRef->getMember().getDecl()) {
+        if (hasConstantEvaluableAttr(memberDecl))
+          continue;
+      }
+      return expr;
+    }
+
     if (!isa<ApplyExpr>(expr))
       return expr;
 
@@ -56,17 +74,7 @@ static Expr * checkConstantness(Expr *expr) {
     // the default arguments of a constant_evaluable function must be a
     // constant.
     FuncDecl *callee = dyn_cast<FuncDecl>(calledValue);
-    if (!callee)
-      return expr;
-
-    bool isConstantEvaluable = false;
-    for (auto semantics : callee->getAttrs().getAttributes<SemanticsAttr>()) {
-      if (semantics->Value.equals("constant_evaluable")) {
-        isConstantEvaluable = true;
-        break;
-      }
-    }
-    if (!isConstantEvaluable)
+    if (!callee || !hasConstantEvaluableAttr(callee))
       return expr;
 
     //llvm::errs() << "found constant evaluable expression \n";
