@@ -5004,6 +5004,7 @@ ERROR(experimental_differentiable_programming_disabled, none,
       "currently disabled", ())
 
 ERROR(argument_not_constant, none, "argument %0 must be a constant", (Identifier))
+NOTE(expression_not_constant, none, "expression not constant", ())
 //ERROR(os_log_message_not_literal, none,
 //      "log message must be a string literal or string interpolation", ())
 //ERROR(os_log_interpolation_argument_nonconstant, none,

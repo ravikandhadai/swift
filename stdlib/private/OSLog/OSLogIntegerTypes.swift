@@ -34,9 +34,9 @@ extension OSLogInterpolation {
   ///  - privacy: a privacy qualifier which is either private or public.
   ///    It is auto-inferred by default.
   @_semantics("constant_evaluable")
+  @_semantics("requires_constant_format_align_privacy")
   @inlinable
   @_optimize(none)
-  @_semantics("requires_constant_format_align_privacy")
   public mutating func appendInterpolation(
     _ number: @autoclosure @escaping () -> Int,
     format: OSLogIntegerFormatting = .decimal,
@@ -77,6 +77,7 @@ extension OSLogInterpolation {
   ///  - privacy: a privacy qualifier which is either private or public.
   ///    It is auto-inferred by default.
   @_semantics("constant_evaluable")
+  @_semantics("requires_constant_format_align_privacy")
   @inlinable
   @_optimize(none)
   public mutating func appendInterpolation(

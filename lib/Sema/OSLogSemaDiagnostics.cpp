@@ -23,11 +23,15 @@ using namespace swift;
 
 /// Check whether \p expr is constant valued i.e., it  uses only literals or
 /// enum elements whose arguments are constant valued.
-static Expr * checkConstantness(Expr *expr, ASTContext &astContext) {
+static Expr * checkConstantness(Expr *expr) {
   SmallVector<Expr *, 4> expressionsToCheck;
   expressionsToCheck.push_back(expr);
   while (!expressionsToCheck.empty()) {
     Expr *expr = expressionsToCheck.pop_back_val();
+//    llvm::errs() << "Looking at expression: \n";
+//    expr->dump();
+//    llvm::errs() << "\n";
+
     // Literal expressions also includes InterpolatedStringLiteralExpr.
     if (isa<LiteralExpr>(expr))
       continue;
@@ -65,19 +69,22 @@ static Expr * checkConstantness(Expr *expr, ASTContext &astContext) {
     if (!isConstantEvaluable)
       return expr;
 
+    //llvm::errs() << "found constant evaluable expression \n";
+
     SmallVector<Expr *, 4> argumentExprs;
     Expr *uncurriedArguments = apply->getArg();
     if (auto *tupleExpr = dyn_cast<TupleExpr>(uncurriedArguments)) {
       for (Expr *element : tupleExpr->getElements())
         argumentExprs.push_back(element);
-      continue;
     } else {
       argumentExprs.push_back(uncurriedArguments);
     }
-    // Skip default argument expressions.
+    // Skip default argument expressions. Also skip closure expressions, which
+    // are always treated as constants in a constant-evaluable function.
     auto nondefaultArgs =
       llvm::make_filter_range(argumentExprs, [&](Expr *expr) {
-        return !isa<DefaultArgumentExpr>(expr);
+        return !isa<DefaultArgumentExpr>(expr) &&
+          !isa<AbstractClosureExpr>(expr);
       });
     for (Expr *argument : nondefaultArgs)
       expressionsToCheck.push_back(argument);
@@ -90,7 +97,7 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
   if (!expr || !isa<CallExpr>(expr) || !expr->getType())
     return;
 
-  ASTContext &astContext = DC->getASTContext();
+  DiagnosticEngine &diags = DC->getASTContext().Diags;
 
   // Is expr a direct call with semantics attribute "requires_constant_argument"?
   const CallExpr *callExpr = cast<CallExpr>(expr);
@@ -139,6 +146,14 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
   if (constantArgumentIndices.empty())
     return;
 
+  auto diagnose = [&](Expr *argument, Identifier paramName, Expr *errorExpr) {
+    diags.diagnose(argument->getLoc(), diag::argument_not_constant, paramName);
+    // Point to the error if it is inside the argument expression.
+    if (errorExpr != argument) {
+      diags.diagnose(errorExpr->getLoc(), diag::expression_not_constant);
+    }
+  };
+
   // Check that the arguments at the constantArgumentIndices are constants.
   Expr *argumentExpr = callExpr->getArg();
   if (auto *tupleExpr = dyn_cast<TupleExpr>(argumentExpr)) {
@@ -151,11 +166,10 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
       // necessary.
       if (isa<DefaultArgumentExpr>(argument))
         continue;
-      Expr *errorExpr = checkConstantness(argument, astContext);
+      Expr *errorExpr = checkConstantness(argument);
       if (errorExpr) {
-        astContext.Diags.diagnose(errorExpr->getLoc(),
-                                  diag::argument_not_constant,
-                                  paramList->get(constantIndex)->getParameterName());
+        diagnose(argument, paramList->get(constantIndex)->getParameterName(),
+                 errorExpr);
       }
     }
     return;
@@ -168,11 +182,10 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
     return;
   if (isa<DefaultArgumentExpr>(argumentExpr))
     return;
-  Expr *errorExpr = checkConstantness(argumentExpr, astContext);
+  Expr *errorExpr = checkConstantness(argumentExpr);
   if (errorExpr) {
-    astContext.Diags.diagnose(errorExpr->getLoc(),
-                              diag::argument_not_constant,
-                              paramList->get(argIndex)->getParameterName());
+    diagnose(argumentExpr, paramList->get(argIndex)->getParameterName(),
+             errorExpr);
   }
 
 //  Expr *logMessage = nullptr;

@@ -2,40 +2,53 @@
 
 // Tests for the diagnostics emitted in Sema for the new os log APIs.
 
-let assertion = { (buffer: UnsafePointer<UInt8>, formatString: String) in
-  return
-}
+import OSLogTestHelper
 
 func testDynamicLogMessage(message: OSLogMessage) {
-  _checkFormatStringAndBuffer(message, assertion)
-  // expected-error@-1 {{argument 'message' must be a constant}}
+  _osLogTestHelper(message)
+    // expected-error@-1 {{argument 'message' must be a constant}}
 }
 
-func testNonconstantFormatOption(h: Logger, formatOpt: OSLogIntegerFormatting) {
-  _checkFormatStringAndBuffer(
-    "Minimum integer value: \(Int.min, format: formatOpt)",
-    assertion)
-  // expected-error@-1 {{argument 'format' must be a constant}}
+func testNonconstantFormatOption(
+  formatOpt: OSLogIntegerFormatting,
+  explicitPositiveSign: Bool) {
+  _osLogTestHelper("Minimum integer value: \(Int.min, format: formatOpt)")
+    // expected-error@-1 {{argument 'format' must be a constant}}
+
+  let uppercase = true
+  _osLogTestHelper("\(UInt.max, format: .hex(uppercase: uppercase))")
+    // expected-error@-1 {{argument 'format' must be a constant}}
+    // expected-note@-2 {{expression not constant}}
 }
 
-func testNonconstantPrivacyOption(h: Logger,  privacyOpt: OSLogPrivacy) {
-  _checkFormatStringAndBuffer(
-    "Integer: \(Int.max, privacy: privacyOpt)",
-    
-  )
-  // expected-error@-1 {{argument 'privacy' must be a constant}}
+func testNonconstantPrivacyOption(privacyOpt: OSLogPrivacy) {
+  _osLogTestHelper("Integer: \(Int.max, privacy: privacyOpt)")
+    // expected-error@-1 {{argument 'privacy' must be a constant}}
 }
 
-func testNonconstantAlignmentOption(h: Logger,  privacyOpt: OSLogPrivacy) {
-  h.log(level: .debug, "Integer: \(Int.max, privacy: privacyOpt)")
-  // expected-error@-1 {{argument 'privacy' must be a constant}}
+func testNonconstantAlignmentOption(alignOpt: OSLogStringAlignment) {
+  _osLogTestHelper("Integer: \(Int.max, align: alignOpt)")
+    // expected-error@-1 {{argument 'align' must be a constant}}
 }
 
-func testNoninlinedOSLogMessage(h: Logger) {
-  let logMessage: OSLogMessage = "Minimum integer value: \(Int.min)"
-  h.log(level: .debug, logMessage)
-  // @-1 {{log message must be a string literal or string interpolation}}
+func testMultipleOptions(
+  formatOpt: OSLogIntegerFormatting,
+  privacyOpt: OSLogPrivacy
+) {
+  _osLogTestHelper(
+    """
+    \(2, format: formatOpt, align: .right(columns: 10), privacy: privacyOpt)
+    """)
+    // expected-error@-2 {{argument 'format' must be a constant}}
+    // expected-error@-3 {{argument 'privacy' must be a constant}}
 }
+
+//
+//func testNoninlinedOSLogMessage(h: Logger) {
+//  let logMessage: OSLogMessage = "Minimum integer value: \(Int.min)"
+//  h.log(level: .debug, logMessage)
+//  // @-1 {{log message must be a string literal or string interpolation}}
+//}
 //
 //  let globalLogMessage: OSLogMessage = "A global message"
 //
