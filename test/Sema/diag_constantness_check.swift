@@ -71,25 +71,145 @@ func testMultipleArguments(_ x: String, _ y: Double) {
 }
 
 // Test enum uses.
+enum Color {
+  case red
+  case blue
+  case green
+  case rgb(r: Int, g: Int, b: Int)
+}
 
+@_semantics("requires_constant_color")
+func enumArgument(_ color: Color) { }
 
+func testEnumArgument(r: Int) {
+  enumArgument(.rgb(r: 12, g: 0, b: 1))
+  enumArgument(.green)
+  enumArgument(.rgb(r: r, g: 200, b: 453))
+    // expected-error@-1 {{argument 'color' must be a constant}}
+    // expected-note@-2 {{expression not constant}}
+}
 
 // Test type expressions.
+@_semantics("requires_constant_t")
+func typeArgument<T>(_ t: T.Type) { }
+
+func testTypeArgument<S>(_ t: S.Type) {
+  typeArgument(Int.self)
+  typeArgument(S.self)
+  typeArgument(t)
+   // expected-error@-1 {{argument 't' must be a constant}}
+}
 
 // Test constant evaluable function calls.
+@_semantics("constant_evaluable")
+func constantEval(_ x: Int, _ y: Bool) -> Int { x + 100 }
+
+func testConstantEvalArgument(x: Int) {
+  constantArgumentFunction(constantEval(90, true))
+  constantArgumentFunction(constantEval(constantEval(500, true), false))
+  constantArgumentFunction(constantEval(x, true))
+    // expected-error@-1 {{argument 'constArg' must be a constant}}
+    // expected-note@-2 {{expression not constant}}
+}
 
 // Test constant evaluable function calls with default arguments.
+@_semantics("constant_evaluable")
+func constantEvalAdvanced(_ x: () -> Int, _ y: Bool = true, z: String) { }
+
+func testConstantEvalAdvanced(arg: Int) {
+  constantArgumentFunction(constantEvalAdvanced({ arg }, z: ""))
+}
 
 // Test nested use of constant parameter.
+@_semantics("requires_constant_constParam")
+func testConstantArgumentRequirementPropagation(constParam: Int) {
+  constantArgumentFunction(constParam)
+}
 
-// Test use of constant parameter in constant evaluable function.
+// Test nested use of constant parameter in constant evaluable function.
+@_semantics("requires_constant_constParam")
+func testConstantArgumentWithConstEval(constParam: Int) {
+  constantArgumentFunction(constantEval(constParam, true))
+}
 
-// Struct and class constructions are not supported yet.
+// Test struct and class constructions. Structs whose initializers are marked as
+// constant_evaluable are considered as constants.
+
+struct AStruct {
+  var i: Int
+}
+
+struct BStruct {
+  var i: Int
+  @_semantics("constant_evaluable")
+  init(_ value: Int) {
+    i = value
+  }
+}
+
+class CClass {
+  var str: String
+  init() {
+    str = ""
+  }
+}
+
+func testStructAndClasses(arg: Int) {
+  constantArgumentFunction(AStruct(i: 9))
+    // expected-error@-1 {{argument 'constArg' must be a constant}}
+  constantArgumentFunction(BStruct(340))
+  constantArgumentFunction(CClass())
+    // expected-error@-1 {{argument 'constArg' must be a constant}}
+}
+
+// Test "requires_constant" annotation on protocol requirements.
+protocol Proto {
+  @_semantics("requires_constant_arg2")
+  func method(arg1: Int, arg2: Bool)
+}
+
+struct SConf : Proto {
+  func method(arg1: Int, arg2: Bool) { }
+}
+
+func testProtocolMethods<T: Proto>(b: Bool, p: T, p2:  Proto, s: SConf) {
+  p.method(arg1: 6, arg2: true)
+  p.method(arg1: 6, arg2: b)
+    // expected-error@-1 {{argument 'arg2' must be a constant}}
+  // Unfortunately, dispatch through protocol is not diagnosed as the AST uses an
+  // opaque_value_expr and does not provide a function declaration. This is possibly
+  // because this is a virtual dispatch.
+  p2.method(arg1: 6, arg2: b)
+  // Note that even though 's' conforms to Proto, since its method is not annotated as
+  // requiring constant arg2, there will be no error here.
+  s.method(arg1: 6, arg2: b)
+}
 
 // Array and dictionary literals are not supported yet.
+func testArrayAndDictionaryLiterals() {
+  constantArgumentFunction([0, 1])
+    // expected-error@-1 {{argument 'constArg' must be a constant}}
+  constantArgumentFunction(["" : 2])
+    // expected-error@-1 {{argument 'constArg' must be a constant}}
+}
 
 // Test that the check is resilient to errors in the semantics attribute.
+@_semantics("requires_constant_y")
+func funcWithWrongSemantics(x: Int) {}
+@_semantics("requires_constant_")
+func funcWithUnparseableSemantics(x: Int) {}
+
+func testFunctionWithWrongSemantics(x: Int) {
+  funcWithWrongSemantics(x: x)
+  funcWithUnparseableSemantics(x: x)
+}
 
 // Test that the check is resilient to other type errors.
+func testOtherTypeErrors() {
+  constantArgumentFunction(x)
+    // expected-error@-1 {{use of unresolved identifier 'x'}}
+  constantArgumentFunction(10 as String)
+    // expected-error@-1 {{cannot convert value of type 'Int' to type 'String' in coercion}}
+}
 
 // Test constantness of the ordering used in the atomic operations.

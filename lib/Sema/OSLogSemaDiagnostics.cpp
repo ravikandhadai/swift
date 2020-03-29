@@ -63,9 +63,9 @@ static Expr * checkConstantness(Expr *expr) {
 //    llvm::errs() << "Looking at expression: \n";
 //    expr->dump();
 //    llvm::errs() << "\n";
-    // Lookthrough paren, tuple and inject_into_optional expressions.
-    if (ParenExpr *parenExpr = dyn_cast<ParenExpr>(expr)) {
-      expressionsToCheck.push_back(parenExpr->getSubExpr());
+    // Lookthrough identity_expr, tuple and inject_into_optional expressions.
+    if (IdentityExpr *identityExpr = dyn_cast<IdentityExpr>(expr)) {
+      expressionsToCheck.push_back(identityExpr->getSubExpr());
       continue;
     }
     if (TupleExpr *tupleExpr = dyn_cast<TupleExpr>(expr)) {
@@ -138,7 +138,7 @@ static Expr * checkConstantness(Expr *expr) {
     // are constants. Here, we can skip the default argument expressions as
     // the default arguments of a constant_evaluable function must be a
     // constant.
-    FuncDecl *callee = dyn_cast<FuncDecl>(calledValue);
+    AbstractFunctionDecl *callee = dyn_cast<AbstractFunctionDecl>(calledValue);
     if (!callee || !hasConstantEvaluableAttr(callee))
       return expr;
 
