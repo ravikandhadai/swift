@@ -30,6 +30,29 @@ static bool hasConstantEvaluableAttr(ValueDecl *decl) {
   return false;
 }
 
+static void getConstantArgumentNames(FuncDecl *funcDecl,
+                            SmallVectorImpl<StringRef> &constantArgumentNames) {
+  StringRef prefix = StringRef("requires_constant_");
+  Optional<StringRef> requiresConstantSemanticsAttr = None;
+  for (auto semantics : funcDecl->getAttrs().getAttributes<SemanticsAttr>()) {
+    if (semantics->Value.startswith(prefix)) {
+      requiresConstantSemanticsAttr = semantics->Value;
+      break;
+    }
+  }
+  if (!requiresConstantSemanticsAttr)
+    return;
+
+  StringRef unparsedSuffix =
+    requiresConstantSemanticsAttr->drop_front(prefix.size());
+  while (!unparsedSuffix.empty()) {
+    auto pair = unparsedSuffix.split('_');
+    constantArgumentNames.push_back(pair.first);
+    unparsedSuffix = pair.second;
+  }
+  return;
+}
+
 /// Check whether \p expr is constant valued i.e., it  uses only literals or
 /// enum elements whose arguments are constant valued.
 static Expr * checkConstantness(Expr *expr) {
@@ -47,12 +70,40 @@ static Expr * checkConstantness(Expr *expr) {
     if (isa<TypeExpr>(expr))
       continue;
 
+    // If this is a member-ref, it has to be annotated constant evaluable.
     if (MemberRefExpr *memberRef = dyn_cast<MemberRefExpr>(expr)) {
       if (ValueDecl *memberDecl = memberRef->getMember().getDecl()) {
         if (hasConstantEvaluableAttr(memberDecl))
           continue;
       }
       return expr;
+    }
+
+    // If this is a variable, it has to be a constant parameter of the enclosing
+    // function. In principle, a local variable that is defined by a constant expression
+    // can be supported, but that requires folding constant expression in all contexts,
+    // which is not supported yet.
+    if (DeclRefExpr *declRef = dyn_cast<DeclRefExpr>(expr)) {
+      ValueDecl *decl = declRef->getDecl();
+      if (!decl)
+        return expr;
+      ParamDecl *paramDecl = dyn_cast<ParamDecl>(decl);
+      if (!paramDecl)
+        return expr;
+      Decl *declContext = paramDecl->getDeclContext()->getAsDecl();
+      if (!declContext)
+        return expr;
+      FuncDecl *funcDecl = dyn_cast<FuncDecl>(declContext);
+      if (!funcDecl)
+        return expr;
+      SmallVector<StringRef, 4> constantArgumentNames;
+      getConstantArgumentNames(funcDecl, constantArgumentNames);
+      auto findIter =
+        llvm::find(constantArgumentNames, paramDecl->getParameterName().str());
+      if (findIter == constantArgumentNames.end())
+        return expr;
+      // Here, the parameter is declared as a constant argument.
+      continue;
     }
 
     if (!isa<ApplyExpr>(expr))
@@ -113,27 +164,9 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
   if (!calledDecl || !isa<FuncDecl>(calledDecl))
     return;
   FuncDecl *callee = cast<FuncDecl>(calledDecl);
-  StringRef prefix = StringRef("requires_constant_");
-  Optional<StringRef> requiresConstantSemanticsAttr = None;
-  for (auto semantics : callee->getAttrs().getAttributes<SemanticsAttr>()) {
-    if (semantics->Value.startswith(prefix)) {
-      requiresConstantSemanticsAttr = semantics->Value;
-      break;
-    }
-  }
-  if (!requiresConstantSemanticsAttr)
-    return;
-
-  // Extract the arguments that must be constants. If the argument name in the
-  // attribute does not match the name of an argument, diagnose the error.
   SmallVector<StringRef, 4> constantArgumentNames;
-  StringRef unparsedSuffix =
-    requiresConstantSemanticsAttr->drop_front(prefix.size());
-  while (!unparsedSuffix.empty()) {
-    auto pair = unparsedSuffix.split('_');
-    constantArgumentNames.push_back(pair.first);
-    unparsedSuffix = pair.second;
-  }
+  // Extract arguments that are required to be constants, if any.
+  getConstantArgumentNames(callee, constantArgumentNames);
   // Give up if the argument names are empty or do not match the function
   // argument names. We should not diganose in those cases as the semantics
   // attribute on the definition of the function is wrong. The caller is not to
