@@ -114,7 +114,7 @@ extension OSLogInterpolation {
 }
 
 func testOSLogInterpolationExtension(a: A) {
-  // The following is not a Sema error but would result in a SIL diagnostics as
+  // The following is not a Sema error but would result in SIL diagnostics as
   // the appendInterpolation overload is not marked as constant_evaluable.
   _osLogTestHelper("Error at line: \(a: a)")
 }

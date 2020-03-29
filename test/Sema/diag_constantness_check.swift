@@ -37,11 +37,42 @@ func optionalTest(x: Int) {
 // Test string interpolation literals. We can only enforce constantness on custom string
 // interpolation types. For string types, the constant is a string literal.
 
-struct CustomStringInterpolation {
+struct CustomStringInterpolation : ExpressibleByStringLiteral,
+  ExpressibleByStringInterpolation {
+  struct StringInterpolation : StringInterpolationProtocol {
+    init(literalCapacity: Int, interpolationCount: Int) { }
+    mutating func appendLiteral(_ x: String) { }
 
+    @_semantics("requires_constant_x")
+    mutating func appendInterpolation(_ x: Int) { }
+  }
+  init(stringLiteral value: String) { }
+  init(stringInterpolation: StringInterpolation) { }
+}
+
+@_semantics("requires_constant_constArg")
+func constantStringInterpolation(_ constArg: CustomStringInterpolation) {}
+
+func testStringInterpolationLiteral(x: Int) {
+  constantStringInterpolation("a string interpolation literal \(x)")
+    // expected-error@-1 {{argument 'x' must be a constant}}
+  constantStringInterpolation("a string interpolation literal \(10)")
+}
+
+// Test multiple arguments.
+@_semantics("requires_constant_arg1_arg2_arg4")
+func multipleArguments(_ arg1: Int, _ arg2: Bool, _ arg3: String, _ arg4: Double) {
+}
+
+func testMultipleArguments(_ x: String, _ y: Double) {
+  multipleArguments(56, false, x, 23.3)
+  multipleArguments(56, false, x, y)
+    // expected-error@-1 {{argument 'arg4' must be a constant}}
 }
 
 // Test enum uses.
+
+
 
 // Test type expressions.
 
