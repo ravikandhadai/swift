@@ -1,6 +1,7 @@
 // RUN: %target-typecheck-verify-swift -swift-version 5
 
-// Tests for the diagnostics emitted in Sema for the new os log APIs.
+// Tests for the constantness diagnostics emitted in Sema in the context of the os log
+// APIs.
 
 import OSLogTestHelper
 

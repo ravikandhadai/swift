@@ -63,7 +63,21 @@ static Expr * checkConstantness(Expr *expr) {
 //    llvm::errs() << "Looking at expression: \n";
 //    expr->dump();
 //    llvm::errs() << "\n";
-
+    // Lookthrough paren, tuple and inject_into_optional expressions.
+    if (ParenExpr *parenExpr = dyn_cast<ParenExpr>(expr)) {
+      expressionsToCheck.push_back(parenExpr->getSubExpr());
+      continue;
+    }
+    if (TupleExpr *tupleExpr = dyn_cast<TupleExpr>(expr)) {
+      for (Expr *element : tupleExpr->getElements())
+        expressionsToCheck.push_back(element);
+      continue;
+    }
+    if (InjectIntoOptionalExpr *optionalExpr
+          = dyn_cast<InjectIntoOptionalExpr>(expr)) {
+      expressionsToCheck.push_back(optionalExpr->getSubExpr());
+      continue;
+    }
     // Literal expressions also includes InterpolatedStringLiteralExpr.
     if (isa<LiteralExpr>(expr))
       continue;
@@ -197,37 +211,33 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
 
   // Check that the arguments at the constantArgumentIndices are constants.
   Expr *argumentExpr = callExpr->getArg();
-  if (auto *tupleExpr = dyn_cast<TupleExpr>(argumentExpr)) {
-    for (unsigned constantIndex : constantArgumentIndices) {
-      assert (constantIndex < tupleExpr->getNumElements() &&
-              "constantIndex exceeds the number of arguments to the function.");
-      Expr *argument= tupleExpr->getElement(constantIndex);
-      // Skip the constantness check for default argument expressions as it is
-      // the libraries responsibility to ensure that it is a constant, when
-      // necessary.
-      if (isa<DefaultArgumentExpr>(argument))
-        continue;
-      Expr *errorExpr = checkConstantness(argument);
-      if (errorExpr) {
-        diagnose(argument, paramList->get(constantIndex)->getParameterName(),
-                 errorExpr);
-      }
-    }
-    return;
+  SmallVector<Expr *, 4> arguments;
+  if (TupleExpr *tupleExpr = dyn_cast<TupleExpr>(argumentExpr)) {
+    auto elements = tupleExpr->getElements();
+    arguments.append(elements.begin(), elements.end());
+  } else if (ParenExpr *parenExpr = dyn_cast<ParenExpr>(argumentExpr)) {
+    arguments.push_back(parenExpr->getSubExpr());
+  } else {
+    arguments.push_back(argumentExpr);
   }
 
-  // Here, we have only one argument.
-  unsigned argIndex = 0;
-  if (llvm::find(constantArgumentIndices, argIndex)
-        == constantArgumentIndices.end())
-    return;
-  if (isa<DefaultArgumentExpr>(argumentExpr))
-    return;
-  Expr *errorExpr = checkConstantness(argumentExpr);
-  if (errorExpr) {
-    diagnose(argumentExpr, paramList->get(argIndex)->getParameterName(),
-             errorExpr);
+  for (unsigned constantIndex : constantArgumentIndices) {
+    assert (constantIndex < arguments.size() &&
+            "constantIndex exceeds the number of arguments to the function.");
+    Expr *argument= arguments[constantIndex];
+    // Skip the constantness check for default argument expressions as it is
+    // the libraries responsibility to ensure that it is a constant, when
+    // necessary.
+    if (isa<DefaultArgumentExpr>(argument))
+      continue;
+    Expr *errorExpr = checkConstantness(argument);
+    if (errorExpr) {
+      diagnose(argument, paramList->get(constantIndex)->getParameterName(),
+               errorExpr);
+    }
   }
+  return;
+}
 
 //  Expr *logMessage = nullptr;
 //  bool logMessageIsLiteral = false;
@@ -318,4 +328,3 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
 //          }
 //        }
 //      });
-}
