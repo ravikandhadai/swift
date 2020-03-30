@@ -5005,15 +5005,6 @@ ERROR(experimental_differentiable_programming_disabled, none,
 
 ERROR(argument_not_constant, none, "argument %0 must be a constant", (Identifier))
 NOTE(expression_not_constant, none, "expression not constant", ())
-//ERROR(os_log_message_not_literal, none,
-//      "log message must be a string literal or string interpolation", ())
-//ERROR(os_log_interpolation_argument_nonconstant, none,
- //     "%select{interpolation argument|%0}1 must be a literal",
-  //    (StringRef, bool))
-//NOTE(os_log_interpolation_argument_nonconstant_note, none,
-//     "expression is not a literal", ())
-//ERROR(os_log_external_append_interpolation, none,
-  //    "externally defined interpolation is not supported in os log", ())
 
 #ifndef DIAG_NO_UNDEF
 # if defined(DIAG)

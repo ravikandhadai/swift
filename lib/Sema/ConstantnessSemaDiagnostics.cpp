@@ -1,8 +1,8 @@
-//===--- OSLogSemaDiagnostics.cpp - AST-Level Diagnostics -----------------===//
+//===------------------------ ConstantnessSemaDiagnostics.cpp ---------------------===//
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2019 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2020 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -10,7 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements AST-level diagnostics for the os log APIs based on
+// This file implements diagnostics for checking whether cetain arguments to certain
+// APIs are constants.
+// os log APIs based on
 // string interpolation. It implements the function `diagnoseOSLogUsageErrors`
 // declared in MiscDiagnostics.h.
 //
@@ -61,9 +63,6 @@ static Expr * checkConstantness(Expr *expr) {
   expressionsToCheck.push_back(expr);
   while (!expressionsToCheck.empty()) {
     Expr *expr = expressionsToCheck.pop_back_val();
-//    llvm::errs() << "Looking at expression: \n";
-//    expr->dump();
-//    llvm::errs() << "\n";
     // Lookthrough identity_expr, tuple and inject_into_optional expressions.
     if (IdentityExpr *identityExpr = dyn_cast<IdentityExpr>(expr)) {
       expressionsToCheck.push_back(identityExpr->getSubExpr());
@@ -137,13 +136,11 @@ static Expr * checkConstantness(Expr *expr) {
 
     // If this is a constant_evaluable function, check whether the arguments
     // are constants. Here, we can skip the default argument expressions as
-    // the default arguments of a constant_evaluable function must be a
-    // constant.
+    // the default arguments of a constant_evaluable function must be ensured to be
+    // a constant by the definition of the function.
     AbstractFunctionDecl *callee = dyn_cast<AbstractFunctionDecl>(calledValue);
     if (!callee || !hasConstantEvaluableAttr(callee))
       return expr;
-
-    //llvm::errs() << "found constant evaluable expression \n";
 
     SmallVector<Expr *, 4> argumentExprs;
     Expr *uncurriedArguments = apply->getArg();
@@ -168,10 +165,7 @@ static Expr * checkConstantness(Expr *expr) {
 
 static void diagnoseConstantArgumentRequirementOfCall(const CallExpr *callExpr,
                                                  const ASTContext& ctx) {
-  assert(callExpr && callExpr->getType());
-//  llvm::errs() << "Looking at expr: \n";
-//  expr->dump();
-//  llvm::errs() << "\n";
+  assert(callExpr && callExpr->getType() && "callExpr should have a valid type");
   DiagnosticEngine &diags = ctx.Diags;
 
   // Is expr a direct call with semantics attribute "requires_constant_argument"?
@@ -264,94 +258,3 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
   ConstantReqCallWalker walker(declContext->getASTContext());
   const_cast<Expr *>(expr)->walk(walker);
 }
-
-
-//  Expr *logMessage = nullptr;
-//  bool logMessageIsLiteral = false;
-//
-//  if (auto *tupleExpr = dyn_cast<TupleExpr>(argumentExpr)) {
-//    ArrayRef<Expr *> elements = tupleExpr->getElements();
-//    for (Expr *element : elements) {
-//      if (isa<StringLiteralExpr>(element) ||
-//          isa<InterpolatedStringLiteralExpr>(element)) {
-//        assert(!logMessage &&
-//               "os log must accept only one string literal or interpolation");
-//        logMessageIsLiteral = true;
-//        logMessage = element;
-//      }
-//    }
-//    if (!logMessage) {
-//      // If there are no literals in the call, set the log message to the last
-//      // argument, which is only used to emit diagnostics.
-//      logMessage = elements[elements.size() - 1];
-//    }
-//  } else {
-//    logMessage = argumentExpr;
-//    if (isa<StringLiteralExpr>(logMessage) ||
-//        isa<InterpolatedStringLiteralExpr>(logMessage)) {
-//      logMessageIsLiteral = true;
-//    }
-//  }
-//  assert(logMessage);
-//
-//  if (!logMessageIsLiteral) {
-//    astContext.Diags.diagnose(logMessage->getLoc(), diag::os_log_message_not_literal);
-//    return;
-//  }
-//
-//  assert(isa<StringLiteralExpr>(logMessage) ||
-//         isa<InterpolatedStringLiteralExpr>(logMessage));
-//  if (isa<StringLiteralExpr>(logMessage))
-//    return; // Nothing to check for string literals.
-//
-//  InterpolatedStringLiteralExpr *interpolation =
-//      cast<InterpolatedStringLiteralExpr>(logMessage);
-//
-//  interpolation->forEachSegment(
-//      DC->getASTContext(),
-//      [&](bool isAppendInterpolation, CallExpr *appendCall) {
-//        if (!isAppendInterpolation || !appendCall->getType())
-//          return;
-//
-//        ValueDecl *calledValue = appendCall->getCalledValue();
-//        assert(calledValue);
-//
-//        // Reject user-defined appendInterpolation extensions. These will be
-//        // supported in the future but not yet.
-//        auto *appendCalleeDecl = dyn_cast<FuncDecl>(calledValue);
-//        assert(appendCalleeDecl &&
-//               "os log's appendInterpolation must be a function");
-//
-//        if (!appendCalleeDecl->getModuleContext()->isSystemModule()) {
-//          astContext.Diags.diagnose(appendCall->getLoc(),
-//                      diag::os_log_external_append_interpolation);
-//          return;
-//        }
-//
-//        // Check whether every argument to `appendInterpolation` except the
-//        // first is a constant-valued expression.
-//        Expr *appendArg = appendCall->getArg();
-//        if (!isa<TupleExpr>(appendArg))
-//          return; // There is just one argument here.
-//
-//        ArrayRef<Expr *> interpolationArgs =
-//            cast<TupleExpr>(appendArg)->getElements();
-//
-//        assert(appendCalleeDecl->getParameters()->size() >=
-//               interpolationArgs.size());
-//
-//        for (unsigned i = 1; i < interpolationArgs.size(); i++) {
-//          Expr *interpolationArg = interpolationArgs[i];
-//          Optional<Expr *> errorExpr =
-//              isConstantValuedOSLogArgument(interpolationArg);
-//          if (errorExpr.hasValue()) {
-//            ParamDecl *errorParam = appendCalleeDecl->getParameters()->get(i);
-//            StringRef errorParamName = errorParam->getNameStr();
-//            astContext.Diags.diagnose(interpolationArg->getLoc(),
-//                        diag::os_log_interpolation_argument_nonconstant,
-//                        errorParamName, errorParam->hasName());
-//            astContext.Diags.diagnose(errorExpr.getValue()->getLoc(),
-//                        diag::os_log_interpolation_argument_nonconstant_note);
-//          }
-//        }
-//      });

@@ -5,7 +5,6 @@
 // @_semantics("requires_constant_<param1>_<param2>") annotation.
 
 // Check simple literals.
-
 @_semantics("requires_constant_constArg")
 func constantArgumentFunction<T>(_ constArg: T) {
 }
@@ -35,7 +34,6 @@ func testConstArgFuncWithReturn(x: Int, str: String) -> Int {
   return constArgFunctionWithReturn(x)
     // expected-error@-1 {{argument 'constArg' must be a constant}}
 }
-
 
 @_semantics("requires_constant_constArg")
 func constantOptionalArgument(_ constArg: Optional<Int>) {

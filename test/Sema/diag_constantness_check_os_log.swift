@@ -67,7 +67,6 @@ func testValidLogCalls(x: Int) {
   _osLogTestHelper("\((x + 1) * 2, privacy: .public)")
 }
 
-
 // Check whether os-log-specific diagnostics do not crash when there
 // are type errors.
 func testTypeIncorrectLogCalls() {
@@ -118,4 +117,3 @@ func testOSLogInterpolationExtension(a: A) {
   // the appendInterpolation overload is not marked as constant_evaluable.
   _osLogTestHelper("Error at line: \(a: a)")
 }
-
