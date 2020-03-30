@@ -18,6 +18,7 @@
 
 #include "MiscDiagnostics.h"
 #include "TypeChecker.h"
+#include "swift/AST/ASTWalker.h"
 #include "swift/AST/ParameterList.h"
 using namespace swift;
 
@@ -165,15 +166,15 @@ static Expr * checkConstantness(Expr *expr) {
   return nullptr;
 }
 
-void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
-                                                const DeclContext *DC) {
-  if (!expr || !isa<CallExpr>(expr) || !expr->getType())
-    return;
-
-  DiagnosticEngine &diags = DC->getASTContext().Diags;
+static void diagnoseConstantArgumentRequirementOfCall(const CallExpr *callExpr,
+                                                 const ASTContext& ctx) {
+  assert(callExpr && callExpr->getType());
+//  llvm::errs() << "Looking at expr: \n";
+//  expr->dump();
+//  llvm::errs() << "\n";
+  DiagnosticEngine &diags = ctx.Diags;
 
   // Is expr a direct call with semantics attribute "requires_constant_argument"?
-  const CallExpr *callExpr = cast<CallExpr>(expr);
   ValueDecl *calledDecl = callExpr->getCalledValue();
   if (!calledDecl || !isa<FuncDecl>(calledDecl))
     return;
@@ -238,6 +239,32 @@ void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
   }
   return;
 }
+
+void swift::diagnoseConstantArgumentRequirement(const Expr *expr,
+                                           const DeclContext *declContext) {
+  class ConstantReqCallWalker : public ASTWalker {
+    const ASTContext &astContext;
+
+  public:
+    ConstantReqCallWalker(ASTContext &ctx) : astContext(ctx) {}
+
+    // Descend until we find a call expressions. Note that the input expression
+    // could be an assign expression or another expression that contains the call.
+    std::pair<bool, Expr *> walkToExprPre(Expr *expr) override {
+      if (!expr || isa<ErrorExpr>(expr) || !expr->getType())
+        return { false, expr };
+      if (auto *callExpr = dyn_cast<CallExpr>(expr)) {
+        diagnoseConstantArgumentRequirementOfCall(callExpr, astContext);
+        return {false, expr};
+      }
+      return {true, expr};
+    }
+  };
+
+  ConstantReqCallWalker walker(declContext->getASTContext());
+  const_cast<Expr *>(expr)->walk(walker);
+}
+
 
 //  Expr *logMessage = nullptr;
 //  bool logMessageIsLiteral = false;

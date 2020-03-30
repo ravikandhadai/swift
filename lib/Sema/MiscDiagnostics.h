@@ -87,7 +87,7 @@ void diagnoseUnownedImmediateDeallocation(ASTContext &ctx,
 /// is indicated through @_semantics("requires_constant_<argnames>") annotation, check
 /// whether the call is passed only constant arguments. Otherwise, diagnose and emit errors.
 void diagnoseConstantArgumentRequirement(const Expr *expr,
-                                         const DeclContext *DC);
+                                    const DeclContext *declContext);
 
 /// Attempt to fix the type of \p decl so that it's a valid override for
 /// \p base...but only if we're highly confident that we know what the user

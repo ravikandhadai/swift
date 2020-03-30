@@ -609,3 +609,11 @@ func testInterpolationOfGenerics<T : Proto>(p: T) {
   _osLogTestHelper("A generic argument's property \(p.property)")
 }
 
+extension Proto {
+  // CHECK-LABEL: @${{.*}}testInterpolationOfSelfyy
+  func testInterpolationOfSelf() {
+    _osLogTestHelper("A protocol's property \(String(describing: Self.self))")
+  }
+}
+
+

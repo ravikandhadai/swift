@@ -10,7 +10,6 @@
 func constantArgumentFunction<T>(_ constArg: T) {
 }
 
-// Correct test cases.
 func literalTest(x: Int) {
   constantArgumentFunction(1)
   constantArgumentFunction("Some string")
@@ -21,6 +20,22 @@ func literalTest(x: Int) {
   constantArgumentFunction(x + 2)
     // expected-error@-1 {{argument 'constArg' must be a constant}}
 }
+
+@_semantics("requires_constant_constArg")
+func constArgFunctionWithReturn<T>(_ constArg: T) -> T {
+  return constArg
+}
+
+func testConstArgFuncWithReturn(x: Int, str: String) -> Int {
+  _ = constArgFunctionWithReturn("")
+  _ = constArgFunctionWithReturn(str)
+    // expected-error@-1 {{argument 'constArg' must be a constant}}
+  constArgFunctionWithReturn(10)
+    // expected-warning@-1 {{result of call to 'constArgFunctionWithReturn' is unused}}
+  return constArgFunctionWithReturn(x)
+    // expected-error@-1 {{argument 'constArg' must be a constant}}
+}
+
 
 @_semantics("requires_constant_constArg")
 func constantOptionalArgument(_ constArg: Optional<Int>) {
@@ -176,13 +191,23 @@ func testProtocolMethods<T: Proto>(b: Bool, p: T, p2:  Proto, s: SConf) {
   p.method(arg1: 6, arg2: true)
   p.method(arg1: 6, arg2: b)
     // expected-error@-1 {{argument 'arg2' must be a constant}}
-  // Unfortunately, dispatch through protocol is not diagnosed as the AST uses an
-  // opaque_value_expr and does not provide a function declaration. This is possibly
-  // because this is a virtual dispatch.
   p2.method(arg1: 6, arg2: b)
-  // Note that even though 's' conforms to Proto, since its method is not annotated as
-  // requiring constant arg2, there will be no error here.
+    // expected-error@-1 {{argument 'arg2' must be a constant}}
+  // Note that even though 's' conforms to Proto, since its method is not
+  // annotated as requiring constant arg2, there will be no error here.
   s.method(arg1: 6, arg2: b)
+}
+
+// Check requiers annotation on a class method.
+class ClassD {
+  @_semantics("requires_constant_arg2")
+  func method(_ arg1: Int, _ arg2: Bool)
+}
+
+func testClassMethod(d: ClassD, b: Bool) {
+  d.method(10, true)
+  d.method(10, b)
+    // expected-error@-1 {{argument 'arg2' must be a constant}}
 }
 
 // Array and dictionary literals are not supported yet.
@@ -212,4 +237,31 @@ func testOtherTypeErrors() {
     // expected-error@-1 {{cannot convert value of type 'Int' to type 'String' in coercion}}
 }
 
-// Test constantness of the ordering used in the atomic operations.
+// Test constantness of the ordering used in the atomic operations. The
+// following code uses stub for ordering.
+internal struct AtomicLoadOrderingStub {
+  @_semantics("constant_evaluable")
+  internal static var acquiring: Self { Self() }
+
+  @_semantics("constant_evaluable")
+  internal static var sequentiallyConsistent: Self { Self() }
+}
+
+internal struct UnsafeAtomicIntStub {
+  @_semantics("requires_constant_ordering")
+  internal func load(
+    ordering: AtomicLoadOrderingStub = .sequentiallyConsistent
+  ) -> Int {
+    return 0
+  }
+}
+
+func testAtomicOrderingConstantness(
+  atomicInt: UnsafeAtomicIntStub,
+  myOrder: AtomicLoadOrderingStub) {
+  _ = atomicInt.load()
+  _ = atomicInt.load(ordering: .acquiring)
+  _ = atomicInt.load(ordering: .sequentiallyConsistent)
+  _ = atomicInt.load(ordering: myOrder)
+    // expected-error@-1 {{argument 'ordering' must be a constant}}
+}
