@@ -10,12 +10,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements diagnostics for checking whether cetain arguments to certain
-// APIs are constants.
-// os log APIs based on
-// string interpolation. It implements the function `diagnoseOSLogUsageErrors`
-// declared in MiscDiagnostics.h.
+// This file implements checks for whether certain arguments to some specific APIs are
+// compile-time constants (see below for the definition of constants). In particular,
+// this code checks whether the new os_log APIs are invoked with constant arguments, and
+// whether the primitive atomic operations are invoked with constant "orderings". Uses of
+// these APIs are identified through @_semantics attributes.
 //
+// A "compile-time constant" is either a literal (including string/integer/float/boolean/
+// string-interpolation literal) or a call to a "constant_evaluable" function (or property)
+// with compile-time constant argument. A closure expression is also considered a
+// constant (it is a constant of a function type).
 //===----------------------------------------------------------------------===//
 
 #include "MiscDiagnostics.h"
