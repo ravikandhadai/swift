@@ -86,8 +86,8 @@ void diagnoseUnownedImmediateDeallocation(ASTContext &ctx,
 /// If \p expr is a call to a known function with a requirement that some
 /// arguments must be constants, whether those arguments are passed only
 /// constants. Otherwise, diagnose and emit errors.
-void diagnoseConstantArgumentRequirement(const Expr *expr,
-                                         const DeclContext *declContext);
+//void diagnoseConstantArgumentRequirement(const Expr *expr,
+//                                         const DeclContext *declContext);
 
 /// Attempt to fix the type of \p decl so that it's a valid override for
 /// \p base...but only if we're highly confident that we know what the user

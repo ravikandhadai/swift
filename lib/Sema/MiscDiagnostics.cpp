@@ -4355,7 +4355,6 @@ void swift::performSyntacticExprDiagnostics(const Expr *E,
     diagAvailability(E, const_cast<DeclContext*>(DC));
   if (ctx.LangOpts.EnableObjCInterop)
     diagDeprecatedObjCSelectors(DC, E);
-  diagnoseConstantArgumentRequirement(E, DC);
 }
 
 void swift::performStmtDiagnostics(ASTContext &ctx, const Stmt *S) {

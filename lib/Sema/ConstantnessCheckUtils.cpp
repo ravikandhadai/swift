@@ -327,29 +327,3 @@ static void diagnoseConstantArgumentRequirementOfCall(const CallExpr *callExpr,
       diagnoseError(errorExpr, ctx, callee);
   }
 }
-
-void swift::diagnoseConstantArgumentRequirement(
-    const Expr *expr, const DeclContext *declContext) {
-  class ConstantReqCallWalker : public ASTWalker {
-    const ASTContext &astContext;
-
-  public:
-    ConstantReqCallWalker(ASTContext &ctx) : astContext(ctx) {}
-
-    // Descend until we find a call expressions. Note that the input expression
-    // could be an assign expression or another expression that contains the
-    // call.
-    std::pair<bool, Expr *> walkToExprPre(Expr *expr) override {
-      if (!expr || isa<ErrorExpr>(expr) || !expr->getType())
-        return {false, expr};
-      if (auto *callExpr = dyn_cast<CallExpr>(expr)) {
-        diagnoseConstantArgumentRequirementOfCall(callExpr, astContext);
-        return {false, expr};
-      }
-      return {true, expr};
-    }
-  };
-
-  ConstantReqCallWalker walker(declContext->getASTContext());
-  const_cast<Expr *>(expr)->walk(walker);
-}
