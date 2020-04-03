@@ -10,12 +10,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements checks for checking whether certain arguments to some
+// This file implements utilities for checking whether certain arguments to some
 // specific APIs are compile-time constants (see below for the definition of
-// constants). In particular, this code checks whether the new os_log APIs are
-// invoked with constant arguments, and whether the primitive atomic operations
-// are invoked with constant "orderings". These APIs are identified through
-// @_semantics attributes.
+// compile-time constants). In particular, these utilities are used to check whether
+// the new os_log APIs are invoked with constant arguments, and whether the primitive
+// atomic operations are invoked with constant "orderings". These APIs are identified
+// through @_semantics attributes.
+//
+// (describe where the utilities are used.
 //
 // A "compile-time constant" is either a literal (including
 // string/integer/float/boolean/string-interpolation literal) or a call to a
@@ -24,8 +26,8 @@
 // (it is a constant of a function type).
 //===----------------------------------------------------------------------===//
 
-#include "MiscDiagnostics.h"
 #include "TypeChecker.h"
+#include "ConstantnessCheckUtils.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ParameterList.h"
@@ -52,17 +54,17 @@ static bool isAtomicOrderingDecl(StructDecl *structDecl) {
           structName == astContext.Id_AtomicUpdateOrdering);
 }
 
-/// Return true iff the parameter \p param of function \c funDecl is required to
-/// be a constant. This is true if either the function is an os_log function or
-/// it is an atomics operation and the parameter represents the ordering.
-static bool isParamRequiredToBeConstant(FuncDecl *funcDecl, ParamDecl *param) {
-  assert(funcDecl && param && "funcDecl and param must not be null");
+bool swift::isParamRequiredToBeConstant(ValueDecl *decl, Type paramType) {
+  assert(decl && "funcDecl must not be null");
+
+  FuncDecl *funcDecl = dyn_cast<FuncDecl>(decl);
+  if (!funcDecl)
+    return false;
   if (hasSemanticsAttr(funcDecl, semantics::OSLOG_REQUIRES_CONSTANT_ARGUMENTS))
     return true;
   if (!hasSemanticsAttr(funcDecl,
                         semantics::ATOMICS_REQUIRES_CONSTANT_ORDERINGS))
     return false;
-  Type paramType = param->getType();
   StructDecl *structDecl = paramType->getStructOrBoundGenericStruct();
   if (!structDecl)
     return false;
@@ -75,12 +77,7 @@ static bool hasConstantEvaluableAttr(ValueDecl *decl) {
   return hasSemanticsAttr(decl, semantics::CONSTANT_EVALUABLE);
 }
 
-/// Check whether \p expr is a compile-time constant. It must either be a
-/// literal_expr, which does not include array and dictionary literal, or a
-/// closure expression, which is considered a compile-time constant of a
-/// function type, or a call to a "constant_evaluable" function (or property)
-/// whose arguments are themselves compile-time constants.
-static Expr *checkConstantness(Expr *expr) {
+Expr *swift::checkConstantness(Expr *expr) {
   SmallVector<Expr *, 4> expressionsToCheck;
   expressionsToCheck.push_back(expr);
   while (!expressionsToCheck.empty()) {
@@ -109,6 +106,10 @@ static Expr *checkConstantness(Expr *expr) {
     // constants of function types.
     if (isa<AbstractClosureExpr>(expr))
       continue;
+    // Skip the constantness check for default argument expressions as it is the libraries
+    // responsibility to ensure that it is a constant, when necessary.
+    if (isa<DefaultArgumentExpr>(expr))
+      continue;
 
     // If this is a member-ref, it has to be annotated constant evaluable.
     if (MemberRefExpr *memberRef = dyn_cast<MemberRefExpr>(expr)) {
@@ -132,7 +133,7 @@ static Expr *checkConstantness(Expr *expr) {
       if (!declContext)
         return expr;
       FuncDecl *funcDecl = dyn_cast<FuncDecl>(declContext);
-      if (!funcDecl || !isParamRequiredToBeConstant(funcDecl, paramDecl))
+      if (!funcDecl || !isParamRequiredToBeConstant(funcDecl, paramDecl->getType()))
         return expr;
       continue;
     }
@@ -152,28 +153,11 @@ static Expr *checkConstantness(Expr *expr) {
     }
 
     // If this is a constant_evaluable function, check whether the arguments
-    // are constants. Here, we can skip the default argument expressions as
-    // the default arguments of a constant_evaluable function must be ensured to
-    // be a constant by the definition of the function.
+    // are constants.
     AbstractFunctionDecl *callee = dyn_cast<AbstractFunctionDecl>(calledValue);
     if (!callee || !hasConstantEvaluableAttr(callee))
       return expr;
-
-    SmallVector<Expr *, 4> argumentExprs;
-    Expr *uncurriedArguments = apply->getArg();
-    if (auto *tupleExpr = dyn_cast<TupleExpr>(uncurriedArguments)) {
-      for (Expr *element : tupleExpr->getElements())
-        argumentExprs.push_back(element);
-    } else {
-      argumentExprs.push_back(uncurriedArguments);
-    }
-    // Skip default argument expressions.
-    auto nondefaultArgs =
-        llvm::make_filter_range(argumentExprs, [&](Expr *expr) {
-          return !isa<DefaultArgumentExpr>(expr);
-        });
-    for (Expr *argument : nondefaultArgs)
-      expressionsToCheck.push_back(argument);
+    expressionsToCheck.push_back(apply->getArg());
   }
   return nullptr;
 }

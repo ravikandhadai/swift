@@ -17,6 +17,7 @@
 
 #include "CSFix.h"
 #include "ConstraintSystem.h"
+#include "ConstantnessCheckUtils.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/GenericSignature.h"
@@ -1093,6 +1094,15 @@ ConstraintSystem::TypeMatchResult constraints::matchCallArguments(
           argIdx, paramIdx, param.getParameterFlags()));
       const auto &argument = argsWithLabels[argIdx];
       auto argTy = argument.getOldType();
+
+      // Check whether the argument has to be a compile-time constant. The constantness
+      // requirement for argument only applies to the new os_log APIs and the ordering
+      // argument of the atomic operations, which are identified through semantics
+      // attributes.
+      if (isParamRequiredToBeConstant(callee, paramTy)) {
+        auto *argExpr = getArgumentExpr(locator.getAnchor(), argIdx);
+
+      }
 
       bool matchingAutoClosureResult = param.isAutoClosure();
       if (param.isAutoClosure() && !isSynthesizedArgument(argument)) {
