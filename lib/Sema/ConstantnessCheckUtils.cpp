@@ -27,12 +27,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "TypeChecker.h"
+#include "ConstraintSystem.h"
 #include "ConstantnessCheckUtils.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/SemanticAttrs.h"
 using namespace swift;
+using namespace constraints;
 
 /// Check whether a given \p decl has a @_semantics attribute with the given
 /// attribute name \c attrName.
@@ -77,7 +79,8 @@ static bool hasConstantEvaluableAttr(ValueDecl *decl) {
   return hasSemanticsAttr(decl, semantics::CONSTANT_EVALUABLE);
 }
 
-Expr *swift::checkConstantness(Expr *expr) {
+Expr *swift::checkConstantness(Expr *expr, ConstraintLocator *locator,
+                            ConstraintSystem *cs) {
   SmallVector<Expr *, 4> expressionsToCheck;
   expressionsToCheck.push_back(expr);
   while (!expressionsToCheck.empty()) {
@@ -112,12 +115,23 @@ Expr *swift::checkConstantness(Expr *expr) {
       continue;
 
     // If this is a member-ref, it has to be annotated constant evaluable.
-    if (MemberRefExpr *memberRef = dyn_cast<MemberRefExpr>(expr)) {
-      if (ValueDecl *memberDecl = memberRef->getMember().getDecl()) {
-        if (hasConstantEvaluableAttr(memberDecl))
-          continue;
+    if (isa<MemberRefExpr>(expr) || isa<UnresolvedMemberExpr>(expr)) {
+      ValueDecl *memberDecl =
+        isa<MemberRefExpr>(expr) ?
+          cast<MemberRefExpr>(expr)->getMember().getDecl() :
+          cs->findResolvedMemberRef(
+            cs->getConstraintLocator(cast<UnresolvedMemberExpr>(expr),
+                                     ConstraintLocator::UnresolvedMember));
+      if (!memberDecl) {
+        llvm::errs() << "MemberDecl is null\n";
+        return expr;
       }
-      return expr;
+      llvm::errs() << "MemberDecl: \n";
+      memberDecl->dump();
+      llvm::errs() << "\n";
+      if (!memberDecl || !hasConstantEvaluableAttr(memberDecl))
+        return expr;
+      continue;
     }
 
     // If this is a variable, it has to be a known constant parameter of the
@@ -142,7 +156,11 @@ Expr *swift::checkConstantness(Expr *expr) {
       return expr;
 
     ApplyExpr *apply = cast<ApplyExpr>(expr);
-    ValueDecl *calledValue = apply->getCalledValue();
+    // Resolve the callee.
+    ValueDecl *calledValue =
+      cs->findResolvedMemberRef(
+          cs->getCalleeLocator(cs->getConstraintLocator(apply)));
+    //ValueDecl *calledValue = apply->getCalledValue();
     if (!calledValue)
       return expr;
 
@@ -158,6 +176,21 @@ Expr *swift::checkConstantness(Expr *expr) {
     if (!callee || !hasConstantEvaluableAttr(callee))
       return expr;
     expressionsToCheck.push_back(apply->getArg());
+//    SmallVector<Expr *, 4> argumentExprs;
+//    Expr *argumentVector = apply->getArg();
+//    if (auto *tupleExpr = dyn_cast<TupleExpr>(argumentVector)) {
+//      for (Expr *element : tupleExpr->getElements())
+//        argumentExprs.push_back(element);
+//    } else {
+//      argumentExprs.push_back(argumentVector);
+//    }
+//    // Skip default argument expressions.
+//    auto nondefaultArgs =
+//    llvm::make_filter_range(argumentExprs, [&](Expr *expr) {
+//      return !isa<DefaultArgumentExpr>(expr);
+//    });
+//    for (Expr *argument : nondefaultArgs)
+//      expressionsToCheck.push_back(argument);
   }
   return nullptr;
 }
@@ -281,49 +314,49 @@ static void diagnoseError(Expr *errorExpr, const ASTContext &astContext,
 
 /// Given a call \c callExpr, if some or all of its arguments are required to be
 /// constants, check that property on the arguments.
-static void diagnoseConstantArgumentRequirementOfCall(const CallExpr *callExpr,
-                                                      const ASTContext &ctx) {
-  assert(callExpr && callExpr->getType() &&
-         "callExpr should have a valid type");
-  ValueDecl *calledDecl = callExpr->getCalledValue();
-  if (!calledDecl || !isa<FuncDecl>(calledDecl))
-    return;
-  FuncDecl *callee = cast<FuncDecl>(calledDecl);
-
-  // Collect argument indices that are required to be constants.
-  SmallVector<unsigned, 4> constantArgumentIndices;
-  auto paramList = callee->getParameters();
-  for (unsigned i = 0; i < paramList->size(); i++) {
-    ParamDecl *param = paramList->get(i);
-    if (isParamRequiredToBeConstant(callee, param))
-      constantArgumentIndices.push_back(i);
-  }
-  if (constantArgumentIndices.empty())
-    return;
-
-  // Check that the arguments at the constantArgumentIndices are constants.
-  Expr *argumentExpr = callExpr->getArg();
-  SmallVector<Expr *, 4> arguments;
-  if (TupleExpr *tupleExpr = dyn_cast<TupleExpr>(argumentExpr)) {
-    auto elements = tupleExpr->getElements();
-    arguments.append(elements.begin(), elements.end());
-  } else if (ParenExpr *parenExpr = dyn_cast<ParenExpr>(argumentExpr)) {
-    arguments.push_back(parenExpr->getSubExpr());
-  } else {
-    arguments.push_back(argumentExpr);
-  }
-
-  for (unsigned constantIndex : constantArgumentIndices) {
-    assert(constantIndex < arguments.size() &&
-           "constantIndex exceeds the number of arguments to the function");
-    Expr *argument = arguments[constantIndex];
-    // Skip the constantness check for default argument expressions as it is
-    // the libraries responsibility to ensure that it is a constant, when
-    // necessary.
-    if (isa<DefaultArgumentExpr>(argument))
-      continue;
-    Expr *errorExpr = checkConstantness(argument);
-    if (errorExpr)
-      diagnoseError(errorExpr, ctx, callee);
-  }
-}
+//static void diagnoseConstantArgumentRequirementOfCall(const CallExpr *callExpr,
+//                                                      const ASTContext &ctx) {
+//  assert(callExpr && callExpr->getType() &&
+//         "callExpr should have a valid type");
+//  ValueDecl *calledDecl = callExpr->getCalledValue();
+//  if (!calledDecl || !isa<FuncDecl>(calledDecl))
+//    return;
+//  FuncDecl *callee = cast<FuncDecl>(calledDecl);
+//
+//  // Collect argument indices that are required to be constants.
+//  SmallVector<unsigned, 4> constantArgumentIndices;
+//  auto paramList = callee->getParameters();
+//  for (unsigned i = 0; i < paramList->size(); i++) {
+//    ParamDecl *param = paramList->get(i);
+//    if (isParamRequiredToBeConstant(callee, param->getType()))
+//      constantArgumentIndices.push_back(i);
+//  }
+//  if (constantArgumentIndices.empty())
+//    return;
+//
+//  // Check that the arguments at the constantArgumentIndices are constants.
+//  Expr *argumentExpr = callExpr->getArg();
+//  SmallVector<Expr *, 4> arguments;
+//  if (TupleExpr *tupleExpr = dyn_cast<TupleExpr>(argumentExpr)) {
+//    auto elements = tupleExpr->getElements();
+//    arguments.append(elements.begin(), elements.end());
+//  } else if (ParenExpr *parenExpr = dyn_cast<ParenExpr>(argumentExpr)) {
+//    arguments.push_back(parenExpr->getSubExpr());
+//  } else {
+//    arguments.push_back(argumentExpr);
+//  }
+//
+//  for (unsigned constantIndex : constantArgumentIndices) {
+//    assert(constantIndex < arguments.size() &&
+//           "constantIndex exceeds the number of arguments to the function");
+//    Expr *argument = arguments[constantIndex];
+//    // Skip the constantness check for default argument expressions as it is
+//    // the libraries responsibility to ensure that it is a constant, when
+//    // necessary.
+//    if (isa<DefaultArgumentExpr>(argument))
+//      continue;
+//    Expr *errorExpr = checkConstantness(argument);
+//    if (errorExpr)
+//      diagnoseError(errorExpr, ctx, callee);
+//  }
+//}

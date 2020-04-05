@@ -1095,25 +1095,6 @@ ConstraintSystem::TypeMatchResult constraints::matchCallArguments(
       const auto &argument = argsWithLabels[argIdx];
       auto argTy = argument.getOldType();
 
-      // Check whether the argument has to be a compile-time constant. The constantness
-      // requirement for argument only applies to the new os_log APIs and the ordering
-      // argument of the atomic operations, which are identified through semantics
-      // attributes.
-      if (isParamRequiredToBeConstant(callee, paramTy)) {
-        Expr *argExpr = getArgumentExpr(locator.getAnchor(), argIdx);
-        Expr *errorExpr = checkConstantness(argExpr);
-        if (errorExpr) {
-          // Emit a diagnostic pointing out the sub-expression that makes the
-          // argument non-constant.
-//          auto *fix = RemoveExtraneousArguments::create(
-//              cs, contextualType, extraArguments,
-//              cs.getConstraintLocator(locator));
-//
-//          if (cs.recordFix(fix, /*impact=*/extraArguments.size() * 5))
-           return cs.getTypeMatchFailure(locator);
-        }
-      }
-
       bool matchingAutoClosureResult = param.isAutoClosure();
       if (param.isAutoClosure() && !isSynthesizedArgument(argument)) {
         auto &ctx = cs.getASTContext();
@@ -4069,6 +4050,64 @@ bool ConstraintSystem::repairFailures(
   return !conversionsOrFixes.empty();
 }
 
+// Check whether the argument has to be a compile-time constant. The constantness
+// requirement for argument only applies to the new os_log APIs and the ordering
+// argument of the atomic operations, which are identified through semantics
+// attributes.
+static ConstraintSystem::TypeMatchResult checkConstConstraint(ConstraintKind kind,
+  ConstraintLocatorBuilder locator, ConstraintSystem *cs, Type paramType) {
+  if (kind != ConstraintKind::ArgumentConversion)
+    return cs->getTypeMatchSuccess();
+  ValueDecl *callee = cs->findResolvedMemberRef(
+                            cs->getCalleeLocator(cs->getConstraintLocator(locator)));
+  if (!callee)
+    return cs->getTypeMatchSuccess();;
+  llvm::errs() << "Callee: \n";
+  callee->dump();
+  llvm::errs() << "\n";
+  if (!isParamRequiredToBeConstant(callee, paramType))
+    return cs->getTypeMatchSuccess();
+
+  Expr *argExpr = simplifyLocatorToAnchor(cs->getConstraintLocator(locator));
+  if (!argExpr)
+    return cs->getTypeMatchSuccess();
+  llvm::errs() << "ArgExpr: \n";
+  argExpr->dump();
+  llvm::errs() << "\n";
+  ConstraintLocator *argumentLocator = cs->getConstraintLocator(argExpr);
+  ValueDecl *argumentRef = cs->findResolvedMemberRef(
+                                      cs->getCalleeLocator(argumentLocator));
+  if (!argumentRef) {
+    llvm::errs() << "Argument Reference is null: \n";
+    return cs->getTypeMatchSuccess();
+  }
+
+  llvm::errs() << "Argument Reference: \n";
+  argumentRef->dump();
+  llvm::errs() << "\n";
+//      llvm::errs() << "Argument Locator: \n";
+//      argumentLocator->get
+//      llvm::errs() << "\n";
+  Expr *errorExpr = checkConstantness(argExpr, argumentLocator, cs);
+  if (errorExpr) {
+    llvm::errs() << "Found  error Expr: \n";
+    errorExpr->dump();
+    llvm::errs() << "\n";
+    llvm::errs() << "Argument type: \n";
+    paramType->dump();
+    llvm::errs() << "\n";
+    // Emit a diagnostic pointing out the sub-expression that makes the
+    // argument non-constant.
+//          auto *fix = RemoveExtraneousArguments::create(
+//              cs, contextualType, extraArguments,
+//              cs.getConstraintLocator(locator));
+//
+//          if (cs.recordFix(fix, /*impact=*/extraArguments.size() * 5))
+    return cs->getTypeMatchFailure(locator);
+  }
+  return cs->getTypeMatchSuccess();
+}
+
 ConstraintSystem::TypeMatchResult
 ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
                              TypeMatchOptions flags,
@@ -4090,7 +4129,8 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
         desugar2->is<DependentMemberType>())) {
     // If the types are obviously equivalent, we're done.
     if (desugar1->isEqual(desugar2) && !isa<InOutType>(desugar2)) {
-      return getTypeMatchSuccess();
+      return checkConstConstraint(kind, locator, this, desugar2);
+       //getTypeMatchSuccess();
     }
   }
 
@@ -4283,6 +4323,10 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
       desugar2->isTypeVariableOrMember()) {
     return formUnsolvedResult();
   }
+
+  auto constantnessResult = checkConstConstraint(kind, locator, this, desugar2);
+  if (!constantnessResult.isSuccess())
+    return constantnessResult;
 
   llvm::SmallVector<RestrictionOrFix, 4> conversionsOrFixes;
 

@@ -33,6 +33,8 @@ namespace swift {
 
 #include "swift/AST/Types.h"
 #include "swift/AST/Decl.h"
+#include "ConstraintSystem.h"
+using namespace constraints;
 
 /// Return true iff the parameter \p param of function \c funDecl is required to
 /// be a constant. This is true if either the function is an os_log function or
@@ -46,7 +48,8 @@ bool isParamRequiredToBeConstant(ValueDecl *funcDecl, Type param);
 /// whose arguments are themselves compile-time constants.
 /// \Return nullptr if \c expr is a compile-time constant. Otherwise, the
 /// subexpression that is not a compile-time constant.
-Expr *checkConstantness(Expr *expr);
+Expr *checkConstantness(Expr *expr, ConstraintLocator *locator,
+                      ConstraintSystem *cs);
 
 } // namespace swift
 
