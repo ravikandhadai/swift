@@ -1276,3 +1276,16 @@ AddQualifierToAccessTopLevelName::create(ConstraintSystem &cs,
                                          ConstraintLocator *locator) {
   return new (cs.getAllocator()) AddQualifierToAccessTopLevelName(cs, locator);
 }
+
+bool ConstantnessViolation::diagnose(const Solution &solution,
+                                     bool asNote) const {
+  ConstantnessFailure failure(solution, getTypeOfConstant(), getCallee(),
+                              getLocator());
+  return failure.diagnose(asNote);
+}
+
+ConstantnessViolation *
+ConstantnessViolation::create(ConstraintSystem &cs, Type type, FuncDecl *func,
+                              ConstraintLocator *locator) {
+  return new (cs.getAllocator()) ConstantnessViolation(cs, type, func, locator);
+}

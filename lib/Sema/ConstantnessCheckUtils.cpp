@@ -30,7 +30,6 @@
 #include "ConstraintSystem.h"
 #include "ConstantnessCheckUtils.h"
 #include "swift/AST/ASTContext.h"
-#include "swift/AST/ASTWalker.h"
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/SemanticAttrs.h"
 using namespace swift;
@@ -56,17 +55,30 @@ static bool isAtomicOrderingDecl(StructDecl *structDecl) {
           structName == astContext.Id_AtomicUpdateOrdering);
 }
 
-bool swift::isParamRequiredToBeConstant(ValueDecl *decl, Type paramType) {
-  assert(decl && "funcDecl must not be null");
+enum ConstantAPIKind {
+  OSLog,
+  AtomicOrdering,
+};
 
+static Optional<ConstantAPIKind> getConstantAPIKind(ValueDecl *decl) {
+  assert(decl && "decl must not be null");
   FuncDecl *funcDecl = dyn_cast<FuncDecl>(decl);
   if (!funcDecl)
-    return false;
+    return None;
   if (hasSemanticsAttr(funcDecl, semantics::OSLOG_REQUIRES_CONSTANT_ARGUMENTS))
-    return true;
-  if (!hasSemanticsAttr(funcDecl,
-                        semantics::ATOMICS_REQUIRES_CONSTANT_ORDERINGS))
+    return ConstantAPIKind::OSLog;
+  if (hasSemanticsAttr(funcDecl,
+                       semantics::ATOMICS_REQUIRES_CONSTANT_ORDERINGS))
+    return ConstantAPIKind::AtomicOrdering;
+  return None;
+}
+
+bool swift::isParamRequiredToBeConstant(ValueDecl *decl, Type paramType) {
+  Optional<ConstantAPIKind> constantAPI = getConstantAPIKind(decl);
+  if (!constantAPI)
     return false;
+  if (constantAPI.getValue() == ConstantAPIKind::OSLog)
+    return true;
   StructDecl *structDecl = paramType->getStructOrBoundGenericStruct();
   if (!structDecl)
     return false;
@@ -178,7 +190,7 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
     ValueDecl *calledDecl = nullptr;
 
     // If it is a simple member access without arguments, just lookup the member
-    // decl. Otherwise, try to determine the overload it resolves to. Otherwise,
+    // decl. Otherwise, try to determine the overload it resolves to.
     if (isa<UnresolvedMemberExpr>(expr) &&
         !cast<UnresolvedMemberExpr>(expr)->hasArguments()) {
       Type exprType = cs->simplifyType(cs->getType(expr))->getRValueType();
@@ -281,16 +293,18 @@ static bool isStringType(Type type) {
 /// a literal e.g. integer, boolean etc. report that it must be a literal.
 /// Otherwise, if the expression is a nominal type, report that it must be
 /// static member of the type.
-static void diagnoseError(Expr *errorExpr, const ASTContext &astContext,
-                          FuncDecl *funcDecl) {
-  DiagnosticEngine &diags = astContext.Diags;
-  Type exprType = errorExpr->getType();
-  SourceLoc errorLoc = errorExpr->getLoc();
+void swift::diagnoseConstantnessViolation(Type typeOfConstant,
+                                          SourceLoc errorLoc, FuncDecl *callee,
+                                          ASTContext &ctx) {
+  DiagnosticEngine &diags = ctx.Diags;
+  Optional<ConstantAPIKind> kindOpt = getConstantAPIKind(callee);
+  assert(kindOpt.hasValue() && "Unknown constant API kind");
+  ConstantAPIKind kind = kindOpt.getValue();
 
   // Diagnose atomics ordering related error here.
-  if (hasSemanticsAttr(funcDecl,
-                       semantics::ATOMICS_REQUIRES_CONSTANT_ORDERINGS)) {
-    NominalTypeDecl *nominalDecl = exprType->getNominalOrBoundGenericNominal();
+  if (kind == ConstantAPIKind::AtomicOrdering) {
+    NominalTypeDecl *nominalDecl =
+        typeOfConstant->getNominalOrBoundGenericNominal();
     if (!nominalDecl) {
       // This case should normally not happen. This is a safe guard against
       // possible mismatch between the atomics library and the compiler.
@@ -304,36 +318,37 @@ static void diagnoseError(Expr *errorExpr, const ASTContext &astContext,
   // Diagnose os_log specific errors here.
 
   // Diagnose primitive stdlib types.
-  if (exprType->isBool()) {
+  if (typeOfConstant->isBool()) {
     diags.diagnose(errorLoc, diag::oslog_arg_must_be_bool_literal);
     return;
   }
-  if (isStringType(exprType)) {
+  if (isStringType(typeOfConstant)) {
     diags.diagnose(errorLoc, diag::oslog_arg_must_be_string_literal);
     return;
   }
-  if (isIntegerType(exprType)) {
+  if (isIntegerType(typeOfConstant)) {
     diags.diagnose(errorLoc, diag::oslog_arg_must_be_integer_literal);
     return;
   }
-  if (isFloatType(exprType)) {
+  if (isFloatType(typeOfConstant)) {
     diags.diagnose(errorLoc, diag::oslog_arg_must_be_float_literal);
     return;
   }
-  if (exprType->is<MetatypeType>()) {
+  if (typeOfConstant->is<MetatypeType>()) {
     diags.diagnose(errorLoc, diag::oslog_arg_must_be_metatype_literal);
     return;
   }
-  if (exprType->is<AnyFunctionType>()) {
+  if (typeOfConstant->is<AnyFunctionType>()) {
     diags.diagnose(errorLoc, diag::oslog_arg_must_be_closure);
     return;
   }
-  if (EnumDecl *enumDecl = exprType->getEnumOrBoundGenericEnum()) {
+  if (EnumDecl *enumDecl = typeOfConstant->getEnumOrBoundGenericEnum()) {
     diags.diagnose(errorLoc, diag::oslog_arg_must_be_enum_case,
                    enumDecl->getName());
     return;
   }
-  NominalTypeDecl *nominalDecl = exprType->getNominalOrBoundGenericNominal();
+  NominalTypeDecl *nominalDecl =
+      typeOfConstant->getNominalOrBoundGenericNominal();
   if (!nominalDecl) {
     // This case should normally not happen. This is a safe guard against
     // possible mismatch between the os overlay and the compiler.
@@ -342,7 +357,7 @@ static void diagnoseError(Expr *errorExpr, const ASTContext &astContext,
   }
   // If this is OSLogMessage, it should be a string-interpolation literal.
   Identifier declName = nominalDecl->getName();
-  if (declName == astContext.Id_OSLogMessage) {
+  if (declName == ctx.Id_OSLogMessage) {
     diags.diagnose(errorLoc, diag::oslog_message_must_be_string_interpolation);
     return;
   }

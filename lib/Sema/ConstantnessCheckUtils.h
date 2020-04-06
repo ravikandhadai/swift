@@ -31,9 +31,10 @@
 
 namespace swift {
 
-#include "swift/AST/Types.h"
-#include "swift/AST/Decl.h"
 #include "ConstraintSystem.h"
+#include "swift/AST/ASTContext.h"
+#include "swift/AST/Decl.h"
+#include "swift/AST/Types.h"
 using namespace constraints;
 
 /// Return true iff the parameter \p param of function \c funDecl is required to
@@ -49,6 +50,14 @@ bool isParamRequiredToBeConstant(ValueDecl *funcDecl, Type param);
 /// \Return nullptr if \c expr is a compile-time constant. Otherwise, the
 /// subexpression that is not a compile-time constant.
 Expr *checkConstantnessOfArgument(Expr *expr, ConstraintSystem *cs);
+
+/// Given an error expression \p errorExpr, diagnose the error based on the type
+/// of the expression. For instance, if the expression's type is expressible by
+/// a literal e.g. integer, boolean etc. report that it must be a literal.
+/// Otherwise, if the expression is a nominal type, report that it must be
+/// static member of the type.
+void diagnoseConstantnessViolation(Type typeOfConstant, SourceLoc errorLoc,
+                                   FuncDecl *callee, ASTContext &ctx);
 
 } // namespace swift
 

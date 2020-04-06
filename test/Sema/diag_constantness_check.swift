@@ -160,7 +160,7 @@ func functionNeedingConstE(_ x: E) { }
 
 func testConstantEvalMethod(b: Bool) {
   functionNeedingConstE(E().constantEvalMethod1())
-    // expected-error@-1 {{argument must be a static property or method of the type}}
+    // expected-error@-1 {{argument must be a static method or property of 'E'}}
   functionNeedingConstE(E().constantEvalMethod2())
   functionNeedingConstE(.constantEvalMethod3(x: true))
   functionNeedingConstE(.constantEvalMethod3(x: b))
@@ -199,7 +199,7 @@ func testConstantArgumentWithConstEval(constParam: Int) {
 
 // Test parital-apply of constantArgumentFunction.
 @_semantics("oslog.requires_constant_arguments")
-func constArg2(x: Int) -> Int { x }
+func constArg2(_ x: Int) -> Int { x }
 
 // This is not an error.
 func testPartialApply() -> ((Int) -> Int) {
@@ -207,14 +207,14 @@ func testPartialApply() -> ((Int) -> Int) {
 }
 
 @_semantics("oslog.requires_constant_arguments")
-func constArg3(x: (Int) -> Int) -> Int { x(0) }
+func constArg3(_ x: (Int) -> Int) -> Int { x(0) }
 
 @_semantics("constant_evaluable")
-func intIdentity(x: Int) -> Int { x }
+func intIdentity(_ x: Int) -> Int { x }
 
-func testPartialApply2() -> ((Int) -> Int) {
-  return constArg2(intIdentity)
-    // expected-error@-1 {{expecting a closure expression}}
+func testPartialApply2() -> Int {
+  return constArg3(intIdentity)
+    // expected-error@-1 {{argument must be a closure}}
 }
 
 // Test struct and class constructions. Structs whose initializers are marked as
@@ -294,6 +294,7 @@ func testOtherTypeErrors() {
     // expected-error@-1 {{use of unresolved identifier 'x'}}
   constantArgumentFunction(10 as String)
     // expected-error@-1 {{cannot convert value of type 'Int' to type 'String' in coercion}}
+    // expected-error@-2 {{argument must be a string literal}}
 }
 
 // Test constantness of the ordering used in the atomic operations. The atomic

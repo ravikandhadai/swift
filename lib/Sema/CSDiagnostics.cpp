@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CSDiagnostics.h"
+#include "ConstantnessCheckUtils.h"
 #include "ConstraintSystem.h"
 #include "MiscDiagnostics.h"
 #include "TypoCorrection.h"
@@ -6182,5 +6183,12 @@ bool MissingQuialifierInMemberRefFailure::diagnoseAsError() {
       .fixItInsert(UDE->getStartLoc(), namePlusDot);
 
   emitDiagnostic(choice, diag::decl_declared_here, choice->getFullName());
+  return true;
+}
+
+bool ConstantnessFailure::diagnoseAsError() {
+  auto *anchor = getAnchor();
+  diagnoseConstantnessViolation(typeOfConstant, anchor->getLoc(), callee,
+                                getConstraintSystem().getASTContext());
   return true;
 }

@@ -1977,6 +1977,20 @@ public:
   bool diagnoseAsError();
 };
 
+/// Diagnose errors related to constantness conversion.
+class ConstantnessFailure final : public FailureDiagnostic {
+  Type typeOfConstant;
+  FuncDecl *callee;
+
+public:
+  ConstantnessFailure(const Solution &solution, Type type, FuncDecl *func,
+                      ConstraintLocator *locator)
+      : FailureDiagnostic(solution, locator), typeOfConstant(type),
+        callee(func) {}
+
+  bool diagnoseAsError() override;
+};
+
 } // end namespace constraints
 } // end namespace swift
 

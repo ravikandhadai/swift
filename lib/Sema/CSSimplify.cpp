@@ -4075,20 +4075,21 @@ checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
 
   Expr *errorExpr = checkConstantnessOfArgument(argExpr, cs);
   if (errorExpr) {
-    //    llvm::errs() << "Found  error Expr: \n";
-    //    errorExpr->dump();
-    //    llvm::errs() << "\n";
-    //    llvm::errs() << "ArgExpr: \n";
-    //    argExpr->dump();
-    //    llvm::errs() << "\n";
+    Type errorType = cs->simplifyType(cs->getType(errorExpr))->getRValueType();
+    llvm::errs() << "Found  error Expr: \n";
+    errorExpr->dump();
+    llvm::errs() << "\n";
+    llvm::errs() << "Error Type: \n";
+    errorType->dump();
+    llvm::errs() << "\n";
     // Emit a diagnostic pointing out the sub-expression that makes the
     // argument non-constant.
-    //          auto *fix = RemoveExtraneousArguments::create(
-    //              cs, contextualType, extraArguments,
-    //              cs.getConstraintLocator(locator));
-    //
-    //          if (cs.recordFix(fix, /*impact=*/extraArguments.size() * 5))
-    return cs->getTypeMatchFailure(locator);
+    auto *fix =
+        ConstantnessViolation::create(*cs, errorType, cast<FuncDecl>(callee),
+                                      cs->getConstraintLocator(errorExpr));
+    (void)cs->recordFix(fix);
+    if (!cs->shouldAttemptFixes())
+      return cs->getTypeMatchFailure(locator);
   }
   return cs->getTypeMatchSuccess();
 }
@@ -9447,6 +9448,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
   case FixKind::AllowNonClassTypeToConvertToAnyObject:
   case FixKind::SpecifyClosureReturnType:
   case FixKind::AddQualifierToAccessTopLevelName:
+  case FixKind::ConstantnessViolation:
     llvm_unreachable("handled elsewhere");
   }
 

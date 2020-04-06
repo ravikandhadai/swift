@@ -248,6 +248,9 @@ enum class FixKind : uint8_t {
   /// Member shadows a top-level name, such a name could only be accessed by
   /// prefixing it with a module name.
   AddQualifierToAccessTopLevelName,
+
+  /// Constantness violation in os_log and atomic ordering APIs.
+  ConstantnessViolation,
 };
 
 class ConstraintFix {
@@ -1726,6 +1729,37 @@ public:
 
   static AllowNonClassTypeToConvertToAnyObject *
   create(ConstraintSystem &cs, Type type, ConstraintLocator *locator);
+};
+
+/// Failure of the constantness requirement
+///
+/// func foo(_: () -> Int) {}
+/// foo { "ultimate question" }
+///
+/// Body of the closure produces `String` type when `Int` is expected
+/// by the context.
+class ConstantnessViolation final : public ConstraintFix {
+private:
+  Type typeOfConstant;
+  FuncDecl *callee;
+
+protected:
+  ConstantnessViolation(ConstraintSystem &cs, Type type, FuncDecl *func,
+                        ConstraintLocator *locator)
+      : ConstraintFix(cs, FixKind::ConstantnessViolation, locator),
+        typeOfConstant(type), callee(func) {}
+
+public:
+  std::string getName() const override { return "fix constantness violation"; }
+
+  Type getTypeOfConstant() const { return typeOfConstant; }
+  FuncDecl *getCallee() const { return callee; }
+
+  bool diagnose(const Solution &solution, bool asNote = false) const override;
+
+  static ConstantnessViolation *create(ConstraintSystem &cs, Type type,
+                                       FuncDecl *func,
+                                       ConstraintLocator *locator);
 };
 
 } // end namespace constraints
