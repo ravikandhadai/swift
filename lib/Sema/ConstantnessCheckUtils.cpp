@@ -79,6 +79,38 @@ static bool hasConstantEvaluableAttr(ValueDecl *decl) {
   return hasSemanticsAttr(decl, semantics::CONSTANT_EVALUABLE);
 }
 
+// Autoclosure arguments are trivially constants.
+static Expr *
+checkFunctionLikeDecl(Expr *expr, ValueDecl *calledDecl,
+                      SmallVectorImpl<Expr *> &expressionsToCheck) {
+  assert(calledDecl && "calledDecl is null");
+  if (!isa<EnumElementDecl>(calledDecl) &&
+      !hasConstantEvaluableAttr(calledDecl))
+    return expr;
+  if (!calledDecl->hasParameterList())
+    return nullptr; // Nothing more to check here.
+
+  ParameterList *params = nullptr;
+  if (auto *callee = dyn_cast<AbstractFunctionDecl>(calledDecl)) {
+    params = callee->getParameters();
+  } else if (auto *enumElem = dyn_cast<EnumElementDecl>(calledDecl)) {
+    params = enumElem->getParameterList();
+  }
+  if (!params)
+    return expr; // Unexpected decl found here.
+  for (unsigned i = 0; i < params->size(); i++) {
+    if (params->get(i)->isAutoClosure())
+      continue;
+    Expr *argExpr = getArgumentExpr(expr, i);
+    if (!argExpr) {
+      // There is a mismatch between the parameters and arguments?
+      return argExpr;
+    }
+    expressionsToCheck.push_back(argExpr);
+  }
+  return nullptr;
+}
+
 Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
   SmallVector<Expr *, 4> expressionsToCheck;
   expressionsToCheck.push_back(argExpr);
@@ -113,14 +145,6 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
     if (isa<DefaultArgumentExpr>(expr))
       continue;
 
-    // If this is a member-ref, it has to be annotated constant evaluable.
-    if (MemberRefExpr *memberRefExpr = dyn_cast<MemberRefExpr>(expr)) {
-      ValueDecl *memberDecl = memberRefExpr->getMember().getDecl();
-      if (!memberDecl || !hasConstantEvaluableAttr(memberDecl))
-        return expr;
-      continue;
-    }
-
     // If this is a variable, it has to be a known constant parameter of the
     // enclosing function.
     if (DeclRefExpr *declRef = dyn_cast<DeclRefExpr>(expr)) {
@@ -139,93 +163,72 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
       continue;
     }
 
-    // If this is an unresolved member reference, it could be a dotSyntaxCall or
-    // an enumDecl or a property access. In all cases, we have to check the
-    // arguments, if any.
-    if (UnresolvedMemberExpr *unresolvedMemberExpr =
-            dyn_cast<UnresolvedMemberExpr>(expr)) {
-      ValueDecl *memberDecl = nullptr;
-      if (unresolvedMemberExpr->hasArguments()) {
-        memberDecl = cs->findResolvedMemberRef(
-            cs->getCalleeLocator(cs->getConstraintLocator(
-                unresolvedMemberExpr, ConstraintLocator::UnresolvedMember)));
-      } else {
-        Type exprType = cs->simplifyType(cs->getType(expr))->getRValueType();
-        LookupResult &result =
-            cs->lookupMember(exprType, unresolvedMemberExpr->getName());
-        if (result.size() == 1) {
-          memberDecl = result.front().getValueDecl();
-        }
-      }
-      if (!memberDecl) {
-        //        llvm::errs() << "Cannot resolve member \n";
-        //        llvm::errs() << "Type: "
-        //                     <<
-        //                     cs->simplifyType(cs->getType(expr))->getRValueType()
-        //                     << "\n";
-        return expr;
-      }
-      if (isa<EnumElementDecl>(memberDecl)) {
-        if (unresolvedMemberExpr->hasArguments())
-          expressionsToCheck.push_back(unresolvedMemberExpr->getArgument());
-        continue;
-      }
+    // If this is a member-ref, it has to be annotated constant evaluable.
+    if (MemberRefExpr *memberRefExpr = dyn_cast<MemberRefExpr>(expr)) {
+      ValueDecl *memberDecl = memberRefExpr->getMember().getDecl();
       if (!memberDecl || !hasConstantEvaluableAttr(memberDecl))
         return expr;
       continue;
     }
+    // In the rest of the code handle dotSyntaxCall, enumElementAccess, property
+    // access and function calls. In all cases, retrieve the "decl"
+    // corresponding to the access and check if the decl is constant evaluable.
+    // If so, check the arguments, if any, iteratively.
 
-    if (!isa<ApplyExpr>(expr))
-      return expr;
+    ValueDecl *calledDecl = nullptr;
 
-    ApplyExpr *apply = cast<ApplyExpr>(expr);
-    ValueDecl *calledValue = apply->getCalledValue();
-    if (!calledValue) {
-      // If calledValue is null, try resolving the callee.
-      calledValue = cs->findResolvedMemberRef(
-          cs->getCalleeLocator(cs->getConstraintLocator(apply)));
-      if (!calledValue) {
-        // llvm::errs() << "calledValue is null \n";
-        return expr;
-      }
+    // If it is a simple member access without arguments, just lookup the member
+    // decl. Otherwise, try to determine the overload it resolves to. Otherwise,
+    if (isa<UnresolvedMemberExpr>(expr) &&
+        !cast<UnresolvedMemberExpr>(expr)->hasArguments()) {
+      Type exprType = cs->simplifyType(cs->getType(expr))->getRValueType();
+      LookupResult &result = cs->lookupMember(
+          exprType, cast<UnresolvedMemberExpr>(expr)->getName());
+      if (result.size() == 1)
+        calledDecl = result.front().getValueDecl();
+    } else {
+      calledDecl = cs->findResolvedMemberRef(
+          cs->getCalleeLocator(cs->getConstraintLocator(expr)));
     }
-    // If this is an enum case, check whether the arguments are constants.
-    if (isa<EnumElementDecl>(calledValue)) {
-      expressionsToCheck.push_back(apply->getArg());
-      continue;
-    }
-    // If this is a constant_evaluable function, check whether the arguments
-    // are constants.
-    AbstractFunctionDecl *callee = dyn_cast<AbstractFunctionDecl>(calledValue);
-    if (!callee || !hasConstantEvaluableAttr(callee))
+    if (!calledDecl) {
+      //        llvm::errs() << "Cannot resolve member \n";
+      //        llvm::errs() << "Type: "
+      //                     <<
+      //                     cs->simplifyType(cs->getType(expr))->getRValueType()
+      //                     << "\n";
       return expr;
-    auto *params = callee->getParameters();
-    for (unsigned i = 0; i < params->size(); i++) {
-      // Autoclosure arguments are trivially constants.
-      if (params->get(i)->isAutoClosure())
-        continue;
-      Expr *argExpr = getArgumentExpr(apply, i);
-      if (!argExpr) {
-        // This is a partial apply, which is an error.
-        return argExpr;
-      }
-      expressionsToCheck.push_back(argExpr);
     }
-//    SmallVector<Expr *, 4> argumentExprs;
-//    Expr *argumentVector = apply->getArg();
-//    if (auto *tupleExpr = dyn_cast<TupleExpr>(argumentVector)) {
-//      for (Expr *element : tupleExpr->getElements())
-//        argumentExprs.push_back(element);
-//    } else {
-//      argumentExprs.push_back(argumentVector);
-//    }
-//    // Skip default argument expressions.
-//    auto nondefaultArgs =
-//    llvm::make_filter_range(argumentExprs, [&](Expr *expr) {
-//      return !isa<DefaultArgumentExpr>(expr);
-//    });
-//    for (Expr *argument : nondefaultArgs)
-//      expressionsToCheck.push_back(argument);
+    Expr *errorExpr =
+        checkFunctionLikeDecl(expr, calledDecl, expressionsToCheck);
+    if (errorExpr)
+      return errorExpr;
+    //    auto *params = callee->getParameters();
+    //    for (unsigned i = 0; i < params->size(); i++) {
+    //      // Autoclosure arguments are trivially constants.
+    //      if (params->get(i)->isAutoClosure())
+    //        continue;
+    //      Expr *argExpr = getArgumentExpr(apply, i);
+    //      if (!argExpr) {
+    //        // This is a partial apply, which is an error.
+    //        return argExpr;
+    //      }
+    //      expressionsToCheck.push_back(argExpr);
+    //    }
+    //    SmallVector<Expr *, 4> argumentExprs;
+    //    Expr *argumentVector = apply->getArg();
+    //    if (auto *tupleExpr = dyn_cast<TupleExpr>(argumentVector)) {
+    //      for (Expr *element : tupleExpr->getElements())
+    //        argumentExprs.push_back(element);
+    //    } else {
+    //      argumentExprs.push_back(argumentVector);
+    //    }
+    //    // Skip default argument expressions.
+    //    auto nondefaultArgs =
+    //    llvm::make_filter_range(argumentExprs, [&](Expr *expr) {
+    //      return !isa<DefaultArgumentExpr>(expr);
+    //    });
+    //    for (Expr *argument : nondefaultArgs)
+    //      expressionsToCheck.push_back(argument);
   }
   return nullptr;
 }

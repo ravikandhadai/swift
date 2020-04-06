@@ -158,11 +158,13 @@ struct E  {
 @_semantics("oslog.requires_constant_arguments")
 func functionNeedingConstE(_ x: E) { }
 
-func testConstantEvalMethod() {
+func testConstantEvalMethod(b: Bool) {
   functionNeedingConstE(E().constantEvalMethod1())
-    // expected-error@-1 {{Expression must be a static property or method of the type}}
+    // expected-error@-1 {{argument must be a static property or method of the type}}
   functionNeedingConstE(E().constantEvalMethod2())
   functionNeedingConstE(.constantEvalMethod3(x: true))
+  functionNeedingConstE(.constantEvalMethod3(x: b))
+    // expected-error@-1 {{argument must be a boolean literal}}
   functionNeedingConstE(.constantEvalMethod4())
 }
 
