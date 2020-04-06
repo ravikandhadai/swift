@@ -141,12 +141,46 @@ func testConstantEvalAdvanced(arg: Int) {
   constantArgumentFunction(constantEvalAdvanced({ arg }, z: ""))
 }
 
+// Test constant evaluable methods.
+struct E  {
+  func constantEvalMethod1() -> E { return self }
+
+  @_semantics("constant_evaluable")
+  func constantEvalMethod2() -> E { return self }
+
+  @_semantics("constant_evaluable")
+  static func constantEvalMethod3(x: Bool) -> E { return E() }
+
+  @_semantics("constant_evaluable")
+  static func constantEvalMethod4() -> E { return E() }
+}
+
+@_semantics("oslog.requires_constant_arguments")
+func functionNeedingConstE(_ x: E) { }
+
+func testConstantEvalMethod() {
+  functionNeedingConstE(E().constantEvalMethod1())
+    // expected-error@-1 {{Expression must be a static property or method of the type}}
+  functionNeedingConstE(E().constantEvalMethod2())
+  functionNeedingConstE(.constantEvalMethod3(x: true))
+  functionNeedingConstE(.constantEvalMethod4())
+}
+
 // Test functions with autoclosures.
 @_semantics("oslog.requires_constant_arguments")
 func autoClosureArgument(_ number: @autoclosure @escaping () -> Int) { }
 
-func testConstantEvalAutoClosure(_ number: Int) {
+func testAutoClosure(_ number: Int) {
   autoClosureArgument(number)
+}
+
+@_semantics("constant_evaluable")
+func constEvalWithAutoClosure(_ number: @autoclosure @escaping () -> Int) -> Int {
+  return 0
+}
+
+func testConstantEvalAutoClosure(_ number: Int) {
+  constantArgumentFunction(constEvalWithAutoClosure(number))
 }
 
 // Test nested use of constant parameter.
@@ -159,6 +193,26 @@ func testConstantArgumentRequirementPropagation(constParam: Int) {
 @_semantics("oslog.requires_constant_arguments")
 func testConstantArgumentWithConstEval(constParam: Int) {
   constantArgumentFunction(constantEval(constParam, true))
+}
+
+// Test parital-apply of constantArgumentFunction.
+@_semantics("oslog.requires_constant_arguments")
+func constArg2(x: Int) -> Int { x }
+
+// This is not an error.
+func testPartialApply() -> ((Int) -> Int) {
+  return constArg2
+}
+
+@_semantics("oslog.requires_constant_arguments")
+func constArg3(x: (Int) -> Int) -> Int { x(0) }
+
+@_semantics("constant_evaluable")
+func intIdentity(x: Int) -> Int { x }
+
+func testPartialApply2() -> ((Int) -> Int) {
+  return constArg2(intIdentity)
+    // expected-error@-1 {{expecting a closure expression}}
 }
 
 // Test struct and class constructions. Structs whose initializers are marked as

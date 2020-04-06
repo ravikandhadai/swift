@@ -79,9 +79,9 @@ static bool hasConstantEvaluableAttr(ValueDecl *decl) {
   return hasSemanticsAttr(decl, semantics::CONSTANT_EVALUABLE);
 }
 
-Expr *swift::checkConstantness(Expr *expr, ConstraintSystem *cs) {
+Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
   SmallVector<Expr *, 4> expressionsToCheck;
-  expressionsToCheck.push_back(expr);
+  expressionsToCheck.push_back(argExpr);
   while (!expressionsToCheck.empty()) {
     Expr *expr = expressionsToCheck.pop_back_val();
     // Lookthrough identity_expr, tuple and inject_into_optional expressions.
@@ -158,10 +158,11 @@ Expr *swift::checkConstantness(Expr *expr, ConstraintSystem *cs) {
         }
       }
       if (!memberDecl) {
-        llvm::errs() << "Cannot resolve member \n";
-        llvm::errs() << "Type: "
-                     << cs->simplifyType(cs->getType(expr))->getRValueType()
-                     << "\n";
+        //        llvm::errs() << "Cannot resolve member \n";
+        //        llvm::errs() << "Type: "
+        //                     <<
+        //                     cs->simplifyType(cs->getType(expr))->getRValueType()
+        //                     << "\n";
         return expr;
       }
       if (isa<EnumElementDecl>(memberDecl)) {
@@ -169,7 +170,6 @@ Expr *swift::checkConstantness(Expr *expr, ConstraintSystem *cs) {
           expressionsToCheck.push_back(unresolvedMemberExpr->getArgument());
         continue;
       }
-      // TODO: handle .dotExpr case.
       if (!memberDecl || !hasConstantEvaluableAttr(memberDecl))
         return expr;
       continue;
@@ -185,7 +185,7 @@ Expr *swift::checkConstantness(Expr *expr, ConstraintSystem *cs) {
       calledValue = cs->findResolvedMemberRef(
           cs->getCalleeLocator(cs->getConstraintLocator(apply)));
       if (!calledValue) {
-        llvm::errs() << "calledValue is null \n";
+        // llvm::errs() << "calledValue is null \n";
         return expr;
       }
     }
@@ -199,7 +199,18 @@ Expr *swift::checkConstantness(Expr *expr, ConstraintSystem *cs) {
     AbstractFunctionDecl *callee = dyn_cast<AbstractFunctionDecl>(calledValue);
     if (!callee || !hasConstantEvaluableAttr(callee))
       return expr;
-    expressionsToCheck.push_back(apply->getArg());
+    auto *params = callee->getParameters();
+    for (unsigned i = 0; i < params->size(); i++) {
+      // Autoclosure arguments are trivially constants.
+      if (params->get(i)->isAutoClosure())
+        continue;
+      Expr *argExpr = getArgumentExpr(apply, i);
+      if (!argExpr) {
+        // This is a partial apply, which is an error.
+        return argExpr;
+      }
+      expressionsToCheck.push_back(argExpr);
+    }
 //    SmallVector<Expr *, 4> argumentExprs;
 //    Expr *argumentVector = apply->getArg();
 //    if (auto *tupleExpr = dyn_cast<TupleExpr>(argumentVector)) {

@@ -4057,7 +4057,9 @@ bool ConstraintSystem::repairFailures(
 static ConstraintSystem::TypeMatchResult
 checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
                      ConstraintSystem *cs, Type paramType) {
-  if (kind != ConstraintKind::ArgumentConversion)
+  // Skip all auto-closures arguments. They are trivially constants.
+  if (kind != ConstraintKind::ArgumentConversion ||
+      locator.isForAutoclosureResult())
     return cs->getTypeMatchSuccess();
   ValueDecl *callee = cs->findResolvedMemberRef(
                             cs->getCalleeLocator(cs->getConstraintLocator(locator)));
@@ -4071,21 +4073,21 @@ checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
   if (!argExpr)
     return cs->getTypeMatchSuccess();
 
-  Expr *errorExpr = checkConstantness(argExpr, cs);
+  Expr *errorExpr = checkConstantnessOfArgument(argExpr, cs);
   if (errorExpr) {
-    llvm::errs() << "Found  error Expr: \n";
-    errorExpr->dump();
-    llvm::errs() << "\n";
-    llvm::errs() << "ArgExpr: \n";
-    argExpr->dump();
-    llvm::errs() << "\n";
+    //    llvm::errs() << "Found  error Expr: \n";
+    //    errorExpr->dump();
+    //    llvm::errs() << "\n";
+    //    llvm::errs() << "ArgExpr: \n";
+    //    argExpr->dump();
+    //    llvm::errs() << "\n";
     // Emit a diagnostic pointing out the sub-expression that makes the
     // argument non-constant.
-//          auto *fix = RemoveExtraneousArguments::create(
-//              cs, contextualType, extraArguments,
-//              cs.getConstraintLocator(locator));
-//
-//          if (cs.recordFix(fix, /*impact=*/extraArguments.size() * 5))
+    //          auto *fix = RemoveExtraneousArguments::create(
+    //              cs, contextualType, extraArguments,
+    //              cs.getConstraintLocator(locator));
+    //
+    //          if (cs.recordFix(fix, /*impact=*/extraArguments.size() * 5))
     return cs->getTypeMatchFailure(locator);
   }
   return cs->getTypeMatchSuccess();
