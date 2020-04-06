@@ -4073,6 +4073,10 @@ checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
   if (!argExpr)
     return cs->getTypeMatchSuccess();
 
+  llvm::errs() << "Checking argument expression: \n";
+  argExpr->dump();
+  llvm::errs() << "\n";
+
   Expr *errorExpr = checkConstantnessOfArgument(argExpr, cs);
   if (errorExpr) {
     Type errorType = cs->simplifyType(cs->getType(errorExpr))->getRValueType();
@@ -4082,14 +4086,14 @@ checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
     llvm::errs() << "Error Type: \n";
     errorType->dump();
     llvm::errs() << "\n";
+    if (!cs->shouldAttemptFixes())
+      return cs->getTypeMatchFailure(locator);
     // Emit a diagnostic pointing out the sub-expression that makes the
     // argument non-constant.
     auto *fix =
         ConstantnessViolation::create(*cs, errorType, cast<FuncDecl>(callee),
                                       cs->getConstraintLocator(errorExpr));
     (void)cs->recordFix(fix);
-    if (!cs->shouldAttemptFixes())
-      return cs->getTypeMatchFailure(locator);
   }
   return cs->getTypeMatchSuccess();
 }

@@ -203,11 +203,11 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
           cs->getCalleeLocator(cs->getConstraintLocator(expr)));
     }
     if (!calledDecl) {
-      //        llvm::errs() << "Cannot resolve member \n";
-      //        llvm::errs() << "Type: "
-      //                     <<
-      //                     cs->simplifyType(cs->getType(expr))->getRValueType()
-      //                     << "\n";
+      llvm::errs() << "Cannot resolve member \n";
+      llvm::errs() << "Type: "
+                   <<
+                   cs->simplifyType(cs->getType(expr))->getRValueType()
+                   << "\n";
       return expr;
     }
     Expr *errorExpr =
