@@ -143,6 +143,7 @@ func testConstantEvalAdvanced(arg: Int) {
 
 // Test constant evaluable methods.
 struct E  {
+  // expected-note@-1 {{'E' declared here}}
   func constantEvalMethod1() -> E { return self }
 
   @_semantics("constant_evaluable")
@@ -164,7 +165,7 @@ func testConstantEvalMethod(b: Bool) {
   functionNeedingConstE(E().constantEvalMethod2())
   functionNeedingConstE(.constantEvalMethod3(x: true))
   functionNeedingConstE(.constantEvalMethod3(x: b))
-    // expected-error@-1 {{argument must be a boolean literal}}
+    // expected-error@-1 {{argument must be a bool literal}}
   functionNeedingConstE(.constantEvalMethod4())
 }
 

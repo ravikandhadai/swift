@@ -4063,33 +4063,24 @@ checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
     return cs->getTypeMatchSuccess();
   ValueDecl *callee = cs->findResolvedMemberRef(
                             cs->getCalleeLocator(cs->getConstraintLocator(locator)));
-  if (!callee)
-    return cs->getTypeMatchSuccess();
-
-  if (!isParamRequiredToBeConstant(callee, paramType))
+  if (!callee || !isParamRequiredToBeConstant(callee, paramType))
     return cs->getTypeMatchSuccess();
 
   Expr *argExpr = simplifyLocatorToAnchor(cs->getConstraintLocator(locator));
   if (!argExpr)
     return cs->getTypeMatchSuccess();
 
-  llvm::errs() << "Checking argument expression: \n";
-  argExpr->dump();
-  llvm::errs() << "\n";
-
   Expr *errorExpr = checkConstantnessOfArgument(argExpr, cs);
   if (errorExpr) {
+    //    llvm::errs() << "Found  error Expr: \n";
+    //    errorExpr->dump();
+    //    llvm::errs() << "\n";
+    //    llvm::errs() << "Error Type: \n";
+    //    errorType->dump();
+    //    llvm::errs() << "\n";
+    // Record a fix pointing out the sub-expression that makes the argument
+    // non-constant.
     Type errorType = cs->simplifyType(cs->getType(errorExpr))->getRValueType();
-    llvm::errs() << "Found  error Expr: \n";
-    errorExpr->dump();
-    llvm::errs() << "\n";
-    llvm::errs() << "Error Type: \n";
-    errorType->dump();
-    llvm::errs() << "\n";
-    if (!cs->shouldAttemptFixes())
-      return cs->getTypeMatchFailure(locator);
-    // Emit a diagnostic pointing out the sub-expression that makes the
-    // argument non-constant.
     auto *fix =
         ConstantnessViolation::create(*cs, errorType, cast<FuncDecl>(callee),
                                       cs->getConstraintLocator(errorExpr));

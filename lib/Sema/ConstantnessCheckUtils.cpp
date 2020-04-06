@@ -196,6 +196,9 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
       Type exprType = cs->simplifyType(cs->getType(expr))->getRValueType();
       LookupResult &result = cs->lookupMember(
           exprType, cast<UnresolvedMemberExpr>(expr)->getName());
+      result.filter([&](LookupResultEntry entry, bool isInner) {
+        return !entry.getValueDecl()->hasParameterList();
+      });
       if (result.size() == 1)
         calledDecl = result.front().getValueDecl();
     } else {
@@ -204,6 +207,8 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
     }
     if (!calledDecl) {
       llvm::errs() << "Cannot resolve member \n";
+      llvm::errs() << "Expr: \n";
+      expr->dump();
       llvm::errs() << "Type: "
                    <<
                    cs->simplifyType(cs->getType(expr))->getRValueType()

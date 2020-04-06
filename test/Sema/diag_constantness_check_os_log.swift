@@ -75,8 +75,10 @@ func testTypeIncorrectLogCalls() {
 
   _osLogTestHelper(message)
   // expected-error@-1 {{cannot convert value of type 'String' to expected argument type 'OSLogMessage'}}
+  // expected-error@-2 {{argument must be a string literal}}
   _osLogTestHelper("prefix" + "\(x)")
   // expected-error@-1 {{cannot convert value of type 'String' to expected argument type 'OSLogMessage'}}
+  // expected-error@-2 {{argument must be a string literal}}
   _osLogTestHelper("prefix", "\(x)")
   // expected-error@-1 {{cannot convert value of type 'String' to expected argument type '(String, UnsafeBufferPointer<UInt8>) -> Void'}}
   // expected-error@-2 {{missing argument label 'assertion:' in call}}
@@ -85,10 +87,12 @@ func testTypeIncorrectLogCalls() {
   }
   let x = TestClass()
   _osLogTestHelper("\(x, format: .hex)")
-  //expected-error@-1 {{no exact matches in call to instance method 'appendInterpolation'}}
+  //expected-error@-1 {{missing argument label 'a:' in call}}
+  //expected-error@-2 {{cannot convert value of type 'TestClass' to expected argument type 'MyStruct'}}
 
   _osLogTestHelper("\(10, format: .myFormat, privacy: .private)")
   //expected-error@-1 {{type 'OSLogIntegerFormatting' has no member 'myFormat'}}
+  //expected-error@-2 {{argument must be a static method or property of 'OSLogIntegerFormatting'}}
 }
 
 // Test diagnostics in extensions to OSLogInterpolation. This is not officially
