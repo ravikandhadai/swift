@@ -79,8 +79,7 @@ static bool hasConstantEvaluableAttr(ValueDecl *decl) {
   return hasSemanticsAttr(decl, semantics::CONSTANT_EVALUABLE);
 }
 
-Expr *swift::checkConstantness(Expr *expr, ConstraintLocator *locator,
-                            ConstraintSystem *cs) {
+Expr *swift::checkConstantness(Expr *expr, ConstraintSystem *cs) {
   SmallVector<Expr *, 4> expressionsToCheck;
   expressionsToCheck.push_back(expr);
   while (!expressionsToCheck.empty()) {
@@ -115,20 +114,8 @@ Expr *swift::checkConstantness(Expr *expr, ConstraintLocator *locator,
       continue;
 
     // If this is a member-ref, it has to be annotated constant evaluable.
-    if (isa<MemberRefExpr>(expr) || isa<UnresolvedMemberExpr>(expr)) {
-      ValueDecl *memberDecl =
-        isa<MemberRefExpr>(expr) ?
-          cast<MemberRefExpr>(expr)->getMember().getDecl() :
-          cs->findResolvedMemberRef(
-            cs->getConstraintLocator(cast<UnresolvedMemberExpr>(expr),
-                                     ConstraintLocator::UnresolvedMember));
-      if (!memberDecl) {
-        llvm::errs() << "MemberDecl is null\n";
-        return expr;
-      }
-      llvm::errs() << "MemberDecl: \n";
-      memberDecl->dump();
-      llvm::errs() << "\n";
+    if (MemberRefExpr *memberRefExpr = dyn_cast<MemberRefExpr>(expr)) {
+      ValueDecl *memberDecl = memberRefExpr->getMember().getDecl();
       if (!memberDecl || !hasConstantEvaluableAttr(memberDecl))
         return expr;
       continue;
@@ -152,24 +139,61 @@ Expr *swift::checkConstantness(Expr *expr, ConstraintLocator *locator,
       continue;
     }
 
+    // If this is an unresolved member reference, it could be a dotSyntaxCall or
+    // an enumDecl or a property access. In all cases, we have to check the
+    // arguments, if any.
+    if (UnresolvedMemberExpr *unresolvedMemberExpr =
+            dyn_cast<UnresolvedMemberExpr>(expr)) {
+      ValueDecl *memberDecl = nullptr;
+      if (unresolvedMemberExpr->hasArguments()) {
+        memberDecl = cs->findResolvedMemberRef(
+            cs->getCalleeLocator(cs->getConstraintLocator(
+                unresolvedMemberExpr, ConstraintLocator::UnresolvedMember)));
+      } else {
+        Type exprType = cs->simplifyType(cs->getType(expr))->getRValueType();
+        LookupResult &result =
+            cs->lookupMember(exprType, unresolvedMemberExpr->getName());
+        if (result.size() == 1) {
+          memberDecl = result.front().getValueDecl();
+        }
+      }
+      if (!memberDecl) {
+        llvm::errs() << "Cannot resolve member \n";
+        llvm::errs() << "Type: "
+                     << cs->simplifyType(cs->getType(expr))->getRValueType()
+                     << "\n";
+        return expr;
+      }
+      if (isa<EnumElementDecl>(memberDecl)) {
+        if (unresolvedMemberExpr->hasArguments())
+          expressionsToCheck.push_back(unresolvedMemberExpr->getArgument());
+        continue;
+      }
+      // TODO: handle .dotExpr case.
+      if (!memberDecl || !hasConstantEvaluableAttr(memberDecl))
+        return expr;
+      continue;
+    }
+
     if (!isa<ApplyExpr>(expr))
       return expr;
 
     ApplyExpr *apply = cast<ApplyExpr>(expr);
-    // Resolve the callee.
-    ValueDecl *calledValue =
-      cs->findResolvedMemberRef(
+    ValueDecl *calledValue = apply->getCalledValue();
+    if (!calledValue) {
+      // If calledValue is null, try resolving the callee.
+      calledValue = cs->findResolvedMemberRef(
           cs->getCalleeLocator(cs->getConstraintLocator(apply)));
-    //ValueDecl *calledValue = apply->getCalledValue();
-    if (!calledValue)
-      return expr;
-
+      if (!calledValue) {
+        llvm::errs() << "calledValue is null \n";
+        return expr;
+      }
+    }
     // If this is an enum case, check whether the arguments are constants.
     if (isa<EnumElementDecl>(calledValue)) {
       expressionsToCheck.push_back(apply->getArg());
       continue;
     }
-
     // If this is a constant_evaluable function, check whether the arguments
     // are constants.
     AbstractFunctionDecl *callee = dyn_cast<AbstractFunctionDecl>(calledValue);

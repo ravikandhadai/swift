@@ -4054,47 +4054,30 @@ bool ConstraintSystem::repairFailures(
 // requirement for argument only applies to the new os_log APIs and the ordering
 // argument of the atomic operations, which are identified through semantics
 // attributes.
-static ConstraintSystem::TypeMatchResult checkConstConstraint(ConstraintKind kind,
-  ConstraintLocatorBuilder locator, ConstraintSystem *cs, Type paramType) {
+static ConstraintSystem::TypeMatchResult
+checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
+                     ConstraintSystem *cs, Type paramType) {
   if (kind != ConstraintKind::ArgumentConversion)
     return cs->getTypeMatchSuccess();
   ValueDecl *callee = cs->findResolvedMemberRef(
                             cs->getCalleeLocator(cs->getConstraintLocator(locator)));
   if (!callee)
-    return cs->getTypeMatchSuccess();;
-  llvm::errs() << "Callee: \n";
-  callee->dump();
-  llvm::errs() << "\n";
+    return cs->getTypeMatchSuccess();
+
   if (!isParamRequiredToBeConstant(callee, paramType))
     return cs->getTypeMatchSuccess();
 
   Expr *argExpr = simplifyLocatorToAnchor(cs->getConstraintLocator(locator));
   if (!argExpr)
     return cs->getTypeMatchSuccess();
-  llvm::errs() << "ArgExpr: \n";
-  argExpr->dump();
-  llvm::errs() << "\n";
-  ConstraintLocator *argumentLocator = cs->getConstraintLocator(argExpr);
-  ValueDecl *argumentRef = cs->findResolvedMemberRef(
-                                      cs->getCalleeLocator(argumentLocator));
-  if (!argumentRef) {
-    llvm::errs() << "Argument Reference is null: \n";
-    return cs->getTypeMatchSuccess();
-  }
 
-  llvm::errs() << "Argument Reference: \n";
-  argumentRef->dump();
-  llvm::errs() << "\n";
-//      llvm::errs() << "Argument Locator: \n";
-//      argumentLocator->get
-//      llvm::errs() << "\n";
-  Expr *errorExpr = checkConstantness(argExpr, argumentLocator, cs);
+  Expr *errorExpr = checkConstantness(argExpr, cs);
   if (errorExpr) {
     llvm::errs() << "Found  error Expr: \n";
     errorExpr->dump();
     llvm::errs() << "\n";
-    llvm::errs() << "Argument type: \n";
-    paramType->dump();
+    llvm::errs() << "ArgExpr: \n";
+    argExpr->dump();
     llvm::errs() << "\n";
     // Emit a diagnostic pointing out the sub-expression that makes the
     // argument non-constant.

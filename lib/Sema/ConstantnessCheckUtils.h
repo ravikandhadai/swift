@@ -48,8 +48,7 @@ bool isParamRequiredToBeConstant(ValueDecl *funcDecl, Type param);
 /// whose arguments are themselves compile-time constants.
 /// \Return nullptr if \c expr is a compile-time constant. Otherwise, the
 /// subexpression that is not a compile-time constant.
-Expr *checkConstantness(Expr *expr, ConstraintLocator *locator,
-                      ConstraintSystem *cs);
+Expr *checkConstantness(Expr *expr, ConstraintSystem *cs);
 
 } // namespace swift
 
