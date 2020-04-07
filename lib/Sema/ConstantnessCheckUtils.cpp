@@ -191,16 +191,20 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
 
     // If it is a simple member access without arguments, just lookup the member
     // decl. Otherwise, try to determine the overload it resolves to.
-    if (isa<UnresolvedMemberExpr>(expr) &&
-        !cast<UnresolvedMemberExpr>(expr)->hasArguments()) {
-      Type exprType = cs->simplifyType(cs->getType(expr))->getRValueType();
-      LookupResult &result = cs->lookupMember(
-          exprType, cast<UnresolvedMemberExpr>(expr)->getName());
-      result.filter([&](LookupResultEntry entry, bool isInner) {
-        return !entry.getValueDecl()->hasParameterList();
-      });
-      if (result.size() == 1)
-        calledDecl = result.front().getValueDecl();
+    if (UnresolvedMemberExpr *ume = dyn_cast<UnresolvedMemberExpr>(expr)) {
+      if (!ume->hasArguments()) {
+        Type exprType = cs->simplifyType(cs->getType(expr))->getRValueType();
+        LookupResult &result = cs->lookupMember(
+            exprType, cast<UnresolvedMemberExpr>(expr)->getName());
+        result.filter([&](LookupResultEntry entry, bool isInner) {
+          return !entry.getValueDecl()->hasParameterList();
+        });
+        if (result.size() == 1)
+          calledDecl = result.front().getValueDecl();
+      } else {
+        calledDecl = cs->findResolvedMemberRef(
+            cs->getConstraintLocator(ume, ConstraintLocator::UnresolvedMember));
+      }
     } else {
       calledDecl = cs->findResolvedMemberRef(
           cs->getCalleeLocator(cs->getConstraintLocator(expr)));
@@ -213,6 +217,20 @@ Expr *swift::checkConstantnessOfArgument(Expr *argExpr, ConstraintSystem *cs) {
                    <<
                    cs->simplifyType(cs->getType(expr))->getRValueType()
                    << "\n";
+      llvm::errs() << "Locator: ";
+      auto *locator =
+          cs->getConstraintLocator(expr, ConstraintLocator::UnresolvedMember);
+      locator->dump(&cs->getASTContext().SourceMgr, llvm::errs());
+      llvm::errs() << "\n";
+      // SourceRange range;
+      //      ConstraintLocator *resolved = simplifyLocator(*cs,
+      //                                                cs->getConstraintLocator(expr),
+      //                                                range);
+      ValueDecl *decl = cs->findResolvedMemberRef(locator);
+      llvm::errs() << "Resolved expr: \n";
+      if (decl)
+        decl->dump();
+      llvm::errs() << "\n";
       return expr;
     }
     Expr *errorExpr =

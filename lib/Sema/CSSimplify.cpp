@@ -4056,7 +4056,7 @@ bool ConstraintSystem::repairFailures(
 // attributes.
 static ConstraintSystem::TypeMatchResult
 checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
-                     ConstraintSystem *cs, Type paramType) {
+                     ConstraintSystem *cs, Type argType, Type paramType) {
   // Skip all auto-closures arguments. They are trivially constants.
   if (kind != ConstraintKind::ArgumentConversion ||
       locator.isForAutoclosureResult())
@@ -4070,6 +4070,16 @@ checkConstConstraint(ConstraintKind kind, ConstraintLocatorBuilder locator,
   if (!argExpr)
     return cs->getTypeMatchSuccess();
 
+  llvm::errs() << "Arg Type: \n";
+  argType->dump();
+  llvm::errs() << "\n";
+
+  llvm::errs() << "Param Type: \n";
+  paramType->dump();
+  llvm::errs() << "\n";
+
+  llvm::errs() << "Constraints: \n";
+  cs->print(llvm::errs());
   Expr *errorExpr = checkConstantnessOfArgument(argExpr, cs);
   if (errorExpr) {
     //    llvm::errs() << "Found  error Expr: \n";
@@ -4110,8 +4120,8 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
         desugar2->is<DependentMemberType>())) {
     // If the types are obviously equivalent, we're done.
     if (desugar1->isEqual(desugar2) && !isa<InOutType>(desugar2)) {
-      return checkConstConstraint(kind, locator, this, desugar2);
-       //getTypeMatchSuccess();
+      return checkConstConstraint(kind, locator, this, desugar1, desugar2);
+      // getTypeMatchSuccess();
     }
   }
 
@@ -4305,7 +4315,8 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     return formUnsolvedResult();
   }
 
-  auto constantnessResult = checkConstConstraint(kind, locator, this, desugar2);
+  auto constantnessResult =
+      checkConstConstraint(kind, locator, this, desugar1, desugar2);
   if (!constantnessResult.isSuccess())
     return constantnessResult;
 
