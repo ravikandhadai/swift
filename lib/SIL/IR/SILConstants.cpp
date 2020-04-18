@@ -939,8 +939,8 @@ void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
                triggerLocSkipsInternalLocs);
     return;
   case UnknownReason::Trap: {
-    const char *message = unknownReason.getTrapMessage();
-    diagnose(ctx, diagLoc, diag::constexpr_trap, StringRef(message));
+    std::string message = unknownReason.getTrapMessage();
+    diagnose(ctx, diagLoc, diag::constexpr_trap, message);
     if (emitTriggerLocInDiag)
       diagnose(ctx, triggerLoc, diag::constexpr_trap_operation,
                triggerLocSkipsInternalLocs);
@@ -975,7 +975,7 @@ void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
     }
 
     diagnose(ctx, diagLoc, diag::constexpr_unsupported_instruction_found,
-             instName);
+             std::string(instName.c_str()));
     if (emitTriggerLocInDiag)
       diagnose(ctx, triggerLoc,
                diag::constexpr_unsupported_instruction_found_here,
@@ -987,7 +987,7 @@ void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
     std::string demangledCalleeName =
         demangleSymbolNameForDiagnostics(callee->getName());
     diagnose(ctx, diagLoc, diag::constexpr_found_callee_with_no_body,
-             StringRef(demangledCalleeName));
+             demangledCalleeName);
     if (emitTriggerLocInDiag)
       diagnose(ctx, triggerLoc, diag::constexpr_callee_with_no_body,
                triggerLocSkipsInternalLocs);
@@ -1001,9 +1001,10 @@ void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
     assert(callee);
     std::string demangledCalleeName =
         demangleSymbolNameForDiagnostics(callee->getName());
+    std::string argumentNumber =
+        (Twine(argNumber) + llvm::getOrdinalSuffix(argNumber)).str();
     diagnose(ctx, diagLoc, diag::constexpr_found_call_with_unknown_arg,
-             demangledCalleeName,
-             (Twine(argNumber) + llvm::getOrdinalSuffix(argNumber)).str());
+             demangledCalleeName, argumentNumber);
     if (emitTriggerLocInDiag)
       diagnose(ctx, triggerLoc, diag::constexpr_call_with_unknown_arg,
                triggerLocSkipsInternalLocs);
@@ -1027,7 +1028,7 @@ void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
     getWitnessMethodName(dyn_cast<WitnessMethodInst>(unknownNode),
                          witnessMethodName);
     diagnose(ctx, diagLoc, diag::constexpr_unresolvable_witness_call,
-             witnessMethodName);
+             std::string(witnessMethodName.c_str()));
     if (emitTriggerLocInDiag)
       diagnose(ctx, triggerLoc,
                diag::constexpr_witness_call_with_no_conformance,
@@ -1040,7 +1041,7 @@ void SymbolicValue::emitUnknownDiagnosticNotes(SILLocation fallbackLoc) {
                          witnessMethodName);
 
     diagnose(ctx, diagLoc, diag::constexpr_unresolvable_witness_call,
-             StringRef(witnessMethodName));
+             std::string(witnessMethodName.c_str()));
     if (emitTriggerLocInDiag)
       diagnose(ctx, triggerLoc, diag::constexpr_no_witness_table_entry,
                triggerLocSkipsInternalLocs);
