@@ -25,6 +25,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Debug.h"
+#include "swift/SILOptimizer/Utils/ConstExpr.h"
 
 #define DEBUG_TYPE "sil-constant-folding"
 
@@ -1377,14 +1378,64 @@ case BuiltinValueKind::id:
   return nullptr;
 }
 
+static bool isConstantEvaluableCall(SILInstruction *applyInst) {
+  SILFunction *calleeFun = applyInst->getCalleeFunction();
+  return calleeFun && isConstantEvaluable(calleeFun);
+}
+
+static bool canBeConstant(SILInstruction *inst) {
+  // TODO: hanlde string inits which are also constants and also float point
+  // literals.
+  if (isa<TupleInst>(inst) || isa<StructInst>(inst) ||
+      isa<IntegerLiteralInst>(inst) || isa<StringLiteralInst>(inst) ||
+      isa<FunctionRefBaseInst>(inst))
+    return true;
+  return false;
+}
+
+static bool tryEvaluateConstantArguments(SILInstruction *inst,
+                                         ConstantExprStepEvaluator &evaluator) {
+  for (Operand &op : inst->getAllOperands()) {
+    SILInstruction *definingInstruction =
+      operand.get()->getDefiningInstruction();
+    if (!definingInstruction || !canBeConstant(definingInstruction))
+      return false;
+    // Recursively evaluate the transitive arguments if necessary.
+    if (definingInstruction->getNumOperands() > 0 &&
+        !tryEvaluateConstantArguments(definingInstruction, evaluator))
+      return false;
+    auto result = evaluator.evaluate(definingInstruction->getIterator());
+    // If the result has a value, it implies an error.
+    return !result.second.hasValue();
+  }
+  return true;
+}
+
 /// On success this places a new value for each result of Op->getUser() into
 /// Results. Results is guaranteed on success to have the same number of entries
 /// as results of User. If we could only simplify /some/ of an instruction's
 /// results, we still return true, but signal that we couldn't simplify by
 /// placing SILValue() in that position instead.
 static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
-                                    SmallVectorImpl<SILValue> &Results) {
+                                    SmallVectorImpl<SILValue> &Results,
+                                    unsigned assertConfig) {
   auto *User = Op->getUser();
+  
+  // Constant fold constant_evaluable apply instructions.
+  if (auto *applyInst = dyn_cast<ApplyInst>(User)) {
+    if (!isConstantEvaluableCall(applyInst)
+      return false;
+    SymbolicValueBumpAllocator allocator;
+    ConstantExprStepEvaluator constantEvaluator(allocator,
+                                                applyInst->getFunction(), assertConfig);
+    // Try to constant evaluate the arguments of the call here.
+    if (!tryEvaluateConstantArguments(applyInst, constantEvaluator))
+      return false;
+    // Evaluate the call itself here.
+    constantEvaluator.evaluate(applyInst->getIterator());
+    // Fold the results.
+    // add the new results to Results.
+  }
 
   // Constant fold builtin invocations.
   if (auto *BI = dyn_cast<BuiltinInst>(User)) {
@@ -1890,7 +1941,8 @@ ConstantFolder::processWorkList() {
         // value.
         ConstantFoldedResults.clear();
         bool Success =
-            constantFoldInstruction(Use, ResultsInError, ConstantFoldedResults);
+            constantFoldInstruction(Use, ResultsInError, ConstantFoldedResults,
+                                    AssertConfiguration);
 
         // If we did not pass in a None and the optional is set to true, add the
         // user to our error set.
