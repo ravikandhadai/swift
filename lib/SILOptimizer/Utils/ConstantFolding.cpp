@@ -1519,6 +1519,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
   
   // Constant fold constant_evaluable apply instructions.
   if (auto *applyInst = dyn_cast<ApplyInst>(User)) {
+    // llvm::errs() << "Call: " << *applyInst << "\n";
     if (!isFoldableCall(applyInst))
       return false;
     SILFunction *fun = applyInst->getFunction();
