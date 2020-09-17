@@ -642,6 +642,10 @@ ERROR(box_to_stack_cannot_promote_box_to_stack_due_to_escape_alloc, none,
       "Can not promote value from heap to stack due to value escaping", ())
 NOTE(box_to_stack_cannot_promote_box_to_stack_due_to_escape_location, none,
      "value escapes here", ())
+     
+// Constant-evaluator-based Constant folding test diagnostics.
+
+ERROR(const_folding_constant_eval_trap, none, "%0", (StringRef))
 
 #define UNDEFINE_DIAGNOSTIC_MACROS
 #include "DefineDiagnosticMacros.h"

@@ -18,14 +18,15 @@
 #include "swift/SIL/InstructionUtils.h"
 #include "swift/SIL/PatternMatch.h"
 #include "swift/SIL/SILBuilder.h"
+#include "swift/SIL/SILConstants.h"
 #include "swift/SILOptimizer/Utils/CastOptimizer.h"
+#include "swift/SILOptimizer/Utils/ConstExpr.h"
 #include "swift/SILOptimizer/Utils/InstOptUtils.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Debug.h"
-#include "swift/SILOptimizer/Utils/ConstExpr.h"
 
 #define DEBUG_TYPE "sil-constant-folding"
 
@@ -1378,9 +1379,48 @@ case BuiltinValueKind::id:
   return nullptr;
 }
 
-static bool isConstantEvaluableCall(SILInstruction *applyInst) {
+static bool isConstantEvaluableCall(ApplyInst *applyInst) {
   SILFunction *calleeFun = applyInst->getCalleeFunction();
   return calleeFun && isConstantEvaluable(calleeFun);
+}
+
+static bool isStdlibIntegerOrBoolDecl(NominalTypeDecl *numberDecl,
+                                      ASTContext &astCtx) {
+  return (numberDecl == astCtx.getIntDecl() ||
+          numberDecl == astCtx.getInt8Decl() ||
+          numberDecl == astCtx.getInt16Decl() ||
+          numberDecl == astCtx.getInt32Decl() ||
+          numberDecl == astCtx.getInt64Decl() ||
+          numberDecl == astCtx.getUIntDecl() ||
+          numberDecl == astCtx.getUInt8Decl() ||
+          numberDecl == astCtx.getUInt16Decl() ||
+          numberDecl == astCtx.getUInt32Decl() ||
+          numberDecl == astCtx.getUInt64Decl() ||
+          numberDecl == astCtx.getBoolDecl());
+}
+
+/// Return true if and only if the given SIL type represents a Stdlib or builtin
+/// integer type or a Bool type.
+static bool isIntegerOrBoolType(SILType silType, ASTContext &astContext) {
+  if (silType.is<BuiltinIntegerType>()) {
+    return true;
+  }
+  NominalTypeDecl *nominalDecl = silType.getNominalOrBoundGenericNominal();
+  return nominalDecl && isStdlibIntegerOrBoolDecl(nominalDecl, astContext);
+}
+
+/// Return true if and only if the given SIL type represents a String type.
+static bool isStringType(SILType silType, ASTContext &astContext) {
+  NominalTypeDecl *nominalDecl = silType.getNominalOrBoundGenericNominal();
+  return nominalDecl && nominalDecl == astContext.getStringDecl();
+}
+
+static bool isFoldableCall(ApplyInst *applyInst) {
+  if (!isConstantEvaluableCall(applyInst))
+    return false;
+  // Check if the call's return type is something that can be folded.
+  return isIntegerOrBoolType(applyInst->getType(),
+                             applyInst->getFunction()->getASTContext());
 }
 
 static bool canBeConstant(SILInstruction *inst) {
@@ -1394,10 +1434,9 @@ static bool canBeConstant(SILInstruction *inst) {
 }
 
 static bool tryEvaluateConstantArguments(SILInstruction *inst,
-                                         ConstantExprStepEvaluator &evaluator) {
+                                         ConstExprStepEvaluator &evaluator) {
   for (Operand &op : inst->getAllOperands()) {
-    SILInstruction *definingInstruction =
-      operand.get()->getDefiningInstruction();
+    SILInstruction *definingInstruction = op.get()->getDefiningInstruction();
     if (!definingInstruction || !canBeConstant(definingInstruction))
       return false;
     // Recursively evaluate the transitive arguments if necessary.
@@ -1406,9 +1445,66 @@ static bool tryEvaluateConstantArguments(SILInstruction *inst,
       return false;
     auto result = evaluator.evaluate(definingInstruction->getIterator());
     // If the result has a value, it implies an error.
-    return !result.second.hasValue();
+    if (result.second.hasValue())
+      return false;
   }
   return true;
+}
+
+/// Generate SIL code that computes the constant given by the symbolic value
+/// `symVal`. Note that strings and struct-typed constant values will require
+/// multiple instructions to be emitted.
+/// \param symVal symbolic value for which SIL code needs to be emitted.
+/// \param expectedType the expected type of the instruction that would be
+/// computing the symbolic value `symVal`. The type is accepted as a
+/// parameter as some symbolic values like integer constants can inhabit more
+/// than one type.
+/// \param builder SILBuilder that provides the context for emitting the code
+/// for the symbolic value
+/// \param loc SILLocation to use in the emitted instructions.
+static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
+                                         Type expectedType, SILBuilder &builder,
+                                         SILLocation &loc) {
+  ASTContext &astContext = expectedType->getASTContext();
+
+  switch (symVal.getKind()) {
+  // TODO: handle stirngs
+  case SymbolicValue::Integer: { // Builtin integer types.
+    APInt resInt = symVal.getIntegerValue();
+    assert(expectedType->is<BuiltinIntegerType>());
+
+    SILType builtinIntType =
+        SILType::getPrimitiveObjectType(expectedType->getCanonicalType());
+    IntegerLiteralInst *intLiteralInst =
+        builder.createIntegerLiteral(loc, builtinIntType, resInt);
+    return intLiteralInst;
+  }
+  case SymbolicValue::Aggregate: {
+    // Support only stdlib integer or bool structs.
+    StructDecl *structDecl = expectedType->getStructOrBoundGenericStruct();
+    assert(structDecl);
+    assert(isStdlibIntegerOrBoolDecl(structDecl, astContext));
+    assert(symVal.getAggregateType()->isEqual(expectedType) &&
+           "aggregate symbolic value's type and expected type do not match");
+
+    VarDecl *propertyDecl = structDecl->getStoredProperties().front();
+    Type propertyType = expectedType->getTypeOfMember(
+        propertyDecl->getModuleContext(), propertyDecl);
+    SymbolicValue propertyVal = symVal.lookThroughSingleElementAggregates();
+    SILValue newPropertySIL =
+        emitCodeForSymbolicValue(propertyVal, propertyType, builder, loc);
+    // The lowered SIL type of an integer/bool type is just the primitive
+    // object type containing the Swift type.
+    SILType aggregateType =
+        SILType::getPrimitiveObjectType(expectedType->getCanonicalType());
+    StructInst *newStructInst = builder.createStruct(
+        loc, aggregateType, ArrayRef<SILValue>(newPropertySIL));
+    return newStructInst;
+  }
+  default: {
+    llvm_unreachable("Symbolic value kind is not supported");
+  }
+  }
 }
 
 /// On success this places a new value for each result of Op->getUser() into
@@ -1423,18 +1519,40 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
   
   // Constant fold constant_evaluable apply instructions.
   if (auto *applyInst = dyn_cast<ApplyInst>(User)) {
-    if (!isConstantEvaluableCall(applyInst)
+    if (!isFoldableCall(applyInst))
       return false;
+    SILFunction *fun = applyInst->getFunction();
     SymbolicValueBumpAllocator allocator;
-    ConstantExprStepEvaluator constantEvaluator(allocator,
-                                                applyInst->getFunction(), assertConfig);
+    ConstExprStepEvaluator constantEvaluator(allocator, fun, assertConfig);
     // Try to constant evaluate the arguments of the call here.
     if (!tryEvaluateConstantArguments(applyInst, constantEvaluator))
       return false;
     // Evaluate the call itself here.
-    constantEvaluator.evaluate(applyInst->getIterator());
+    auto result = constantEvaluator.evaluate(applyInst->getIterator());
+    Optional<SymbolicValue> errorValue = result.second;
+    if (errorValue.hasValue()) {
+      assert(errorValue.getValue().isUnknown());
+      UnknownReason reason = errorValue.getValue().getUnknownReason();
+      auto errorKind = reason.getKind();
+      if (errorKind == UnknownReason::Overflow ||
+          errorKind == UnknownReason::Trap) {
+        diagnose(fun->getASTContext(), applyInst->getLoc().getSourceLoc(),
+                 diag::const_folding_constant_eval_trap,
+                 reason.getTrapMessage());
+      }
+      return false;
+    }
     // Fold the results.
+    Optional<SymbolicValue> newValue =
+        constantEvaluator.lookupConstValue(applyInst);
+    assert(newValue.hasValue());
+    SILBuilderWithScope builder(applyInst);
+    SILLocation loc = applyInst->getLoc();
+    SILValue newSILValue = emitCodeForSymbolicValue(
+        newValue.getValue(), applyInst->getType().getASTType(), builder, loc);
     // add the new results to Results.
+    Results.push_back(newSILValue);
+    return true;
   }
 
   // Constant fold builtin invocations.
