@@ -17,7 +17,8 @@
 // FIXME(integers): This should go in the stdlib separately, probably.
 extension ExpressibleByIntegerLiteral
   where Self: _ExpressibleByBuiltinIntegerLiteral {
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public init(integerLiteral value: Self) {
     self = value
   }
@@ -339,7 +340,8 @@ extension SignedNumeric {
   ///     // Overflow error
   ///
   /// - Returns: The additive inverse of the argument.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static prefix func - (_ operand: Self) -> Self {
     var result = operand
     result.negate()
@@ -362,7 +364,8 @@ extension SignedNumeric {
   ///     var y = Int8.min
   ///     y.negate()
   ///     // Overflow error
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public mutating func negate() {
     self = 0 - self
   }
@@ -402,7 +405,8 @@ extension AdditiveArithmetic {
   ///     // y == 21
   ///
   /// - Returns: The given argument without any changes.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static prefix func + (x: Self) -> Self {
     return x
   }
@@ -1241,7 +1245,8 @@ public protocol BinaryInteger :
 
 extension BinaryInteger {
   /// Creates a new value equal to zero.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public init() {
     self = 0
   }
@@ -1256,7 +1261,8 @@ extension BinaryInteger {
     return (self > (0 as Self) ? 1 : 0) - (self < (0 as Self) ? 1 : 0)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public var _lowWord: UInt {
     var it = words.makeIterator()
     return it.next() ?? 0
@@ -1332,7 +1338,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer value.
   ///   - rhs: Another integer value.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func & (lhs: Self, rhs: Self) -> Self {
     var lhs = lhs
     lhs &= rhs
@@ -1354,7 +1361,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer value.
   ///   - rhs: Another integer value.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func | (lhs: Self, rhs: Self) -> Self {
     var lhs = lhs
     lhs |= rhs
@@ -1376,7 +1384,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer value.
   ///   - rhs: Another integer value.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func ^ (lhs: Self, rhs: Self) -> Self {
     var lhs = lhs
     lhs ^= rhs
@@ -1436,7 +1445,8 @@ extension BinaryInteger {
   ///   - lhs: The value to shift.
   ///   - rhs: The number of bits to shift `lhs` to the right.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func >> <RHS: BinaryInteger>(lhs: Self, rhs: RHS) -> Self {
     var r = lhs
     r >>= rhs
@@ -1482,7 +1492,8 @@ extension BinaryInteger {
   ///   - lhs: The value to shift.
   ///   - rhs: The number of bits to shift `lhs` to the left.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func << <RHS: BinaryInteger>(lhs: Self, rhs: RHS) -> Self {
     var r = lhs
     r <<= rhs
@@ -1656,7 +1667,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer to compare.
   ///   - rhs: Another integer to compare.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func == <
     Other: BinaryInteger
   >(lhs: Self, rhs: Other) -> Bool {
@@ -1713,7 +1725,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer to compare.
   ///   - rhs: Another integer to compare.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func != <
     Other: BinaryInteger
   >(lhs: Self, rhs: Other) -> Bool {
@@ -1730,7 +1743,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer to compare.
   ///   - rhs: Another integer to compare.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func < <Other: BinaryInteger>(lhs: Self, rhs: Other) -> Bool {
     let lhsNegative = Self.isSigned && lhs < (0 as Self)
     let rhsNegative = Other.isSigned && rhs < (0 as Other)
@@ -1772,7 +1786,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer to compare.
   ///   - rhs: Another integer to compare.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func <= <Other: BinaryInteger>(lhs: Self, rhs: Other) -> Bool {
     return !(rhs < lhs)
   }
@@ -1787,7 +1802,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer to compare.
   ///   - rhs: Another integer to compare.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func >= <Other: BinaryInteger>(lhs: Self, rhs: Other) -> Bool {
     return !(lhs < rhs)
   }
@@ -1802,7 +1818,8 @@ extension BinaryInteger {
   /// - Parameters:
   ///   - lhs: An integer to compare.
   ///   - rhs: Another integer to compare.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func > <Other: BinaryInteger>(lhs: Self, rhs: Other) -> Bool {
     return rhs < lhs
   }
@@ -1825,22 +1842,26 @@ extension BinaryInteger {
 //===----------------------------------------------------------------------===//
 
 extension BinaryInteger {
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func != (lhs: Self, rhs: Self) -> Bool {
     return !(lhs == rhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func <= (lhs: Self, rhs: Self) -> Bool {
     return !(rhs < lhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func >= (lhs: Self, rhs: Self) -> Bool {
     return !(lhs < rhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func > (lhs: Self, rhs: Self) -> Bool {
     return rhs < lhs
   }
@@ -2426,7 +2447,8 @@ extension FixedWidthInteger {
   ///     outside the range `0..<lhs.bitWidth`, it is masked to produce a
   ///     value within that range.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &>> (lhs: Self, rhs: Self) -> Self {
     var lhs = lhs
     lhs &>>= rhs
@@ -2468,7 +2490,8 @@ extension FixedWidthInteger {
   ///     outside the range `0..<lhs.bitWidth`, it is masked to produce a
   ///     value within that range.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &>> <
     Other: BinaryInteger
   >(lhs: Self, rhs: Other) -> Self {
@@ -2504,7 +2527,8 @@ extension FixedWidthInteger {
   ///     outside the range `0..<lhs.bitWidth`, it is masked to produce a
   ///     value within that range.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &>>= <
     Other: BinaryInteger
   >(lhs: inout Self, rhs: Other) {
@@ -2546,7 +2570,8 @@ extension FixedWidthInteger {
   ///     outside the range `0..<lhs.bitWidth`, it is masked to produce a
   ///     value within that range.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &<< (lhs: Self, rhs: Self) -> Self {
     var lhs = lhs
     lhs &<<= rhs
@@ -2588,7 +2613,8 @@ extension FixedWidthInteger {
   ///     outside the range `0..<lhs.bitWidth`, it is masked to produce a
   ///     value within that range.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &<< <
     Other: BinaryInteger
   >(lhs: Self, rhs: Other) -> Self {
@@ -2624,7 +2650,8 @@ extension FixedWidthInteger {
   ///     outside the range `0..<lhs.bitWidth`, it is masked to produce a
   ///     value within that range.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &<<= <
     Other: BinaryInteger
   >(lhs: inout Self, rhs: Other) {
@@ -2804,7 +2831,8 @@ extension FixedWidthInteger {
   ///     let allOnes = ~UInt8.min   // 0b11111111
   ///
   /// - Complexity: O(1).
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static prefix func ~ (x: Self) -> Self {
     return 0 &- x &- 1
   }
@@ -2863,7 +2891,8 @@ extension FixedWidthInteger {
   ///   - lhs: The value to shift.
   ///   - rhs: The number of bits to shift `lhs` to the right.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func >> <
     Other: BinaryInteger
   >(lhs: Self, rhs: Other) -> Self {
@@ -2872,7 +2901,8 @@ extension FixedWidthInteger {
     return lhs
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   @_semantics("optimize.sil.specialize.generic.partial.never")
   public static func >>= <
     Other: BinaryInteger
@@ -2880,7 +2910,8 @@ extension FixedWidthInteger {
     _nonMaskingRightShiftGeneric(&lhs, rhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _nonMaskingRightShiftGeneric <
     Other: BinaryInteger
   >(_ lhs: inout Self, _ rhs: Other) {
@@ -2890,7 +2921,8 @@ extension FixedWidthInteger {
     lhs = _nonMaskingRightShift(lhs, shift)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _nonMaskingRightShift(_ lhs: Self, _ rhs: Int) -> Self {
     let overshiftR = Self.isSigned ? lhs &>> (Self.bitWidth - 1) : 0
     let overshiftL: Self = 0
@@ -2950,7 +2982,8 @@ extension FixedWidthInteger {
   ///   - lhs: The value to shift.
   ///   - rhs: The number of bits to shift `lhs` to the left.
   @_semantics("optimize.sil.specialize.generic.partial.never")
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func << <
     Other: BinaryInteger
   >(lhs: Self, rhs: Other) -> Self {
@@ -2959,7 +2992,8 @@ extension FixedWidthInteger {
     return lhs
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   @_semantics("optimize.sil.specialize.generic.partial.never")
   public static func <<= <
     Other: BinaryInteger
@@ -2967,7 +3001,8 @@ extension FixedWidthInteger {
     _nonMaskingLeftShiftGeneric(&lhs, rhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _nonMaskingLeftShiftGeneric <
     Other: BinaryInteger
   >(_ lhs: inout Self, _ rhs: Other) {
@@ -2977,7 +3012,8 @@ extension FixedWidthInteger {
     lhs = _nonMaskingLeftShift(lhs, shift)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _nonMaskingLeftShift(_ lhs: Self, _ rhs: Int) -> Self {
     let overshiftR = Self.isSigned ? lhs &>> (Self.bitWidth - 1) : 0
     let overshiftL: Self = 0
@@ -3175,7 +3211,8 @@ extension FixedWidthInteger {
     }
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public // transparent
   static var _highBitIndex: Self {
     return Self.init(_truncatingBits: UInt(Self.bitWidth._value) &- 1)
@@ -3204,7 +3241,8 @@ extension FixedWidthInteger {
   /// - Parameters:
   ///   - lhs: The first value to add.
   ///   - rhs: The second value to add.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &+ (lhs: Self, rhs: Self) -> Self {
     return lhs.addingReportingOverflow(rhs).partialValue
   }
@@ -3234,7 +3272,8 @@ extension FixedWidthInteger {
   /// - Parameters:
   ///   - lhs: The first value to add.
   ///   - rhs: The second value to add.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &+= (lhs: inout Self, rhs: Self) {
     lhs = lhs &+ rhs
   }
@@ -3262,7 +3301,8 @@ extension FixedWidthInteger {
   /// - Parameters:
   ///   - lhs: A numeric value.
   ///   - rhs: The value to subtract from `lhs`.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &- (lhs: Self, rhs: Self) -> Self {
     return lhs.subtractingReportingOverflow(rhs).partialValue
   }
@@ -3292,7 +3332,8 @@ extension FixedWidthInteger {
   /// - Parameters:
   ///   - lhs: A numeric value.
   ///   - rhs: The value to subtract from `lhs`.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &-= (lhs: inout Self, rhs: Self) {
     lhs = lhs &- rhs
   }
@@ -3320,7 +3361,8 @@ extension FixedWidthInteger {
   /// - Parameters:
   ///   - lhs: The first value to multiply.
   ///   - rhs: The second value to multiply.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &* (lhs: Self, rhs: Self) -> Self {
     return lhs.multipliedReportingOverflow(by: rhs).partialValue
   }
@@ -3350,7 +3392,8 @@ extension FixedWidthInteger {
   /// - Parameters:
   ///   - lhs: The first value to multiply.
   ///   - rhs: The second value to multiply.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &*= (lhs: inout Self, rhs: Self) {
     lhs = lhs &* rhs
   }
@@ -3481,13 +3524,15 @@ extension UnsignedInteger where Self: FixedWidthInteger {
   ///
   /// For unsigned integer types, this value is `(2 ** bitWidth) - 1`, where
   /// `**` is exponentiation.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static var max: Self { return ~0 }
 
   /// The minimum representable integer in this type.
   ///
   /// For unsigned integer types, this value is always `0`.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static var min: Self { return 0 }
 }
 
@@ -3588,14 +3633,16 @@ extension SignedInteger where Self: FixedWidthInteger {
   ///
   /// For signed integer types, this value is `(2 ** (bitWidth - 1)) - 1`,
   /// where `**` is exponentiation.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static var max: Self { return ~min }
 
   /// The minimum representable integer in this type.
   ///
   /// For signed integer types, this value is `-(2 ** (bitWidth - 1))`, where
   /// `**` is exponentiation.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static var min: Self {
     return (-1 as Self) &<< Self._highBitIndex
   }
@@ -3635,12 +3682,14 @@ public func numericCast<T: BinaryInteger, U: BinaryInteger>(_ x: T) -> U {
 //    var _  = (x &+ (y - 1)) < x
 //                      ^
 extension SignedInteger {
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _maskingAdd(_ lhs: Self, _ rhs: Self) -> Self {
     fatalError("Should be overridden in a more specific type")
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _maskingSubtract(_ lhs: Self, _ rhs: Self) -> Self {
     fatalError("Should be overridden in a more specific type")
   }
@@ -3649,24 +3698,28 @@ extension SignedInteger {
 extension SignedInteger where Self: FixedWidthInteger {
   // This overload is supposed to break the ambiguity between the
   // implementations on SignedInteger and FixedWidthInteger
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &+ (lhs: Self, rhs: Self) -> Self {
     return _maskingAdd(lhs, rhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _maskingAdd(_ lhs: Self, _ rhs: Self) -> Self {
     return lhs.addingReportingOverflow(rhs).partialValue
   }
 
   // This overload is supposed to break the ambiguity between the
   // implementations on SignedInteger and FixedWidthInteger
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func &- (lhs: Self, rhs: Self) -> Self {
     return _maskingSubtract(lhs, rhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func _maskingSubtract(_ lhs: Self, _ rhs: Self) -> Self {
     return lhs.subtractingReportingOverflow(rhs).partialValue
   }

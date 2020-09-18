@@ -1094,7 +1094,8 @@ public struct ${Self}
   public typealias IntegerLiteralType = ${Self}
 
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public init(_builtinIntegerLiteral x: Builtin.IntLiteral) {
     _value = Builtin.s_to_${u}_checked_trunc_IntLiteral_${BuiltinName}(x).0
   }
@@ -1109,7 +1110,8 @@ public struct ${Self}
   ///
   /// - Parameter x: A value to use as the source of the new instance's binary
   ///   representation.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public init(bitPattern x: ${OtherSelf}) {
     _value = x._value
   }
@@ -1156,7 +1158,8 @@ public struct ${Self}
   @available(macOS, unavailable)
   @available(macCatalyst, unavailable)
 %     end
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public init(_ source: ${FloatType}) {
     _precondition(source.isFinite,
       "${FloatType} value cannot be converted to ${Self} because it is either infinite or NaN")
@@ -1210,12 +1213,14 @@ public struct ${Self}
 
 %   end
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func == (lhs: ${Self}, rhs: ${Self}) -> Bool {
     return Bool(Builtin.cmp_eq_Int${bits}(lhs._value, rhs._value))
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func < (lhs: ${Self}, rhs: ${Self}) -> Bool {
     return Bool(Builtin.cmp_${u}lt_Int${bits}(lhs._value, rhs._value))
   }
@@ -1223,7 +1228,8 @@ public struct ${Self}
 // See corresponding definitions in the FixedWidthInteger extension.
 %       for x in binaryArithmetic['Numeric'] + binaryArithmetic["BinaryInteger"][:1]:
 ${assignmentOperatorComment(x.operator, True)}
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func ${x.operator}=(lhs: inout ${Self}, rhs: ${Self}) {
 %   if x.kind == '/':
     // No LLVM primitives for checking overflow of division operations, so we
@@ -1257,7 +1263,8 @@ ${assignmentOperatorComment(x.operator, True)}
 %       for x in chain(*binaryArithmetic.values()):
 
 ${overflowOperationComment(x.operator)}
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public func ${x.name}ReportingOverflow(
     ${x.firstArg} other: ${Self}
   ) -> (partialValue: ${Self}, overflow: Bool) {
@@ -1292,7 +1299,8 @@ ${overflowOperationComment(x.operator)}
 %       end
 
 ${assignmentOperatorComment('%', True)}
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func %=(lhs: inout ${Self}, rhs: ${Self}) {
     // No LLVM primitives for checking overflow of division operations, so we
     // check manually.
@@ -1313,14 +1321,16 @@ ${assignmentOperatorComment('%', True)}
     lhs = ${Self}(newStorage)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public init(_ _value: Builtin.Int${bits}) {
     self._value = _value
   }
 
 % for x in binaryBitwise:
 ${assignmentOperatorComment(x.operator, True)}
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func ${x.operator}=(lhs: inout ${Self}, rhs: ${Self}) {
     lhs = ${Self}(Builtin.${x.llvmName}_Int${bits}(lhs._value, rhs._value))
   }
@@ -1329,7 +1339,8 @@ ${assignmentOperatorComment(x.operator, True)}
 % for x in maskingShifts:
 
 ${assignmentOperatorComment(x.operator, True)}
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func ${x.operator}=(lhs: inout ${Self}, rhs: ${Self}) {
     let rhs_ = rhs & ${bits - 1}
     lhs = ${Self}(
@@ -1347,7 +1358,8 @@ ${assignmentOperatorComment(x.operator, True)}
 %   else:
   /// The bit width of ${Article.lower()} `${Self}` instance is ${bits}.
 %   end
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static var bitWidth: Int { return ${bits} }
 
   /// The number of leading zeros in this value's binary representation.
@@ -1358,7 +1370,8 @@ ${assignmentOperatorComment(x.operator, True)}
   ///     let x: Int8 = 0b0001_1111
   ///     // x == 31
   ///     // x.leadingZeroBitCount == 3
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public var leadingZeroBitCount: Int {
     return Int(
       ${Self}(
@@ -1373,7 +1386,8 @@ ${assignmentOperatorComment(x.operator, True)}
   ///     let x = Int8(bitPattern: 0b1111_1000)
   ///     // x == -8
   ///     // x.trailingZeroBitCount == 3
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public var trailingZeroBitCount: Int {
     return Int(
       ${Self}(
@@ -1389,7 +1403,8 @@ ${assignmentOperatorComment(x.operator, True)}
   ///     let x: Int8 = 0b0001_1111
   ///     // x == 31
   ///     // x.nonzeroBitCount == 5
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public var nonzeroBitCount: Int {
     return Int(
       ${Self}(
@@ -1425,10 +1440,12 @@ ${assignmentOperatorComment(x.operator, True)}
     @inlinable
     public var indices: Indices { return startIndex ..< endIndex }
 
-    @_transparent
+    @_semantics("constant_evaluable")
+@inlinable
     public func index(after i: Int) -> Int { return i + 1 }
 
-    @_transparent
+    @_semantics("constant_evaluable")
+@inlinable
     public func index(before i: Int) -> Int { return i - 1 }
 
     @inlinable
@@ -1450,12 +1467,14 @@ ${assignmentOperatorComment(x.operator, True)}
   /// Negative values are returned in two's complement representation,
   /// regardless of the type's underlying implementation.
 % end
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public var words: Words {
     return Words(self)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public // transparent
   var _lowWord: UInt {
     % truncOrExt = z + 'ext' if bits <= word_bits else 'trunc'
@@ -1464,7 +1483,8 @@ ${assignmentOperatorComment(x.operator, True)}
     )
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public // transparent
   init(_truncatingBits bits: UInt) {
     % truncOrExt = 'zext' if bits > word_bits else 'trunc'
@@ -1492,7 +1512,8 @@ ${assignmentOperatorComment(x.operator, True)}
   /// to find an absolute value. In addition, because `abs(_:)` always returns
   /// a value of the same type, even in a generic context, using the function
   /// instead of the `magnitude` property is encouraged.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public var magnitude: U${Self} {
     let base = U${Self}(_value)
     return self < (0 as ${Self}) ? ~base &+ 1 : base
@@ -1591,7 +1612,8 @@ ${assignmentOperatorComment(x.operator, True)}
   }
 
   /// A representation of this integer with the byte order swapped.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public var byteSwapped: ${Self} {
 %   if bits <= 8:
     return self
@@ -1605,7 +1627,8 @@ ${assignmentOperatorComment(x.operator, True)}
   public var _value: Builtin.Int${bits}
 
 % if self_type.is_word:
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public // @testable
   init(_ _v: Builtin.Word) {
 % if BuiltinName == 'Int32':
@@ -1615,7 +1638,8 @@ ${assignmentOperatorComment(x.operator, True)}
 % end
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public // @testable
   var _builtinWordValue: Builtin.Word {
 % if BuiltinName == 'Int32':
@@ -1683,7 +1707,8 @@ extension ${Self} {
 %   for x in binaryBitwise + maskingShifts + list(chain(*binaryArithmetic.values())):
 
 ${operatorComment(x.operator, True)}
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func ${x.operator}(lhs: ${Self}, rhs: ${Self}) -> ${Self} {
     var lhs = lhs
     lhs ${x.operator}= rhs
@@ -1692,17 +1717,20 @@ ${operatorComment(x.operator, True)}
 
 %   end
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func <= (lhs: ${Self}, rhs: ${Self}) -> Bool {
     return !(rhs < lhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func >= (lhs: ${Self}, rhs: ${Self}) -> Bool {
     return !(lhs < rhs)
   }
 
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public static func > (lhs: ${Self}, rhs: ${Self}) -> Bool {
     return rhs < lhs
   }
@@ -1713,7 +1741,8 @@ ${operatorComment(x.operator, True)}
 // TODO: Consider removing the underscore.
 /// Returns the argument and specifies that the value is not negative.
 /// It has only an effect if the argument is a load or call.
-@_transparent
+@_semantics("constant_evaluable")
+@inlinable
 public func _assumeNonNegative(_ x: ${Self}) -> ${Self} {
   _internalInvariant(x >= (0 as ${Self}))
   return ${Self}(Builtin.assumeNonNegative_${BuiltinName}(x._value))
@@ -1734,7 +1763,8 @@ extension Int {
   ///
   /// - Parameter other: The value to calculate the distance to.
   /// - Returns: The distance from this value to `other`.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public func distance(to other: Int) -> Int {
     return other - self
   }
@@ -1751,14 +1781,15 @@ extension Int {
   ///
   /// - Parameter n: The distance to advance this value.
   /// - Returns: A value that is offset from this value by `n`.
-  @_transparent
+  @_semantics("constant_evaluable")
+@inlinable
   public func advanced(by n: Int) -> Int {
     return self + n
   }
 }
 
 // FIXME(integers): switch to using `FixedWidthInteger.unsafeAdding`
-@_transparent
+@_semantics("constant_evaluable")
 @inlinable
 internal func _unsafePlus(_ lhs: Int, _ rhs: Int) -> Int {
 #if INTERNAL_CHECKS_ENABLED
@@ -1769,7 +1800,7 @@ internal func _unsafePlus(_ lhs: Int, _ rhs: Int) -> Int {
 }
 
 // FIXME(integers): switch to using `FixedWidthInteger.unsafeSubtracting`
-@_transparent
+@_semantics("constant_evaluable")
 @inlinable
 internal func _unsafeMinus(_ lhs: Int, _ rhs: Int) -> Int {
 #if INTERNAL_CHECKS_ENABLED

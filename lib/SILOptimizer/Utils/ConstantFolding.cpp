@@ -18,15 +18,15 @@
 #include "swift/SIL/InstructionUtils.h"
 #include "swift/SIL/PatternMatch.h"
 #include "swift/SIL/SILBuilder.h"
-#include "swift/SIL/SILConstants.h"
 #include "swift/SILOptimizer/Utils/CastOptimizer.h"
-#include "swift/SILOptimizer/Utils/ConstExpr.h"
 #include "swift/SILOptimizer/Utils/InstOptUtils.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Debug.h"
+#include "swift/SIL/SILConstants.h"
+#include "swift/SILOptimizer/Utils/ConstExpr.h"
 
 #define DEBUG_TYPE "sil-constant-folding"
 
@@ -1436,16 +1436,21 @@ static bool canBeConstant(SILInstruction *inst) {
 static bool tryEvaluateConstantArguments(SILInstruction *inst,
                                          ConstExprStepEvaluator &evaluator) {
   for (Operand &op : inst->getAllOperands()) {
-    SILInstruction *definingInstruction = op.get()->getDefiningInstruction();
+    SILValue opValue = op.get();
+    SILInstruction *definingInstruction = opValue->getDefiningInstruction();
     if (!definingInstruction || !canBeConstant(definingInstruction))
       return false;
+    // If this operand is already evaluated skip it.
+    if (evaluator.lookupConstValue(opValue))
+      continue;
     // Recursively evaluate the transitive arguments if necessary.
     if (definingInstruction->getNumOperands() > 0 &&
         !tryEvaluateConstantArguments(definingInstruction, evaluator))
       return false;
+    //llvm::errs() << "Evaluating: " << *definingInstruction << "\n";
     auto result = evaluator.evaluate(definingInstruction->getIterator());
     // If the result has a value, it implies an error.
-    if (result.second.hasValue())
+    if(result.second.hasValue())
       return false;
   }
   return true;
@@ -1491,8 +1496,8 @@ static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
     Type propertyType = expectedType->getTypeOfMember(
         propertyDecl->getModuleContext(), propertyDecl);
     SymbolicValue propertyVal = symVal.lookThroughSingleElementAggregates();
-    SILValue newPropertySIL =
-        emitCodeForSymbolicValue(propertyVal, propertyType, builder, loc);
+    SILValue newPropertySIL = emitCodeForSymbolicValue(propertyVal,
+                                                  propertyType, builder, loc);
     // The lowered SIL type of an integer/bool type is just the primitive
     // object type containing the Swift type.
     SILType aggregateType =
@@ -1507,6 +1512,7 @@ static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
   }
 }
 
+
 /// On success this places a new value for each result of Op->getUser() into
 /// Results. Results is guaranteed on success to have the same number of entries
 /// as results of User. If we could only simplify /some/ of an instruction's
@@ -1519,7 +1525,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
   
   // Constant fold constant_evaluable apply instructions.
   if (auto *applyInst = dyn_cast<ApplyInst>(User)) {
-    // llvm::errs() << "Call: " << *applyInst << "\n";
+    //llvm::errs() << "Call: " << *applyInst << "\n";
     if (!isFoldableCall(applyInst))
       return false;
     SILFunction *fun = applyInst->getFunction();
@@ -1541,16 +1547,18 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
                  diag::const_folding_constant_eval_trap,
                  reason.getTrapMessage());
       }
+      // Silently skip every other error as it is not because of incorrect
+      // usage.
       return false;
     }
     // Fold the results.
     Optional<SymbolicValue> newValue =
-        constantEvaluator.lookupConstValue(applyInst);
+      constantEvaluator.lookupConstValue(applyInst);
     assert(newValue.hasValue());
     SILBuilderWithScope builder(applyInst);
     SILLocation loc = applyInst->getLoc();
-    SILValue newSILValue = emitCodeForSymbolicValue(
-        newValue.getValue(), applyInst->getType().getASTType(), builder, loc);
+    SILValue newSILValue = emitCodeForSymbolicValue(newValue.getValue(),
+      applyInst->getType().getASTType(), builder, loc);
     // add the new results to Results.
     Results.push_back(newSILValue);
     return true;
