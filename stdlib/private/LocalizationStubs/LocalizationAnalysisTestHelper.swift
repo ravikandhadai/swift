@@ -14,7 +14,8 @@ import Foundation
 
 @usableFromInline
 @_semantics("constant_evaluator_debug_print")
-internal func debugPrint<T>(x: T) {
+internal func debugPrint<T>(_ x: T) {
+    print(x)
 }
 
 @usableFromInline
@@ -118,6 +119,7 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
     @_semantics("swiftui.localized_string_key.init_literal")
     @inlinable
     @_semantics("constant_evaluable")
+    @_optimize(none)
     public init(stringLiteral value: String) {
         self.init(value)
     }
@@ -125,11 +127,14 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
     @_semantics("swiftui.localized_string_key.init_interpolation")
     @inlinable
     @_semantics("constant_evaluable")
+    @_optimize(none)
     public init(stringInterpolation: StringInterpolation) {
+        //debugPrint("Starting Key Construction")
         self.key = stringInterpolation.key
-        self.arguments = stringInterpolation.arguments
+        //debugPrint(self.key)
+        self.arguments = [] //stringInterpolation.arguments
         self.hasFormatting = true
-        debugPrint(self.key)
+        //debugPrint(self.key)
     }
 
     @usableFromInline
@@ -174,7 +179,10 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
         @_transparent
         @_optimize(none)
         public mutating func appendLiteral(_ literal: String) {
+            //debugPrint(literal)
+            //debugPrint(self)
             key += literal //literal.replacingOccurrences(of: "%", with: "%%")
+            //debugPrint(self)
         }
 
         @_transparent
@@ -182,6 +190,7 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
         public mutating func appendInterpolation(_ string: String) {
             key += "%@"
             arguments.append(FormatArgument(string))
+            //debugPrint(self)
         }
 
         @_transparent
@@ -194,6 +203,7 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
             arguments.append(
                 FormatArgument(value: subject as! NSObject, formatter: formatter)
             )
+            //debugPrint(self)
         }
 
         @_transparent
@@ -219,6 +229,7 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
         public mutating func appendInterpolation<T: _FormatSpecifiable> (
             _ value: T
         ) {
+            //debugPrint(self)
             appendInterpolation(value, specifier: value._specifier)
         }
 
@@ -230,8 +241,11 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
             // specifier to generate localized strings.
             specifier: String
         ) {
+            //debugPrint(self )
             key += specifier
             arguments.append(FormatArgument(value._arg))
+            //debugPrint(self)
+            //debugPrint("Completed interpolation")
         }
 
 //        @_transparent
@@ -255,72 +269,114 @@ public protocol _FormatSpecifiable: Equatable {
 
 extension Int: _FormatSpecifiable {
     public var _arg: Int64 { return Int64(self) }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%lld" }
 }
 
 extension Int8: _FormatSpecifiable {
     public var _arg: Int32 { return Int32(self) }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%d" }
 }
 
 extension Int16: _FormatSpecifiable {
     public var _arg: Int32 { return Int32(self) }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%d" }
 }
 
 extension Int32: _FormatSpecifiable {
     public var _arg: Int32 { return self }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%d" }
 }
 
 extension Int64: _FormatSpecifiable {
     public var _arg: Int64 { return self }
+  @inlinable
+  @_semantics("constant_evaluable")
+  @_optimize(none)
     public var _specifier: String { return "%lld" }
 }
 
 extension UInt: _FormatSpecifiable {
     public var _arg: UInt64 { return UInt64(self) }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%llu" }
 }
 
 extension UInt8: _FormatSpecifiable {
     public var _arg: UInt32 { return UInt32(self) }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%u" }
 }
 
 extension UInt16: _FormatSpecifiable {
     public var _arg: UInt32 { return UInt32(self) }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%u" }
 }
 
 extension UInt32: _FormatSpecifiable {
     public var _arg: UInt32 { return UInt32(self) }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%u" }
 }
 
 extension UInt64: _FormatSpecifiable {
     public var _arg: UInt64 { return self }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%llu" }
 }
 
 extension Float: _FormatSpecifiable {
     public var _arg: Float { return self }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%f" }
 }
 
 #if os(macOS) && arch(x86_64)
 extension Float80: _FormatSpecifiable {
     public var _arg: Float80 { return self }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%lf" }
 }
 #endif
 
 extension Double: _FormatSpecifiable {
     public var _arg: Double { return self }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%lf" }
 }
 
 extension CGFloat: _FormatSpecifiable {
     public var _arg: CGFloat { return self }
+    @inlinable
+    @_semantics("constant_evaluable")
+    @_optimize(none)
     public var _specifier: String { return "%lf" }
 }

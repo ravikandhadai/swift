@@ -312,7 +312,7 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
     auto val = getConstantValue(aggValue);
     if (!val.isConstant()) {
       return val;
-    }
+    }    
     assert(val.getKind() == SymbolicValue::Aggregate);
     return val.getAggregateMembers()[sei->getFieldIndex()];
   }
@@ -1065,6 +1065,7 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
 
     auto otherString = getConstantValue(apply->getOperand(1));
     if (!otherString.isConstant()) {
+      llvm::errs() << "Other string is not a constant: " << otherString << "\n";
       return otherString;
     }
     if (otherString.getKind() != SymbolicValue::String) {
@@ -1075,6 +1076,7 @@ ConstExprFunctionState::computeWellKnownCallResult(ApplyInst *apply,
     auto inoutOperand = apply->getOperand(2);
     auto firstString = getConstAddrAndLoadResult(inoutOperand);
     if (!firstString.isConstant()) {
+      llvm::errs() << "First string is not a constant: " << firstString << "\n";
       return firstString;
     }
     if (firstString.getKind() != SymbolicValue::String) {

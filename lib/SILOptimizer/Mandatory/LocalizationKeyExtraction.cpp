@@ -106,7 +106,7 @@ static bool shouldAttemptEvaluation(SILInstruction *inst) {
   SILFunction *calleeFun = apply->getCalleeFunction();
   if (!calleeFun)
     return false;
-  return isConstantEvaluable(calleeFun);
+  return isConstantEvaluable(calleeFun) || calleeFun->hasSemanticsAttr("string.plusequals");
 }
 
 ///// Skip or evaluate the given instruction based on the evaluation policy and
@@ -155,25 +155,26 @@ static bool diagnoseSpecialErrors(SILInstruction *unevaluableInst,
 ///// function that is not a specially-handled error. These are errors that
 ///// happen within  'appendInterpolation' calls, which must be constant
 ///// evaluable by the definition of APIs.
-static void diagnoseErrorInConstantEvaluableFunction(ApplyInst *call,
-                                                     SymbolicValue errorInfo) {
-  SILFunction *callee = call->getCalleeFunction();
-  assert(callee);
-  SILLocation loc = call->getLoc();
-  SourceLoc sourceLoc = loc.getSourceLoc();
-  ASTContext &astContext = callee->getASTContext();
-
-  // Here, we know very little about what actually went wrong. It could be due
-  // to bugs in the library implementation or in extensions created by users.
-  // Emit a general message here and some diagnostic notes.
-  std::string demangledCalleeName = Demangle::demangleSymbolAsString(
-      callee->getName(),
-      Demangle::DemangleOptions::SimplifiedUIDemangleOptions());
-  diagnose(astContext, sourceLoc, diag::oslog_invalid_log_message);
-  diagnose(astContext, sourceLoc, diag::oslog_const_evaluable_fun_error,
-           demangledCalleeName);
-  errorInfo.emitUnknownDiagnosticNotes(loc);
-}
+//static void diagnoseErrorInConstantEvaluableFunction(ApplyInst *call,
+//                                                     SymbolicValue errorInfo) {
+//  SILFunction *callee = call->getCalleeFunction();
+//  assert(callee);
+//  SILLocation loc = call->getLoc();
+//  SourceLoc sourceLoc = loc.getSourceLoc();
+//  ASTContext &astContext = callee->getASTContext();
+//
+//  // Here, we know very little about what actually went wrong. It could be due
+//  // to bugs in the library implementation or in extensions created by users.
+//  // Emit a general message here and some diagnostic notes.
+//  std::string demangledCalleeName = Demangle::demangleSymbolAsString(
+//      callee->getName(),
+//      Demangle::DemangleOptions::SimplifiedUIDemangleOptions());
+//  //llvm::errs() << "Evaluation of constant evaluableb function failed: " << demangledCalleeName << "\n";
+////  diagnose(astContext, sourceLoc, diag::oslog_invalid_log_message);
+////  diagnose(astContext, sourceLoc, diag::oslog_const_evaluable_fun_error,
+////           demangledCalleeName);
+//  //errorInfo.emitUnknownDiagnosticNotes(loc);
+//}
 
 ///// Detect and emit diagnostics for errors found during evaluation. Errors
 ///// can happen due to bugs in the implementation of the os log API, or
@@ -186,16 +187,6 @@ static bool detectAndDiagnoseErrors(SymbolicValue errorInfo,
 
   if (diagnoseSpecialErrors(unevaluableInst, errorInfo))
     return true;
-  // If evaluation of any constant_evaluable function call fails, point
-  // to that failed function along with a reason.
-  ApplyInst *call = dyn_cast<ApplyInst>(unevaluableInst);
-  if (call) {
-    SILFunction *callee = call->getCalleeFunction();
-    if (callee && isConstantEvaluable(callee)) {
-      diagnoseErrorInConstantEvaluableFunction(call, errorInfo);
-      return true; // abort evaluation.
-    }
-  }
   // Every other error must happen in the top-level code containing the string
   // interpolation construction and body of the log methods. If we have a
   // fail-stop error, point to the error and abort evaluation. Otherwise, just
@@ -207,6 +198,15 @@ static bool detectAndDiagnoseErrors(SymbolicValue errorInfo,
     errorInfo.emitUnknownDiagnosticNotes(loc);
     return true;
   }
+  // If evaluation of any constant_evaluable function call fails, point
+  // to that failed function along with a reason and continue.
+//  ApplyInst *call = dyn_cast<ApplyInst>(unevaluableInst);
+//  if (call) {
+//    SILFunction *callee = call->getCalleeFunction();
+//    if (callee && isConstantEvaluable(callee)) {
+//      diagnoseErrorInConstantEvaluableFunction(call, errorInfo);
+//    }
+//  }
   return false;
 }
 
@@ -644,7 +644,7 @@ class LocalizationKeyExtraction : public SILFunctionTransform {
         // The log call is in unreachable code here.
         continue;
       }
-      llvm::errs() << "Begining of interpolation " << *interpolationStart << "\n";
+      //llvm::errs() << "Begining of interpolation " << *interpolationStart << "\n";
       extractLocalizationKey(interpolationStart, localizedKeyInit, assertConfig);
     }
   }
