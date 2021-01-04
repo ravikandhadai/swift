@@ -138,6 +138,7 @@ static void addMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
   // Linking happening before this pass and ConstantPropagation happening after
   // this pass.
   P.addOSLogOptimization();
+  P.addLocalizationKeyExtraction();
 
   // Diagnostic ConstantPropagation must be rerun on deserialized functions
   // because it is sensitive to the assert configuration.

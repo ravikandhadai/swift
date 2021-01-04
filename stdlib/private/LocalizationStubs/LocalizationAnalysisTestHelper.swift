@@ -13,6 +13,11 @@
 import Foundation
 
 @usableFromInline
+@_semantics("constant_evaluator_debug_print")
+internal func debugPrint<T>(x: T) {
+}
+
+@usableFromInline
 internal struct LocalizationInformation {
   let localizedString: LocalizedStringKey
   let tableName: String?
@@ -97,10 +102,13 @@ public struct Text {
 /// file.
 @frozen
 public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
+    @usableFromInline
     var key: String
     /// Whether it contains arguments that need to be formatted
+    @usableFromInline
     var hasFormatting: Bool = false
-    private var arguments: [FormatArgument]
+    @usableFromInline
+    var arguments: [FormatArgument]
 
     public init(_ value: String) {
         self.key = value
@@ -121,6 +129,7 @@ public struct LocalizedStringKey: Equatable, ExpressibleByStringInterpolation {
         self.key = stringInterpolation.key
         self.arguments = stringInterpolation.arguments
         self.hasFormatting = true
+        debugPrint(self.key)
     }
 
     @usableFromInline

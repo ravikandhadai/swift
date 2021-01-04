@@ -61,18 +61,18 @@ namespace {
 /// If the given instruction is a call to the compiler-intrinsic initializer
 /// of String that accepts string literals, return the called function.
 /// Otherwise, return nullptr.
-static SILFunction *getStringMakeUTF8Init(SILInstruction *inst) {
-  auto *apply = dyn_cast<ApplyInst>(inst);
-  if (!apply)
-    return nullptr;
-
-  SILFunction *callee = apply->getCalleeFunction();
-  if (!callee || !callee->hasSemanticsAttr(semantics::STRING_MAKE_UTF8))
-    return nullptr;
-  return callee;
-}
-
-/// State needed for constant folding.
+//static SILFunction *getStringMakeUTF8Init(SILInstruction *inst) {
+//  auto *apply = dyn_cast<ApplyInst>(inst);
+//  if (!apply)
+//    return nullptr;
+//
+//  SILFunction *callee = apply->getCalleeFunction();
+//  if (!callee || !callee->hasSemanticsAttr(semantics::STRING_MAKE_UTF8))
+//    return nullptr;
+//  return callee;
+//}
+//
+///// State needed for constant folding.
 struct EvaluationState {
   /// Storage for symbolic values constructed during interpretation.
   SymbolicValueBumpAllocator allocator;
@@ -93,12 +93,12 @@ struct EvaluationState {
         endInstructions(endInsts.begin(), endInsts.end()) {}
 };
 
-/// Decide if the given instruction (which could possibly be a call) should
-/// be constant evaluated.
-///
-/// \returns true iff the given instruction is not a call or if it is, it calls
-/// a known constant-evaluable function such as string append etc., or calls
-/// a function annotate as "constant_evaluable".
+///// Decide if the given instruction (which could possibly be a call) should
+///// be constant evaluated.
+/////
+///// \returns true iff the given instruction is not a call or if it is, it calls
+///// a known constant-evaluable function such as string append etc., or calls
+///// a function annotate as "constant_evaluable".
 static bool shouldAttemptEvaluation(SILInstruction *inst) {
   auto *apply = dyn_cast<ApplyInst>(inst);
   if (!apply)
@@ -109,9 +109,9 @@ static bool shouldAttemptEvaluation(SILInstruction *inst) {
   return isConstantEvaluable(calleeFun);
 }
 
-/// Skip or evaluate the given instruction based on the evaluation policy and
-/// handle errors. The policy is to evaluate all non-apply instructions as well
-/// as apply instructions that are marked as "constant_evaluable".
+///// Skip or evaluate the given instruction based on the evaluation policy and
+///// handle errors. The policy is to evaluate all non-apply instructions as well
+///// as apply instructions that are marked as "constant_evaluable".
 static std::pair<Optional<SILBasicBlock::iterator>, Optional<SymbolicValue>>
 evaluateOrSkip(ConstExprStepEvaluator &stepEval,
                SILBasicBlock::iterator instI) {
@@ -125,9 +125,9 @@ evaluateOrSkip(ConstExprStepEvaluator &stepEval,
   return stepEval.skipByMakingEffectsNonConstant(instI);
 }
 
-/// Diagnose traps and instruction-limit exceeded errors. These have customized
-/// error messages. \returns true if the given error is diagnosed. Otherwise,
-/// returns false.
+///// Diagnose traps and instruction-limit exceeded errors. These have customized
+///// error messages. \returns true if the given error is diagnosed. Otherwise,
+///// returns false.
 static bool diagnoseSpecialErrors(SILInstruction *unevaluableInst,
                                   SymbolicValue errorInfo) {
   SourceLoc sourceLoc = unevaluableInst->getLoc().getSourceLoc();
@@ -151,10 +151,10 @@ static bool diagnoseSpecialErrors(SILInstruction *unevaluableInst,
   return false;
 }
 
-/// Diagnose failure during evaluation of a call to a constant-evaluable
-/// function that is not a specially-handled error. These are errors that
-/// happen within  'appendInterpolation' calls, which must be constant
-/// evaluable by the definition of APIs.
+///// Diagnose failure during evaluation of a call to a constant-evaluable
+///// function that is not a specially-handled error. These are errors that
+///// happen within  'appendInterpolation' calls, which must be constant
+///// evaluable by the definition of APIs.
 static void diagnoseErrorInConstantEvaluableFunction(ApplyInst *call,
                                                      SymbolicValue errorInfo) {
   SILFunction *callee = call->getCalleeFunction();
@@ -175,9 +175,9 @@ static void diagnoseErrorInConstantEvaluableFunction(ApplyInst *call,
   errorInfo.emitUnknownDiagnosticNotes(loc);
 }
 
-/// Detect and emit diagnostics for errors found during evaluation. Errors
-/// can happen due to bugs in the implementation of the os log API, or
-/// due to incorrect use of the os log API.
+///// Detect and emit diagnostics for errors found during evaluation. Errors
+///// can happen due to bugs in the implementation of the os log API, or
+///// due to incorrect use of the os log API.
 static bool detectAndDiagnoseErrors(SymbolicValue errorInfo,
                                     SILInstruction *unevaluableInst) {
   // TODO: fix the globalStrinTableBuiltin error after emitting diagnostics.
@@ -210,15 +210,13 @@ static bool detectAndDiagnoseErrors(SymbolicValue errorInfo,
   return false;
 }
 
-/// Given a 'foldState', constant evaluate instructions from
-/// 'foldState.beginInstruction' until an instruction in
-/// 'foldState.endInstructions' is seen. Add foldable, constant-valued
-/// instructions discovered during the evaluation to
-/// 'foldState.constantSILValues'.
-/// \returns error information if the evaluation failed.
-static Optional<SymbolicValue>
+///// Given a 'foldState', constant evaluate instructions from
+///// 'foldState.beginInstruction' until an instruction in
+///// 'foldState.endInstructions' is seen. Add foldable, constant-valued
+///// instructions discovered during the evaluation to
+///// 'foldState.constantSILValues'.
+static void
 evaluateLocalizationInfoInitCode(EvaluationState &evalState) {
-
   ConstExprStepEvaluator &constantEvaluator = evalState.constantEvaluator;
   SILBasicBlock::iterator currI = evalState.beginInstruction->getIterator();
   auto &endInstructions = evalState.endInstructions;
@@ -231,9 +229,6 @@ evaluateLocalizationInfoInitCode(EvaluationState &evalState) {
     if (endInstructions.count(currInst))
       break;
 
-    // Initialize string info from this instruction if possible.
-    foldState.stringInfo.extractStringInfoFromInstruction(currInst);
-
     Optional<SymbolicValue> errorInfo = None;
     Optional<SILBasicBlock::iterator> nextI = None;
 
@@ -244,357 +239,49 @@ evaluateLocalizationInfoInitCode(EvaluationState &evalState) {
     // evaluation if possible as this error could be due to an instruction that
     // doesn't affect the OSLogMessage value.
     if (errorInfo && detectAndDiagnoseErrors(errorInfo.getValue(), currInst)) {
-      return errorInfo;
+      return;
     }
 
     if (!nextI) {
       // We cannnot find the next instruction to continue evaluation, and we
       // haven't seen any reportable errors during evaluation. Therefore,
       // consider this the end point of evaluation.
-      return None; // No error.
+      return;
     }
 
     // Set the next instruction to continue evaluation from.
     currI = nextI.getValue();
 
-    // If the instruction results are foldable and if we found a constant value
-    // for the results, record it.
-    for (SILValue instructionResult : currInst->getResults()) {
-      if (!isSILValueFoldable(instructionResult))
-        continue;
-
-      Optional<SymbolicValue> constantVal =
-          constantEvaluator.lookupConstValue(instructionResult);
-      if (constantVal.hasValue()) {
-        foldState.addConstantSILValue(instructionResult);
-      }
-    }
-  }
-  return None; // No error.
-}
-
-/// Generate SIL code to create an array of constant size from the given
-/// SILValues \p elements. This function creates the same sequence of SIL
-/// instructions that would be generated for initializing an array from an array
-/// literal of the form [element1, element2, ..., elementn].
-///
-/// \param elements SILValues that the array should contain
-/// \param arrayType the type of the array that must be created.
-/// \param builder SILBuilder that provides the context for emitting the code
-/// for the array.
-/// \param loc SILLocation to use in the emitted instructions.
-/// \return the SILValue of the array that is created with the given \c
-/// elements.
-static SILValue emitCodeForConstantArray(ArrayRef<SILValue> elements,
-                                         CanType arrayType, SILBuilder &builder,
-                                         SILLocation loc) {
-  ASTContext &astContext = builder.getASTContext();
-  assert(astContext.getArrayDecl() ==
-         arrayType->getNominalOrBoundGenericNominal());
-  SILModule &module = builder.getModule();
-
-  // Create a SILValue for the number of elements.
-  unsigned numElements = elements.size();
-  SILValue numElementsSIL = builder.createIntegerLiteral(
-      loc, SILType::getBuiltinWordType(astContext), numElements);
-
-  // Find the SILFunction that corresponds to _allocateUninitializedArray.
-  FuncDecl *arrayAllocateDecl = astContext.getAllocateUninitializedArray();
-  assert(arrayAllocateDecl);
-  std::string allocatorMangledName =
-      SILDeclRef(arrayAllocateDecl, SILDeclRef::Kind::Func).mangle();
-  SILFunction *arrayAllocateFun =
-      module.findFunction(allocatorMangledName, SILLinkage::PublicExternal);
-  assert(arrayAllocateFun);
-
-  SILFunction *arrayFinalizeFun = nullptr;
-  if (numElements != 0) {
-    if (FuncDecl *arrayFinalizeDecl = astContext.getFinalizeUninitializedArray()) {
-      std::string finalizeMangledName =
-          SILDeclRef(arrayFinalizeDecl, SILDeclRef::Kind::Func).mangle();
-      arrayFinalizeFun =
-          module.findFunction(finalizeMangledName, SILLinkage::SharedExternal);
-      assert(arrayFinalizeFun);
-      module.linkFunction(arrayFinalizeFun);
-    }
-  }
-
-  // Call the _allocateUninitializedArray function with numElementsSIL. The
-  // call returns a two-element tuple, where the first element is the newly
-  // created array and the second element is a pointer to the internal storage
-  // of the array.
-  SubstitutionMap subMap = arrayType->getContextSubstitutionMap(
-      module.getSwiftModule(), astContext.getArrayDecl());
-  FunctionRefInst *arrayAllocateRef =
-      builder.createFunctionRef(loc, arrayAllocateFun);
-  ApplyInst *applyInst = builder.createApply(
-      loc, arrayAllocateRef, subMap, ArrayRef<SILValue>(numElementsSIL), false);
-
-  // Extract the elements of the tuple returned by the call to the allocator.
-  DestructureTupleInst *destructureInst =
-      builder.createDestructureTuple(loc, applyInst);
-  SILValue arraySIL = destructureInst->getResults()[0];
-  SILValue storagePointerSIL = destructureInst->getResults()[1];
-
-  if (elements.empty()) {
-    // Nothing more to be done if we are creating an empty array.
-    return arraySIL;
-  }
-
-  // Convert the pointer to the storage to an address. The elements will be
-  // stored into offsets from this address.
-  SILType elementSILType = elements[0]->getType();
-  PointerToAddressInst *storageAddr = builder.createPointerToAddress(
-      loc, storagePointerSIL, elementSILType.getAddressType(),
-      /*isStrict*/ true,
-      /*isInvariant*/ false);
-
-  // Iterate over the elements and store them into the storage address
-  // after offsetting it appropriately.
-
-  // Create a TypeLowering for emitting stores. Note that TypeLowering
-  // provides a utility for emitting stores for storing trivial and
-  // non-trivial values, and also handles OSSA and non-OSSA.
-  const TypeLowering &elementTypeLowering =
-      builder.getTypeLowering(elementSILType);
-
-  unsigned elementIndex = 0;
-  for (SILValue elementSIL : elements) {
-    // Compute the address where the element must be stored.
-    SILValue currentStorageAddr;
-    if (elementIndex != 0) {
-      SILValue indexSIL = builder.createIntegerLiteral(
-          loc, SILType::getBuiltinWordType(astContext), elementIndex);
-      currentStorageAddr = builder.createIndexAddr(loc, storageAddr, indexSIL);
-    } else {
-      currentStorageAddr = storageAddr;
-    }
-    // Store the generated element into the currentStorageAddr. This is an
-    // initializing store and therefore there is no need to free any existing
-    // element.
-    elementTypeLowering.emitStore(builder, loc, elementSIL, currentStorageAddr,
-                                  StoreOwnershipQualifier::Init);
-    ++elementIndex;
-  }
-  if (arrayFinalizeFun) {
-    FunctionRefInst *arrayFinalizeRef =
-        builder.createFunctionRef(loc, arrayFinalizeFun);
-    arraySIL = builder.createApply(loc, arrayFinalizeRef, subMap,
-                                   ArrayRef<SILValue>(arraySIL));
-  }
-  return arraySIL;
-}
-
-/// Given a SILValue \p value, return the instruction immediately following the
-/// definition of the value. That is, if the value is defined by an
-/// instruction, return the instruction following the definition. Otherwise, if
-/// the value is a basic block parameter, return the first instruction of the
-/// basic block.
-SILInstruction *getInstructionFollowingValueDefinition(SILValue value) {
-  SILInstruction *definingInst = value->getDefiningInstruction();
-  if (definingInst) {
-    return &*std::next(definingInst->getIterator());
-  }
-  // Here value must be a basic block argument.
-  SILBasicBlock *bb = value->getParentBlock();
-  return &*bb->begin();
-}
-
-/// Given a SILValue \p value, create a copy of the value using copy_value in
-/// OSSA or retain in non-OSSA, if \p value is a non-trivial type. Otherwise, if
-/// \p value is a trivial type, return the value itself.
-SILValue makeOwnedCopyOfSILValue(SILValue value, SILFunction &fun) {
-  SILType type = value->getType();
-  if (type.isTrivial(fun) || type.isAddress())
-    return value;
-
-  SILInstruction *instAfterValueDefinition =
-      getInstructionFollowingValueDefinition(value);
-  SILLocation copyLoc = instAfterValueDefinition->getLoc();
-  SILBuilderWithScope builder(instAfterValueDefinition);
-  const TypeLowering &typeLowering = builder.getTypeLowering(type);
-  SILValue copy = typeLowering.emitCopyValue(builder, copyLoc, value);
-  return copy;
-}
-
-/// Generate SIL code that computes the constant given by the symbolic value
-/// `symVal`. Note that strings and struct-typed constant values will require
-/// multiple instructions to be emitted.
-/// \param symVal symbolic value for which SIL code needs to be emitted.
-/// \param expectedType the expected type of the instruction that would be
-/// computing the symbolic value `symVal`. The type is accepted as a
-/// parameter as some symbolic values like integer constants can inhabit more
-/// than one type.
-/// \param builder SILBuilder that provides the context for emitting the code
-/// for the symbolic value
-/// \param loc SILLocation to use in the emitted instructions.
-/// \param stringInfo String.init and metatype information for generating code
-/// for string literals.
-static SILValue emitCodeForSymbolicValue(SymbolicValue symVal,
-                                         Type expectedType, SILBuilder &builder,
-                                         SILLocation &loc,
-                                         StringSILInfo &stringInfo) {
-  ASTContext &astContext = expectedType->getASTContext();
-
-  switch (symVal.getKind()) {
-  case SymbolicValue::String: {
-    assert(astContext.getStringDecl() ==
-           expectedType->getNominalOrBoundGenericNominal());
-
-    StringRef stringVal = symVal.getStringValue();
-    StringLiteralInst *stringLitInst = builder.createStringLiteral(
-        loc, stringVal, StringLiteralInst::Encoding::UTF8);
-
-    // Create a builtin word for the size of the string
-    IntegerLiteralInst *sizeInst = builder.createIntegerLiteral(
-        loc, SILType::getBuiltinWordType(astContext), stringVal.size());
-    // Set isAscii to false.
-    IntegerLiteralInst *isAscii = builder.createIntegerLiteral(
-        loc, SILType::getBuiltinIntegerType(1, astContext), 0);
-    // Create a metatype inst.
-    MetatypeInst *metatypeInst =
-        builder.createMetatype(loc, stringInfo.getStringMetatype());
-
-    auto args = SmallVector<SILValue, 4>();
-    args.push_back(stringLitInst);
-    args.push_back(sizeInst);
-    args.push_back(isAscii);
-    args.push_back(metatypeInst);
-
-    FunctionRefInst *stringInitRef =
-        builder.createFunctionRef(loc, stringInfo.getStringInitIntrinsic());
-    ApplyInst *applyInst = builder.createApply(
-        loc, stringInitRef, SubstitutionMap(), ArrayRef<SILValue>(args), false);
-    return applyInst;
-  }
-  case SymbolicValue::Integer: { // Builtin integer types.
-    APInt resInt = symVal.getIntegerValue();
-    assert(expectedType->is<BuiltinIntegerType>());
-
-    SILType builtinIntType =
-        SILType::getPrimitiveObjectType(expectedType->getCanonicalType());
-    IntegerLiteralInst *intLiteralInst =
-        builder.createIntegerLiteral(loc, builtinIntType, resInt);
-    return intLiteralInst;
-  }
-  case SymbolicValue::Aggregate: {
-    // Support only stdlib integer or bool structs.
-    StructDecl *structDecl = expectedType->getStructOrBoundGenericStruct();
-    assert(structDecl);
-    assert(isStdlibIntegerOrBoolDecl(structDecl, astContext));
-    assert(symVal.getAggregateType()->isEqual(expectedType) &&
-           "aggregate symbolic value's type and expected type do not match");
-
-    VarDecl *propertyDecl = structDecl->getStoredProperties().front();
-    Type propertyType = expectedType->getTypeOfMember(
-        propertyDecl->getModuleContext(), propertyDecl);
-    SymbolicValue propertyVal = symVal.lookThroughSingleElementAggregates();
-    SILValue newPropertySIL = emitCodeForSymbolicValue(
-        propertyVal, propertyType, builder, loc, stringInfo);
-    // The lowered SIL type of an integer/bool type is just the primitive
-    // object type containing the Swift type.
-    SILType aggregateType =
-        SILType::getPrimitiveObjectType(expectedType->getCanonicalType());
-    StructInst *newStructInst = builder.createStruct(
-        loc, aggregateType, ArrayRef<SILValue>(newPropertySIL));
-    return newStructInst;
-  }
-  case SymbolicValue::Array: {
-    assert(expectedType->isEqual(symVal.getArrayType()));
-    CanType elementType;
-    ArrayRef<SymbolicValue> arrayElements =
-        symVal.getStorageOfArray().getStoredElements(elementType);
-    auto elementSILType = builder.getModule().Types
-      .getLoweredType(AbstractionPattern::getOpaque(), elementType,
-                      TypeExpansionContext(builder.getFunction()));
-
-    // Emit code for the symbolic values corresponding to the array elements.
-    SmallVector<SILValue, 8> elementSILValues;
-    for (SymbolicValue elementSymVal : arrayElements) {
-      SILValue elementSIL = emitCodeForSymbolicValue(elementSymVal,
-                                                     elementSILType.getASTType(),
-                                                     builder, loc, stringInfo);
-      elementSILValues.push_back(elementSIL);
-    }
-    SILValue arraySIL = emitCodeForConstantArray(
-        elementSILValues, expectedType->getCanonicalType(), builder, loc);
-    return arraySIL;
-  }
-  case SymbolicValue::Closure: {
-    assert(expectedType->is<AnyFunctionType>() ||
-           expectedType->is<SILFunctionType>());
-
-    SILModule &module = builder.getModule();
-    SymbolicClosure *closure = symVal.getClosure();
-    SILValue resultVal;
-
-    // If the closure was created in the context of this function where the code
-    // is generated, reuse the original closure value (after extending its
-    // lifetime by copying).
-    SingleValueInstruction *originalClosureInst = closure->getClosureInst();
-    SILFunction &fun = builder.getFunction();
-    if (originalClosureInst->getFunction() == &fun) {
-      // Copy the closure, since the returned value must be owned and the
-      // closure's lifetime must be extended until this point.
-      resultVal = makeOwnedCopyOfSILValue(originalClosureInst, fun);
-    } else {
-      // If the closure captures a value that is not a constant, it should only
-      // come from the caller of the log call. It should be handled by the then
-      // case and we should never reach here. Assert this.
-      assert(closure->hasOnlyConstantCaptures() &&
-             "closure with non-constant captures not defined in this function");
-      SubstitutionMap callSubstMap = closure->getCallSubstitutionMap();
-      ArrayRef<SymbolicClosureArgument> captures = closure->getCaptures();
-      // Recursively emit code for all captured values which must be mapped to a
-      // symbolic value.
-      SmallVector<SILValue, 4> capturedSILVals;
-      for (SymbolicClosureArgument capture : captures) {
-        SILValue captureOperand = capture.first;
-        Optional<SymbolicValue> captureSymVal = capture.second;
-        assert(captureSymVal);
-        // Note that the captured operand type may have generic parameters which
-        // has to be substituted with the substitution map that was inferred by
-        // the constant evaluator at the partial-apply site.
-        SILType operandType = captureOperand->getType();
-        SILType captureType = operandType.subst(module, callSubstMap);
-        SILValue captureSILVal = emitCodeForSymbolicValue(
-            captureSymVal.getValue(), captureType.getASTType(), builder, loc,
-            stringInfo);
-        capturedSILVals.push_back(captureSILVal);
-      }
-      FunctionRefInst *functionRef =
-          builder.createFunctionRef(loc, closure->getTarget());
-      SILType closureType = closure->getClosureType();
-      ParameterConvention convention =
-          closureType.getAs<SILFunctionType>()->getCalleeConvention();
-      resultVal = builder.createPartialApply(loc, functionRef, callSubstMap,
-                                             capturedSILVals, convention);
-    }
-    // If the expected type is a SILFunctionType convert the closure to the
-    // expected type using a convert_function instruction. Otherwise, if the
-    // expected type is AnyFunctionType, nothing needs to be done.
-    // Note that we cannot assert the lowering in the latter case, as that
-    // utility doesn't exist yet.
-    auto resultType = resultVal->getType().castTo<SILFunctionType>();
-    CanType expectedCanType = expectedType->getCanonicalType();
-    if (auto expectedFnType = dyn_cast<SILFunctionType>(expectedCanType)) {
-      assert(expectedFnType->getUnsubstitutedType(module)
-               == resultType->getUnsubstitutedType(module));
-      // Convert to the expected type if necessary.
-      if (expectedFnType != resultType) {
-        auto convert = builder.createConvertFunction(
-            loc, resultVal, SILType::getPrimitiveObjectType(expectedFnType),
-            false);
-        return convert;
-      }
-    }
-    return resultVal;
-  }
-  default: {
-    llvm_unreachable("Symbolic value kind is not supported");
-  }
+//    // If the instruction results are foldable and if we found a constant value
+//    // for the results, record it.
+//    for (SILValue instructionResult : currInst->getResults()) {
+//      if (!isSILValueFoldable(instructionResult))
+//        continue;
+//
+//      Optional<SymbolicValue> constantVal =
+//          constantEvaluator.lookupConstValue(instructionResult);
+//      if (constantVal.hasValue()) {
+//        foldState.addConstantSILValue(instructionResult);
+//      }
+//    }
   }
 }
+
+///// Given a SILValue \p value, return the instruction immediately following the
+///// definition of the value. That is, if the value is defined by an
+///// instruction, return the instruction following the definition. Otherwise, if
+///// the value is a basic block parameter, return the first instruction of the
+///// basic block.
+//SILInstruction *getInstructionFollowingValueDefinition(SILValue value) {
+//  SILInstruction *definingInst = value->getDefiningInstruction();
+//  if (definingInst) {
+//    return &*std::next(definingInst->getIterator());
+//  }
+//  // Here value must be a basic block argument.
+//  SILBasicBlock *bb = value->getParentBlock();
+//  return &*bb->begin();
+//}
+
 
 /// Given a SILValue \p value, compute the set of transitive users of the value
 /// (excluding value itself) by following the use-def chain starting at value.
@@ -621,15 +308,15 @@ static void getTransitiveUsers(SILValue value,
   users.append(visitedUsers.begin(), visitedUsers.end());
 }
 
-/// Collect the end points of the instructions that are data dependent on \c
-/// value. A instruction is data dependent on \c value if its result may
-/// transitively depends on \c value. Note that data dependencies through
-/// addresses are not tracked by this function.
-///
-/// \param value SILValue that is not an address.
-/// \param fun SILFunction that defines \c value.
-/// \param endUsers buffer for storing the found end points of the data
-/// dependence chain.
+///// Collect the end points of the instructions that are data dependent on \c
+///// value. A instruction is data dependent on \c value if its result may
+///// transitively depends on \c value. Note that data dependencies through
+///// addresses are not tracked by this function.
+/////
+///// \param value SILValue that is not an address.
+///// \param fun SILFunction that defines \c value.
+///// \param endUsers buffer for storing the found end points of the data
+///// dependence chain.
 static void
 getEndPointsOfDataDependentChain(SILValue value, SILFunction *fun,
                                  SmallVectorImpl<SILInstruction *> &endUsers) {
@@ -668,411 +355,102 @@ getEndPointsOfDataDependentChain(SILValue value, SILFunction *fun,
   }
 }
 
-/// Given a guaranteed SILValue \p value, return a borrow-scope introducing
-/// value, if there is exactly one such introducing value. Otherwise, return
-/// None. There can be multiple borrow scopes for a SILValue iff it is derived
-/// from a guaranteed basic block parameter representing a phi node.
-static Optional<BorrowedValue>
-getUniqueBorrowScopeIntroducingValue(SILValue value) {
-  assert(value.getOwnershipKind() == OwnershipKind::Guaranteed &&
-         "parameter must be a guarenteed value");
-  return getSingleBorrowIntroducingValue(value);
-}
+///// Check whether OSLogMessage and OSLogInterpolation instances and all their
+///// stored properties are constants. If not, it indicates errors that are due to
+///// incorrect implementation of OSLogMessage either in the os module or in the
+///// extensions created by users. Detect and emit diagnostics for such errors.
+///// The diagnostics here are for os log library authors.
+//static bool checkOSLogMessageIsConstant(SingleValueInstruction *osLogMessage,
+//                                        FoldState &foldState) {
+//  ConstExprStepEvaluator &constantEvaluator = foldState.constantEvaluator;
+//  SILLocation loc = osLogMessage->getLoc();
+//  SourceLoc sourceLoc = loc.getSourceLoc();
+//  SILFunction *fn = osLogMessage->getFunction();
+//  SILModule &module = fn->getModule();
+//  ASTContext &astContext = fn->getASTContext();
+//
+//  Optional<SymbolicValue> osLogMessageValueOpt =
+//      constantEvaluator.lookupConstValue(osLogMessage);
+//  if (!osLogMessageValueOpt ||
+//      osLogMessageValueOpt->getKind() != SymbolicValue::Aggregate) {
+//    diagnose(astContext, sourceLoc, diag::oslog_non_constant_message);
+//    return true;
+//  }
+//
+//  // The first (and only) property of OSLogMessage is the OSLogInterpolation
+//  // instance.
+//  SymbolicValue osLogInterpolationValue =
+//      osLogMessageValueOpt->getAggregateMembers()[0];
+//  if (!osLogInterpolationValue.isConstant()) {
+//    diagnose(astContext, sourceLoc, diag::oslog_non_constant_interpolation);
+//    return true;
+//  }
+//
+//  // Check if every proprety of the OSLogInterpolation instance has a constant
+//  // value.
+//  SILType osLogMessageType = osLogMessage->getType();
+//  StructDecl *structDecl = osLogMessageType.getStructOrBoundGenericStruct();
+//  assert(structDecl);
+//
+//  auto typeExpansionContext =
+//      TypeExpansionContext(*osLogMessage->getFunction());
+//  VarDecl *interpolationPropDecl = structDecl->getStoredProperties().front();
+//  SILType osLogInterpolationType = osLogMessageType.getFieldType(
+//      interpolationPropDecl, module, typeExpansionContext);
+//  StructDecl *interpolationStruct =
+//      osLogInterpolationType.getStructOrBoundGenericStruct();
+//  assert(interpolationStruct);
+//
+//  auto propertyDecls = interpolationStruct->getStoredProperties();
+//  ArrayRef<SymbolicValue> propertyValues =
+//      osLogInterpolationValue.getAggregateMembers();
+//  auto propValueI = propertyValues.begin();
+//  bool errorDetected = false;
+//  // Also, track if there is a string-valued property.
+//  bool hasStringValuedProperty = false;
+//
+//  for (auto *propDecl : propertyDecls) {
+//    SymbolicValue propertyValue = *(propValueI++);
+//    if (!propertyValue.isConstant()) {
+//      diagnose(astContext, sourceLoc, diag::oslog_property_not_constant,
+//               propDecl->getNameStr());
+//      errorDetected = true;
+//      break;
+//    }
+//    hasStringValuedProperty = propertyValue.getKind() == SymbolicValue::String;
+//  }
+//
+//  // If we have a string-valued property but don't have the stringInfo
+//  // initialized here, it means the initializer OSLogInterpolation is explicitly
+//  // called, which should be diagnosed.
+//  if (hasStringValuedProperty && !foldState.stringInfo.isInitialized()) {
+//    diagnose(astContext, sourceLoc, diag::oslog_message_explicitly_created);
+//    errorDetected = true;
+//  }
+//  return errorDetected;
+//}
 
-/// Replace all uses of \c originalVal by \c foldedVal and adjust lifetimes of
-/// original and folded values by emitting required destory/release instructions
-/// at the right places. Note that this function does not remove any
-/// instruction.
-///
-/// \param originalVal the SIL value that is replaced.
-/// \param foldedVal the SIL value that replaces the \c originalVal.
-/// \param fun the SIL function containing the \c foldedVal and \c originalVal
-static void replaceAllUsesAndFixLifetimes(SILValue foldedVal,
-                                          SILValue originalVal,
-                                          SILFunction *fun) {
-  SILInstruction *originalInst = originalVal->getDefiningInstruction();
-  SILInstruction *foldedInst = foldedVal->getDefiningInstruction();
-  assert(originalInst &&
-         "cannot constant fold function or basic block parameter");
-  assert(!isa<TermInst>(originalInst) &&
-         "cannot constant fold a terminator instruction");
-  assert(foldedInst && "constant value does not have a defining instruction");
 
-  if (originalVal->getType().isTrivial(*fun)) {
-    assert(foldedVal->getType().isTrivial(*fun));
-    // Just replace originalVal by foldedVal.
-    originalVal->replaceAllUsesWith(foldedVal);
-    return;
-  }
-  assert(!foldedVal->getType().isTrivial(*fun));
-  assert(fun->hasOwnership());
-  assert(foldedVal.getOwnershipKind() == OwnershipKind::Owned &&
-         "constant value must have owned ownership kind");
-
-  if (originalVal.getOwnershipKind() == OwnershipKind::Owned) {
-    originalVal->replaceAllUsesWith(foldedVal);
-    // Destroy originalVal, which is now unused, immediately after its
-    // definition. Note that originalVal's destorys are now transferred to
-    // foldedVal.
-    SILInstruction *insertionPoint = &(*std::next(originalInst->getIterator()));
-    SILBuilderWithScope builder(insertionPoint);
-    SILLocation loc = insertionPoint->getLoc();
-    builder.emitDestroyValueOperation(loc, originalVal);
-    return;
-  }
-
-  // Here, originalVal is guaranteed. It must belong to a borrow scope that
-  // begins at a scope introducing instruction e.g. begin_borrow or load_borrow.
-  // The foldedVal should also have been inserted at the beginning of the scope.
-  // Therefore, create a borrow of foldedVal at the beginning of the scope and
-  // use the borrow in place of the originalVal. Also, end the borrow and
-  // destroy foldedVal at the end of the borrow scope.
-  assert(originalVal.getOwnershipKind() == OwnershipKind::Guaranteed);
-
-  Optional<BorrowedValue> originalScopeBegin =
-      getUniqueBorrowScopeIntroducingValue(originalVal);
-  assert(originalScopeBegin &&
-         "value without a unique borrow scope should not have been folded");
-  SILInstruction *scopeBeginInst =
-      originalScopeBegin->value->getDefiningInstruction();
-  assert(scopeBeginInst);
-
-  SILBuilderWithScope builder(scopeBeginInst);
-  SILValue borrow =
-      builder.emitBeginBorrowOperation(scopeBeginInst->getLoc(), foldedVal);
-
-  originalVal->replaceAllUsesWith(borrow);
-
-  SmallVector<SILInstruction *, 4> scopeEndingInsts;
-  originalScopeBegin->getLocalScopeEndingInstructions(scopeEndingInsts);
-
-  for (SILInstruction *scopeEndingInst : scopeEndingInsts) {
-    SILBuilderWithScope builder(scopeEndingInst);
-    builder.emitEndBorrowOperation(scopeEndingInst->getLoc(), borrow);
-    builder.emitDestroyValueOperation(scopeEndingInst->getLoc(), foldedVal);
-  }
-  return;
-}
-
-/// Given a fold state with constant-valued instructions, substitute the
-/// instructions with the constant values. The constant values could be strings
-/// or Stdlib integer-struct values or builtin integers.
-static void substituteConstants(FoldState &foldState) {
-  ConstExprStepEvaluator &evaluator = foldState.constantEvaluator;
-  // Instructions that are possibly dead since their results are folded.
-  SmallVector<SILInstruction *, 8> possiblyDeadInsts;
-
-  for (SILValue constantSILValue : foldState.getConstantSILValues()) {
-    SymbolicValue constantSymbolicVal =
-        evaluator.lookupConstValue(constantSILValue).getValue();
-
-    SILInstruction *definingInst = constantSILValue->getDefiningInstruction();
-    assert(definingInst);
-    SILFunction *fun = definingInst->getFunction();
-
-    // Find an insertion point for inserting the new constant value. If we are
-    // folding a value like struct_extract within a borrow scope, we need to
-    // insert the constant value at the beginning of the borrow scope. This
-    // is because the borrowed value is expected to be alive during its entire
-    // borrow scope and could be stored into memory and accessed indirectly
-    // without a copy e.g. using store_borrow within the borrow scope. On the
-    // other hand, if we are folding an owned value, we can insert the constant
-    // value at the point where the owned value is defined.
-    SILInstruction *insertionPoint = definingInst;
-    if (constantSILValue.getOwnershipKind() == OwnershipKind::Guaranteed) {
-      Optional<BorrowedValue> borrowIntroducer =
-          getUniqueBorrowScopeIntroducingValue(constantSILValue);
-      if (!borrowIntroducer) {
-        // This case happens only if constantSILValue is derived from a
-        // guaranteed basic block parameter. This is unlikley because the values
-        // that have to be folded should just be a struct-extract of an owned
-        // instance of OSLogMessage.
-        continue;
-      }
-      insertionPoint = borrowIntroducer->value->getDefiningInstruction();
-      assert(insertionPoint && "borrow scope begnning is a parameter");
-    }
-
-    SILBuilderWithScope builder(insertionPoint);
-    SILLocation loc = insertionPoint->getLoc();
-    CanType instType = constantSILValue->getType().getASTType();
-    SILValue foldedSILVal = emitCodeForSymbolicValue(
-        constantSymbolicVal, instType, builder, loc, foldState.stringInfo);
-
-    // Replace constantSILValue with foldedSILVal and adjust the lifetime and
-    // ownership of the values appropriately.
-    replaceAllUsesAndFixLifetimes(foldedSILVal, constantSILValue, fun);
-    possiblyDeadInsts.push_back(definingInst);
-  }
-}
-
-/// Check whether OSLogMessage and OSLogInterpolation instances and all their
-/// stored properties are constants. If not, it indicates errors that are due to
-/// incorrect implementation of OSLogMessage either in the os module or in the
-/// extensions created by users. Detect and emit diagnostics for such errors.
-/// The diagnostics here are for os log library authors.
-static bool checkOSLogMessageIsConstant(SingleValueInstruction *osLogMessage,
-                                        FoldState &foldState) {
-  ConstExprStepEvaluator &constantEvaluator = foldState.constantEvaluator;
-  SILLocation loc = osLogMessage->getLoc();
-  SourceLoc sourceLoc = loc.getSourceLoc();
-  SILFunction *fn = osLogMessage->getFunction();
-  SILModule &module = fn->getModule();
-  ASTContext &astContext = fn->getASTContext();
-
-  Optional<SymbolicValue> osLogMessageValueOpt =
-      constantEvaluator.lookupConstValue(osLogMessage);
-  if (!osLogMessageValueOpt ||
-      osLogMessageValueOpt->getKind() != SymbolicValue::Aggregate) {
-    diagnose(astContext, sourceLoc, diag::oslog_non_constant_message);
-    return true;
-  }
-
-  // The first (and only) property of OSLogMessage is the OSLogInterpolation
-  // instance.
-  SymbolicValue osLogInterpolationValue =
-      osLogMessageValueOpt->getAggregateMembers()[0];
-  if (!osLogInterpolationValue.isConstant()) {
-    diagnose(astContext, sourceLoc, diag::oslog_non_constant_interpolation);
-    return true;
-  }
-
-  // Check if every proprety of the OSLogInterpolation instance has a constant
-  // value.
-  SILType osLogMessageType = osLogMessage->getType();
-  StructDecl *structDecl = osLogMessageType.getStructOrBoundGenericStruct();
-  assert(structDecl);
-
-  auto typeExpansionContext =
-      TypeExpansionContext(*osLogMessage->getFunction());
-  VarDecl *interpolationPropDecl = structDecl->getStoredProperties().front();
-  SILType osLogInterpolationType = osLogMessageType.getFieldType(
-      interpolationPropDecl, module, typeExpansionContext);
-  StructDecl *interpolationStruct =
-      osLogInterpolationType.getStructOrBoundGenericStruct();
-  assert(interpolationStruct);
-
-  auto propertyDecls = interpolationStruct->getStoredProperties();
-  ArrayRef<SymbolicValue> propertyValues =
-      osLogInterpolationValue.getAggregateMembers();
-  auto propValueI = propertyValues.begin();
-  bool errorDetected = false;
-  // Also, track if there is a string-valued property.
-  bool hasStringValuedProperty = false;
-
-  for (auto *propDecl : propertyDecls) {
-    SymbolicValue propertyValue = *(propValueI++);
-    if (!propertyValue.isConstant()) {
-      diagnose(astContext, sourceLoc, diag::oslog_property_not_constant,
-               propDecl->getNameStr());
-      errorDetected = true;
-      break;
-    }
-    hasStringValuedProperty = propertyValue.getKind() == SymbolicValue::String;
-  }
-
-  // If we have a string-valued property but don't have the stringInfo
-  // initialized here, it means the initializer OSLogInterpolation is explicitly
-  // called, which should be diagnosed.
-  if (hasStringValuedProperty && !foldState.stringInfo.isInitialized()) {
-    diagnose(astContext, sourceLoc, diag::oslog_message_explicitly_created);
-    errorDetected = true;
-  }
-  return errorDetected;
-}
-
-using CallbackTy = llvm::function_ref<void(SILInstruction *)>;
-
-/// Return true iff the given address-valued instruction has only stores into
-/// it. This function tests for the conditions under which a call, that was
-/// constant evaluated, that writes into the address-valued instruction can be
-/// considered as a point store and exploits it to remove such uses.
-/// TODO: eventually some of this logic can be moved to
-/// PredictableDeadAllocElimination pass, but the assumption about constant
-/// evaluable functions taking inout parameters is not easily generalizable to
-/// arbitrary non-constant contexts where the function could be used. The logic
-/// here is relying on the fact that the constant_evaluable function has been
-/// evaluated and therefore doesn't have any side-effects.
-static bool hasOnlyStoreUses(SingleValueInstruction *addressInst) {
-  for (Operand *use : addressInst->getUses()) {
-    SILInstruction *user = use->getUser();
-    switch (user->getKind()) {
-    default:
-      return false;
-    case SILInstructionKind::BeginAccessInst: {
-      if (!hasOnlyStoreUses(cast<BeginAccessInst>(user)))
-        return false;
-      continue;
-    }
-    case SILInstructionKind::StoreInst: {
-      // For now, ignore assigns as we need to destroy_addr its dest if it
-      // is deleted.
-      if (cast<StoreInst>(user)->getOwnershipQualifier() ==
-          StoreOwnershipQualifier::Assign)
-        return false;
-      continue;
-    }
-    case SILInstructionKind::EndAccessInst:
-    case SILInstructionKind::DestroyAddrInst:
-    case SILInstructionKind::InjectEnumAddrInst:
-    case SILInstructionKind::DeallocStackInst:
-      continue;
-    case SILInstructionKind::ApplyInst: {
-      ApplyInst *apply = cast<ApplyInst>(user);
-      SILFunction *callee = apply->getCalleeFunction();
-      if (!callee || !isConstantEvaluable(callee) || !apply->use_empty())
-        return false;
-      // Note that since we are looking at an alloc_stack used to produce the
-      // OSLogMessage instance, this constant_evaluable call should have been
-      // evaluated successfully by the evaluator. Otherwise, we would have
-      // reported an error earlier. Therefore, all values manipulated by such
-      // a call are symbolic constants and the call would not have any global
-      // side effects. The following logic relies on this property.
-      // If there are other indirect writable results for the call other than
-      // the alloc_stack we are checking, it may not be dead. Therefore, bail
-      // out.
-      FullApplySite applySite(apply);
-      unsigned numWritableArguments =
-        getNumInOutArguments(applySite) + applySite.getNumIndirectSILResults();
-      if (numWritableArguments > 1)
-        return false;
-      SILArgumentConvention convention = applySite.getArgumentConvention(*use);
-      if (convention == SILArgumentConvention::Indirect_In_Guaranteed ||
-          convention == SILArgumentConvention::Indirect_In_Constant ||
-          convention == SILArgumentConvention::Indirect_In_Guaranteed) {
-        if (numWritableArguments > 0)
-          return false;
-      }
-      // Here, either there are no writable parameters or the alloc_stack
-      // is the only writable parameter.
-      continue;
-    }
-    }
-  }
-  return true;
-}
-
-/// Delete the given alloc_stack instruction by deleting the users of the
-/// instruction. In case the user is a begin_apply, recursively delete the users
-/// of begin_apply. This will also fix the lifetimes of the deleted instructions
-/// whenever possible.
-static void forceDeleteAllocStack(SingleValueInstruction *inst,
-                                  InstructionDeleter &deleter,
-                                  CallbackTy callback) {
-  SmallVector<SILInstruction *, 8> users;
-  for (Operand *use : inst->getUses())
-    users.push_back(use->getUser());
-
-  for (SILInstruction *user : users) {
-    if (isIncidentalUse(user))
-      continue;
-    if (isa<DestroyAddrInst>(user)) {
-      deleter.forceDelete(user, callback);
-      continue;
-    }
-    if (isa<BeginAccessInst>(user)) {
-      forceDeleteAllocStack(cast<BeginAccessInst>(user), deleter, callback);
-      continue;
-    }
-    deleter.forceDeleteAndFixLifetimes(user, callback);
-  }
-  deleter.forceDelete(inst, callback);
-}
-
-/// Delete \c inst , if it is dead, along with its dead users and invoke the
-/// callback whever an instruction is deleted.
-static void deleteInstructionWithUsersAndFixLifetimes(
-    SILInstruction *inst, InstructionDeleter &deleter, CallbackTy callback) {
-  // If this is an alloc_stack, it can be eliminated as long as it is only
-  // stored into or destroyed.
-  if (AllocStackInst *allocStack = dyn_cast<AllocStackInst>(inst)) {
-    if (hasOnlyStoreUses(allocStack))
-      forceDeleteAllocStack(allocStack, deleter, callback);
-    return;
-  }
-  deleter.recursivelyDeleteUsersIfDead(inst, callback);
-}
-
-/// Try to dead-code eliminate the OSLogMessage instance \c oslogMessage passed
-/// to the os log call and clean up its dependencies. If the instance cannot be
-/// eliminated, emit diagnostics.
-/// \returns true if elimination is successful and false if it is not successful
-/// and diagnostics is emitted.
-static bool tryEliminateOSLogMessage(SingleValueInstruction *oslogMessage) {
-  InstructionDeleter deleter;
-  // List of instructions that are possibly dead.
-  SmallVector<SILInstruction *, 4> worklist = {oslogMessage};
-  // Set of all deleted instructions.
-  SmallPtrSet<SILInstruction *, 4> deletedInstructions;
-  unsigned startIndex = 0;
-  while (startIndex < worklist.size()) {
-    SILInstruction *inst = worklist[startIndex++];
-    if (deletedInstructions.count(inst))
-      continue;
-    deleteInstructionWithUsersAndFixLifetimes(
-        inst, deleter, [&](SILInstruction *deadInst) {
-          // Add operands of all deleted instructions to the worklist so that
-          // they can be recursively deleted if possible.
-          for (Operand &operand : deadInst->getAllOperands()) {
-            if (SILInstruction *definingInstruction =
-                    operand.get()->getDefiningInstruction()) {
-              if (!deletedInstructions.count(definingInstruction))
-                worklist.push_back(definingInstruction);
-            }
-          }
-          (void)deletedInstructions.insert(deadInst);
-        });
-  }
-  deleter.cleanUpDeadInstructions();
-  // If the OSLogMessage instance is not deleted, either we couldn't see the
-  // body of the log call or there is a bug in the library implementation.
-  // Assuming that the library implementation is correct, it means that either
-  // OSLogMessage is used in a context where it is not supposed to be used, or
-  // we somehow saw a conditional branch with a non-constant argument before
-  // completing evaluation (this can happen with the os_log(_:log:type)
-  // overload, when log or type is an optional unwrapping). Report an error
-  // that covers both contexts. (Note that it is very hard to distinguish these
-  // error cases in the current state.)
-  if (!deletedInstructions.count(oslogMessage)) {
-    SILFunction *fun = oslogMessage->getFunction();
-    diagnose(fun->getASTContext(), oslogMessage->getLoc().getSourceLoc(),
-             diag::oslog_message_alive_after_opts);
-    return false;
-  }
-  return true;
-}
-
-/// Constant evaluate instructions starting from \p start and fold the uses
-/// of the SIL value \p oslogMessage.
-/// \returns true if folding is successful and false if it is not successful and
-/// diagnostics is emitted.
-static bool constantFold(SILInstruction *start,
-                         SingleValueInstruction *oslogMessage,
+///// Constant evaluate instructions starting from \p start and fold the uses
+///// of the SIL value \p oslogMessage.
+static void extractLocalizationKey(SILInstruction *start,
+                         SingleValueInstruction *localizedStringKey,
                          unsigned assertConfig) {
   SILFunction *fun = start->getFunction();
   assert(fun->hasOwnership() && "function not in ownership SIL");
 
   // Initialize fold state.
   SmallVector<SILInstruction *, 2> endUsersOfOSLogMessage;
-  getEndPointsOfDataDependentChain(oslogMessage, fun, endUsersOfOSLogMessage);
+  getEndPointsOfDataDependentChain(localizedStringKey, fun, endUsersOfOSLogMessage);
   assert(!endUsersOfOSLogMessage.empty());
+  
+  EvaluationState state(fun, assertConfig, start, endUsersOfOSLogMessage);
+  evaluateLocalizationInfoInitCode(state);
+}
 
-  FoldState state(fun, assertConfig, start, endUsersOfOSLogMessage);
-
-  auto errorInfo = collectConstants(state);
-  if (errorInfo) // Evaluation failed with diagnostics.
-    return false;
-
-  // At this point, the `OSLogMessage` instance should be mapped to a constant
-  // value in the interpreter state. If this is not the case, it means the
-  // overlay implementation of OSLogMessage (or its extensions by users) are
-  // incorrect. Detect and diagnose this scenario.
-  bool errorDetected = checkOSLogMessageIsConstant(oslogMessage, state);
-  if (errorDetected)
-    return false;
-
-  substituteConstants(state);
-  return tryEliminateOSLogMessage(oslogMessage);
+static bool isConstantEvaluableCall(ApplyInst *apply) {
+  SILFunction *callee = apply->getCalleeFunction();
+  return callee && isConstantEvaluable(callee);
 }
 
 /// Given a call to the initializer of OSLogMessage, which conforms to
@@ -1083,18 +461,18 @@ static bool constantFold(SILInstruction *start,
 /// it avoids chasing the data-dependencies from the captured values of
 /// partial-apply instructions, as a partial apply instruction is considered as
 /// a constant regardless of the constantness of its captures.
-static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
-  auto oslogInitCallSite = FullApplySite(oslogInit);
-  SILFunction *callee = oslogInitCallSite.getCalleeFunction();
+static SILInstruction *beginOfInterpolation(ApplyInst *localizedKeyInit) {
+  auto localizedInitCallSite = FullApplySite(localizedKeyInit);
+  SILFunction *callee = localizedInitCallSite.getCalleeFunction();
 
-  assert (callee->hasSemanticsAttrThatStartsWith("oslog.message.init"));
+  assert (callee->hasSemanticsAttrThatStartsWith("swiftui.localized_string_key.init"));
   // The initializer must return the OSLogMessage instance directly.
-  assert(oslogInitCallSite.getNumArguments() >= 1 &&
-         oslogInitCallSite.getNumIndirectSILResults() == 0);
+  assert(localizedInitCallSite.getNumArguments() >= 1 &&
+         localizedInitCallSite.getNumIndirectSILResults() == 0);
 
   // List of backward dependencies that needs to be analyzed.
-  SmallVector<SILInstruction *, 4> worklist = { oslogInit };
-  SmallPtrSet<SILInstruction *, 4> seenInstructions = { oslogInit };
+  SmallVector<SILInstruction *, 4> worklist = { localizedKeyInit };
+  SmallPtrSet<SILInstruction *, 4> seenInstructions = { localizedKeyInit };
   // List of instructions that could potentially mark the beginning of the
   // interpolation.
   SmallPtrSet<SILInstruction *, 4> candidateStartInstructions;
@@ -1102,20 +480,25 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
   unsigned i = 0;
   while (i < worklist.size()) {
     SILInstruction *inst = worklist[i++];
-
-    if (isa<PartialApplyInst>(inst)) {
-      // Partial applies are used to capture the dynamic arguments passed to
-      // the string interpolation. Their arguments are not required to be
-      // known at compile time and they need not be constant evaluated.
-      // Therefore, follow only the dependency chain along function ref operand.
+    // Set when the defining instruction of an operand of inst is added to the
+    // worklist. This indicates that we found an instruction that precedes
+    // inst in the control-flow order.
+    bool operandAdded = false;
+    
+    // Only consider arguments of fully-applied constant_evaluable functions.
+    // Note that non-constant evaluable functions would anyway be skipped during
+    // the evaluation and therefore it is not necessary to capture their
+    // dependencies.
+    if ((isa<ApplyInst>(inst) && !isConstantEvaluableCall(cast<ApplyInst>(inst)))
+        ||  isa<PartialApplyInst>(inst)) {
       SILInstruction *definingInstruction =
           inst->getOperand(0)->getDefiningInstruction();
-      assert(definingInstruction && "no function-ref operand in partial-apply");
+      assert(definingInstruction && "no function-ref operand in apply");
       if (seenInstructions.insert(definingInstruction).second) {
         worklist.push_back(definingInstruction);
         candidateStartInstructions.insert(definingInstruction);
       }
-      continue;
+      operandAdded = true;
     }
 
     for (Operand &operand : inst->getAllOperands()) {
@@ -1126,6 +509,7 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
         worklist.push_back(definingInstruction);
         seenInstructions.insert(definingInstruction);
         candidateStartInstructions.insert(definingInstruction);
+        operandAdded = true;
       }
       // If there is no definining instruction for this operand, it could be a
       // basic block or function parameter. Such operands are not considered
@@ -1136,7 +520,7 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
     // If the instruction: `inst` has an operand, its definition should precede
     // `inst` in the control-flow order. Therefore, remove `inst` from the
     // candidate start instructions.
-    if (inst->getNumOperands() > 0) {
+    if (operandAdded) {
       candidateStartInstructions.erase(inst);
     }
 
@@ -1156,21 +540,13 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
     }
     // Skip other uses of alloc_stack including function calls on the
     // alloc_stack and data dependenceis through them. This is done because
-    // all functions using the alloc_stack are expected to be constant evaluated
-    // and therefore should only be passed constants or auto closures. These
-    // constants must be constructed immediately before the call and would only
-    // appear in the SIL after the alloc_stack instruction. This invariant is
-    // relied upon here so as to restrict the backward dependency search, which
-    // in turn keeps the code that is constant evaluated small.
-    // Note that if the client code violates this assumption, it will be
-    // diagnosed by this pass (in function detectAndDiagnoseErrors) as it will
-    // result in non-constant values for OSLogMessage instance.
+    // the constant evaluable parts of all functions using the alloc_stack are
+    // expected to constants or auto closures that are constructed immediately
+    // before the call and would only appear in the SIL after the alloc_stack
+    // instruction.
   }
 
-  // Find the first basic block in the control-flow order. Typically, if
-  // formatting and privacy options are literals, all candidate instructions
-  // must be in the same basic block. But, this code doesn't rely on that
-  // assumption.
+  // Find the first basic block in the control-flow order.
   SmallPtrSet<SILBasicBlock *, 4> candidateBBs;
   for (auto *candidate: candidateStartInstructions) {
     SILBasicBlock *candidateBB = candidate->getParent();
@@ -1181,7 +557,7 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
   if (candidateBBs.size() == 1) {
     firstBB = *candidateBBs.begin();
   } else {
-    SILBasicBlock *entryBB = oslogInit->getFunction()->getEntryBlock();
+    SILBasicBlock *entryBB = localizedKeyInit->getFunction()->getEntryBlock();
     for (SILBasicBlock *bb : llvm::breadth_first<SILBasicBlock *>(entryBB)) {
       if (candidateBBs.count(bb)) {
         firstBB = bb;
@@ -1189,13 +565,10 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
       }
     }
     if (!firstBB) {
-      // This case will be reached only if the log call appears in unreachable
+      // This case will be reached only if the call appears in unreachable
       // code and, for some reason, its data depedencies extend beyond a basic
-      // block. This case should generally not happen unless the library
-      // implementation of the os log APIs change. It is better to warn in this
-      // case, rather than skipping the call silently.
-      diagnose(callee->getASTContext(), oslogInit->getLoc().getSourceLoc(),
-               diag::oslog_call_in_unreachable_code);
+      // block. This case should generally not happen. Skip this case.
+      // Unreachable code warning will appear here.
       return nullptr;
     }
   }
@@ -1213,39 +586,6 @@ static SILInstruction *beginOfInterpolation(ApplyInst *oslogInit) {
   return startInst;
 }
 
-/// Replace every _globalStringTablePointer builtin in the transitive users of
-/// oslogMessage with an empty string literal. This would suppress the errors
-/// emitted by a later pass on _globalStringTablePointerBuiltins. This utility
-/// shoud be called only when this pass emits diagnostics.
-static void
-suppressGlobalStringTablePointerError(SingleValueInstruction *oslogMessage) {
-  SmallVector<SILInstruction *, 8> users;
-  getTransitiveUsers(oslogMessage, users);
-
-  // Collect all globalStringTablePointer instructions.
-  SmallVector<BuiltinInst *, 4> globalStringTablePointerInsts;
-  for (SILInstruction *user : users) {
-    BuiltinInst *bi = dyn_cast<BuiltinInst>(user);
-    if (bi &&
-        bi->getBuiltinInfo().ID == BuiltinValueKind::GlobalStringTablePointer)
-      globalStringTablePointerInsts.push_back(bi);
-  }
-
-  // Replace the globalStringTablePointer builtins by a string_literal
-  // instruction for an empty string and clean up dead code.
-  InstructionDeleter deleter;
-  for (BuiltinInst *bi : globalStringTablePointerInsts) {
-    SILBuilderWithScope builder(bi);
-    StringLiteralInst *stringLiteral = builder.createStringLiteral(
-        bi->getLoc(), StringRef(""), StringLiteralInst::Encoding::UTF8);
-    bi->replaceAllUsesWith(stringLiteral);
-    // The bulitin instruction is likely dead. But since we are iterating over
-    // many instructions, do the cleanup at the end.
-    deleter.trackIfDead(bi);
-  }
-  deleter.cleanUpDeadInstructions();
-}
-
 /// If the SILInstruction is an initialization of OSLogMessage, return the
 /// initialization call as an ApplyInst. Otherwise, return nullptr.
 static ApplyInst *getAsLocalizedStringKeyInit(SILInstruction *inst) {
@@ -1256,7 +596,7 @@ static ApplyInst *getAsLocalizedStringKeyInit(SILInstruction *inst) {
 
   SILFunction *callee = applyInst->getCalleeFunction();
   if (!callee ||
-      !callee->hasSemanticsAttrThatStartsWith("swiftui.localized_string_key.init_")) {
+      !callee->hasSemanticsAttrThatStartsWith("swiftui.localized_string_key.init")) {
     return nullptr;
   }
 
@@ -1304,8 +644,8 @@ class LocalizationKeyExtraction : public SILFunctionTransform {
         // The log call is in unreachable code here.
         continue;
       }
-      bool extractionSucceeded =
-          constantFold(interpolationStart, oslogInit, assertConfig);
+      llvm::errs() << "Begining of interpolation " << *interpolationStart << "\n";
+      extractLocalizationKey(interpolationStart, localizedKeyInit, assertConfig);
     }
   }
 };

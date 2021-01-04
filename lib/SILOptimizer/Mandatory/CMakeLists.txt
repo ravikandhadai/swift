@@ -23,4 +23,5 @@ target_sources(swiftSILOptimizer PRIVATE
   YieldOnceCheck.cpp
   MandatoryCombine.cpp
   OSLogOptimization.cpp
+  LocalizationKeyExtraction.cpp
   OwnershipModelEliminator.cpp)
