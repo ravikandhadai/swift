@@ -7,7 +7,7 @@
 // compile-time constants such as the format string, the size of the byte buffer etc. are
 // literals after the mandatory pipeline.
 
-import OSLogTestHelper
+import Localization
 import Foundation
 
 // CHECK-LABEL: @${{.*}}testSimpleInterpolationyy

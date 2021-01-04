@@ -288,6 +288,11 @@ private:
 
     /// This represents a closure.
     RK_Closure,
+      
+    /// This represents a value that is treated opaquely by the evaluator.
+    /// The evaluator does not support operations that requite knowing the contetns of the opaque.
+    /// However, such operations can happen within closures.
+    RK_Opaque
   };
 
   union {
@@ -360,6 +365,8 @@ private:
     /// When this symbolic value is of "Closure" kind, store a pointer to the
     /// symbolic representation of the closure.
     SymbolicClosure *closure;
+      
+    ValueBase *opaqueValue;
   } value;
 
   RepresentationKind representationKind : 8;
@@ -414,6 +421,10 @@ public:
 
     /// This represents a closure.
     Closure,
+      
+    /// This represents an opaque value, which models  values whose contents are not known to the
+    /// evaluator.
+    Opaque,
 
     /// These values are generally only seen internally to the system, external
     /// clients shouldn't have to deal with them.
@@ -583,6 +594,18 @@ public:
   SymbolicClosure *getClosure() const {
     assert(getKind() == Closure);
     return value.closure;
+  }
+    
+  static SymbolicValue makeOpaqueSymbolicValue(SILValue value) {
+    SymbolicValue result;
+    result.representationKind = RK_Opaque;
+    result.value.opaqueValue = value;
+    return result;
+  }
+  
+  SILValue getOpaqueSILValue() const {
+    assert(getKind() == Opaque);
+    return value.opaqueValue;
   }
 
   //===--------------------------------------------------------------------===//

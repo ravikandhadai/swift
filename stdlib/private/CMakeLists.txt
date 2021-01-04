@@ -25,6 +25,7 @@ endif()
 
 if(SWIFT_BUILD_SDK_OVERLAY)
   add_subdirectory(OSLog)
+  add_subdirectory(LocalizationStubs)
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     add_subdirectory(StdlibUnittestFoundationExtras)
